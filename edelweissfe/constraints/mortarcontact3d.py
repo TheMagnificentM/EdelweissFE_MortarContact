@@ -210,6 +210,33 @@ class Constraint(ConstraintBase):
 
         return normals
 
+    def compute_local_dual_matrices(self, U_np: np.ndarray = None) -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Compute the local standard mass matrices M_e, diagonal matrices D_e, and transformation matrices A_e for all non-mortar facets.
+        
+        If U_np is provided, coordinates are evaluated in the deformed configuration.
+        Otherwise, they are evaluated in the undeformed configuration.
+        """
+        dim = self.model.domainSize
+        dual_matrices = {}
+        for el, faceID in self.non_mortar_facets:
+            # Extract coordinates for element nodes
+            coords = []
+            for node in el.nodes:
+                X = node.coordinates
+                if U_np is not None:
+                    node_idx = self._nodes.index(node)
+                    u = U_np[self.sizeField * node_idx : self.sizeField * node_idx + dim]
+                    coords.append(X + u)
+                else:
+                    coords.append(X)
+            coords = np.array(coords)
+            
+            # Compute M_e, D_e, A_e
+            M_e, D_e, A_e = el.computeLocalMassMatrices(coords)
+            dual_matrices[el.elNumber] = (M_e, D_e, A_e)
+            
+        return dual_matrices
+
     def applyConstraint(
         self,
         U_np: np.ndarray,
