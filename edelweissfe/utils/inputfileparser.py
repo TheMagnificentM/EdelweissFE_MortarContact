@@ -415,6 +415,7 @@ from edelweissfe.constraints.penaltyindirectcontrol import inputLanguage  # noqa
 from edelweissfe.constraints.rigidbody import inputLanguage  # noqa: F811,E402
 from edelweissfe.constraints.directionalspringpenalty import inputLanguage  # noqa: F811,E402
 from edelweissfe.constraints.nodetorigidsurfacepenalty import inputLanguage  # noqa: F811,E402
+from edelweissfe.constraints.mortarcontact3d import inputLanguage  # noqa: F811,E402
 
 # isort: on
 

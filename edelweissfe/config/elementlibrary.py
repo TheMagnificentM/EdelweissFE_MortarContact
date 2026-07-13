@@ -46,6 +46,7 @@ from edelweissfe.elements.displacementelement.element import (  # noqa: F401
 from edelweissfe.elements.displacementtlelement.element import (  # noqa: F401
     DisplacementTLElement,
 )
+from edelweissfe.elements.contactelement.element import ContactElement  # noqa: F401
 from edelweissfe.elements.library import elLibrary
 from edelweissfe.utils.misc import strCaseCmp
 
