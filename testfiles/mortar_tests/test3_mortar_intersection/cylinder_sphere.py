@@ -27,15 +27,29 @@ def test_curved_cylinder_sphere_projection():
     # Master element: represent a patch of a sphere (radius 1.0) coming from the outside (X > 2.0)
     # let's position the sphere center at [3.1, 0.1, 0.0] and generate a patch facing the cylinder.
     # The master nodes on the sphere surface:
+    # The master nodes on the sphere surface:
+    # A sphere of radius r_sphere centered at c_sphere.
+    # Spherical coordinates equation:
+    # x = c_x + r * sin(theta) * cos(phi)
+    # y = c_y + r * sin(theta) * sin(phi)
+    # z = c_z + r * cos(theta)
+    # Let's generate a patch facing the cylinder (facing -X direction: phi = pi)
     r_sphere = 1.0
     c_sphere = np.array([2.9, 0.1, 0.0])
-    # The nodes are on the sphere surface facing -X direction:
-    master_nodes_3d = np.array([
-        c_sphere + np.array([-r_sphere * np.cos(0.3), -0.3, -r_sphere * np.sin(0.3)]),
-        c_sphere + np.array([-r_sphere * np.cos(0.3),  0.3, -r_sphere * np.sin(0.3)]),
-        c_sphere + np.array([-r_sphere * np.cos(0.3),  0.3,  r_sphere * np.sin(0.3)]),
-        c_sphere + np.array([-r_sphere * np.cos(0.3), -0.3,  r_sphere * np.sin(0.3)])
-    ])
+    
+    # We choose four points around theta = pi/2, phi = pi
+    d_theta = 0.25
+    d_phi = 0.25
+    master_nodes_3d = []
+    for t_val, p_val in [(np.pi/2 - d_theta, np.pi - d_phi),
+                          (np.pi/2 + d_theta, np.pi - d_phi),
+                          (np.pi/2 + d_theta, np.pi + d_phi),
+                          (np.pi/2 - d_theta, np.pi + d_phi)]:
+        x = c_sphere[0] + r_sphere * np.sin(t_val) * np.cos(p_val)
+        y = c_sphere[1] + r_sphere * np.sin(t_val) * np.sin(p_val)
+        z = c_sphere[2] + r_sphere * np.cos(t_val)
+        master_nodes_3d.append([x, y, z])
+    master_nodes_3d = np.array(master_nodes_3d)
     
     # 1. Define the auxiliary plane based on the slave element's centroid and area-weighted normal
     p0 = np.mean(slave_nodes_3d, axis=0)
