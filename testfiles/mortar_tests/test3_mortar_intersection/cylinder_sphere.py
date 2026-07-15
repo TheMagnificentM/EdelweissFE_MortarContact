@@ -228,6 +228,9 @@ def test_curved_cylinder_sphere_projection():
         f.write("\nMaster (Sphere Patch - Tilted/Skewed) Corner Coordinates:\n")
         for idx, pt in enumerate(master_nodes_3d):
             f.write(f"  Node M{idx+1}: [{pt[0]:.6f}, {pt[1]:.6f}, {pt[2]:.6f}]\n")
+        f.write("\nProjected Master Corner Coordinates (Auxiliary Plane):\n")
+        for idx, pt in enumerate(projected_master):
+            f.write(f"  Node PM{idx+1}: [{pt[0]:.6f}, {pt[1]:.6f}, {pt[2]:.6f}]\n")
 
     # Plot intersection result
     if len(clip_result_3d) > 0:

@@ -1,0 +1,23 @@
+================ CURVED INTERSECTION COORDINATES ================
+Slave (Cylinder Patch) Corner Coordinates:
+  Node S1: [1.937825, -0.500000, -0.494808]
+  Node S2: [1.937825, -0.500000, 0.494808]
+  Node S3: [1.937825, 0.500000, 0.494808]
+  Node S4: [1.937825, 0.500000, -0.494808]
+
+Master (Sphere Patch - Tilted/Skewed) Corner Coordinates:
+  Node M1: [1.955391, 0.842764, 0.295520]
+  Node M2: [2.002583, 1.027583, -0.295520]
+  Node M3: [1.979352, 0.363937, -0.198669]
+  Node M4: [1.930939, 0.553541, 0.198669]
+
+Projected Master Corner Coordinates (Auxiliary Plane):
+  Node PM1: [1.937825, 0.842764, 0.295520]
+  Node PM2: [1.937825, 1.027583, -0.295520]
+  Node PM3: [1.937825, 0.363937, -0.198669]
+  Node PM4: [1.937825, 0.553541, 0.198669]
+
+Clipped Intersection Polygon Corner Coordinates (Auxiliary Plane):
+  Intersection Node Int1: [1.937825, 0.500000, -0.218526]
+  Intersection Node Int2: [1.937825, 0.363937, -0.198669]
+  Intersection Node Int3: [1.937825, 0.500000, 0.086468]
