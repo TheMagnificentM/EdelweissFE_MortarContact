@@ -133,5 +133,45 @@ def test_curved_cylinder_sphere_projection():
     plt.savefig(output_image)
     print(f"Saved cylinder-sphere intersection plot to: {output_image}")
 
+    # Generate SECOND OVERVIEW PLOT showing the full 3D solid geometries
+    fig2 = plt.figure(figsize=(12, 10))
+    ax2 = fig2.add_subplot(111, projection='3d')
+
+    # Full Cylinder (longer length and wider angular sweep)
+    theta_cyl_full = np.linspace(-np.pi, np.pi, 50)
+    y_cyl_full = np.linspace(-2.0, 2.0, 30)
+    Theta_cyl_full, Y_cyl_full = np.meshgrid(theta_cyl_full, y_cyl_full)
+    X_cyl_full = R * np.cos(Theta_cyl_full)
+    Z_cyl_full = R * np.sin(Theta_cyl_full)
+    ax2.plot_surface(X_cyl_full, Y_cyl_full, Z_cyl_full, color='blue', alpha=0.3, edgecolor='none')
+
+    # Full Sphere centered at c_sphere
+    u_sph_full = np.linspace(0, 2 * np.pi, 50)
+    v_sph_full = np.linspace(0, np.pi, 30)
+    U_sph_full, V_sph_full = np.meshgrid(u_sph_full, v_sph_full)
+    X_sph_full = c_sphere[0] + r_sphere * np.sin(V_sph_full) * np.cos(U_sph_full)
+    Y_sph_full = c_sphere[1] + r_sphere * np.sin(V_sph_full) * np.sin(U_sph_full)
+    Z_sph_full = c_sphere[2] + r_sphere * np.cos(V_sph_full)
+    ax2.plot_surface(X_sph_full, Y_sph_full, Z_sph_full, color='red', alpha=0.4, edgecolor='none')
+
+    # Draw contact patches on top
+    ax2.plot(slave_poly[:, 0], slave_poly[:, 1], slave_poly[:, 2], 'blue', linewidth=3, label='Slave Contact Patch')
+    ax2.plot(master_poly[:, 0], master_poly[:, 1], master_poly[:, 2], 'red', linewidth=3, label='Master Contact Patch')
+
+    ax2.set_xlabel('X')
+    ax2.set_ylabel('Y')
+    ax2.set_zlabel('Z')
+    ax2.set_title('Full Body Contact Overview: Cylinder and Sphere Intersection')
+    ax2.legend()
+    
+    # Set limits for overview
+    ax2.set_xlim([0, 5])
+    ax2.set_ylim([-2.5, 2.5])
+    ax2.set_zlim([-2.5, 2.5])
+
+    output_overview = os.path.join(output_dir, 'cylinder_sphere_overview.png')
+    plt.savefig(output_overview)
+    print(f"Saved cylinder-sphere overview plot to: {output_overview}")
+
 if __name__ == '__main__':
     test_curved_cylinder_sphere_projection()
