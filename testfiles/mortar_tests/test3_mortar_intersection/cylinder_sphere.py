@@ -34,24 +34,34 @@ def test_curved_cylinder_sphere_projection():
     # y = c_y + r * sin(theta) * sin(phi)
     # z = c_z + r * cos(theta)
     # Let's generate a patch facing the cylinder (facing -X direction: phi = pi)
-    # We shift c_sphere by +0.6 in the Y direction so that the master facet
-    # only partially overlaps (about 1/3) with the slave cylinder patch.
+    # We shift c_sphere by +0.6 in the Y direction and tilt/rotate it around Z axis
+    # to make the master element skewed and non-aligned in 3D space.
     r_sphere = 1.0
     c_sphere = np.array([2.9, 0.7, 0.0])
     
-    # We choose four points around theta = pi/2, phi = pi
+    # We choose four points around theta = pi/2, phi = pi, and tilt the patch by adding/subtracting skew offsets
     d_theta = 0.25
     d_phi = 0.25
     master_nodes_3d = []
-    for t_val, p_val in [(np.pi/2 - d_theta, np.pi - d_phi),
-                          (np.pi/2 + d_theta, np.pi - d_phi),
-                          (np.pi/2 + d_theta, np.pi + d_phi),
-                          (np.pi/2 - d_theta, np.pi + d_phi)]:
+    # Adding theta/phi tilting variations to skew it
+    for t_val, p_val in [(np.pi/2 - d_theta - 0.05, np.pi - d_phi + 0.1),
+                          (np.pi/2 + d_theta + 0.05, np.pi - d_phi - 0.1),
+                          (np.pi/2 + d_theta - 0.05, np.pi + d_phi + 0.1),
+                          (np.pi/2 - d_theta + 0.05, np.pi + d_phi - 0.1)]:
         x = c_sphere[0] + r_sphere * np.sin(t_val) * np.cos(p_val)
         y = c_sphere[1] + r_sphere * np.sin(t_val) * np.sin(p_val)
         z = c_sphere[2] + r_sphere * np.cos(t_val)
         master_nodes_3d.append([x, y, z])
     master_nodes_3d = np.array(master_nodes_3d)
+    
+    # Print the coordinates of both elements for user inspection
+    print("\n================ CURVED INTERSECTION COORDINATES ================")
+    print("Slave (Cylinder Patch) Corner Coordinates:")
+    for idx, pt in enumerate(slave_nodes_3d):
+        print(f"  Node {idx+1}: [{pt[0]:.6f}, {pt[1]:.6f}, {pt[2]:.6f}]")
+    print("\nMaster (Sphere Patch - Tilted/Skewed) Corner Coordinates:")
+    for idx, pt in enumerate(master_nodes_3d):
+        print(f"  Node {idx+1}: [{pt[0]:.6f}, {pt[1]:.6f}, {pt[2]:.6f}]")
     
     # 1. Define the auxiliary plane based on the slave element's centroid and area-weighted normal
     p0 = np.mean(slave_nodes_3d, axis=0)
@@ -188,6 +198,50 @@ def test_curved_cylinder_sphere_projection():
     output_overview = os.path.join(output_dir, 'cylinder_sphere_overview.png')
     plt.savefig(output_overview)
     print(f"Saved cylinder-sphere overview plot to: {output_overview}")
+
+    # Generate THIRD CLOSE-UP PLOT showing only the two contact patch facets and their intersection
+    fig3 = plt.figure(figsize=(10, 8))
+    ax3 = fig3.add_subplot(111, projection='3d')
+
+    # Plot Slave element (Cylinder patch)
+    ax3.plot(slave_poly[:, 0], slave_poly[:, 1], slave_poly[:, 2], 'blue', label='Slave Facet (Cylinder Patch)', linewidth=2.5)
+    
+    # Plot Master element (Sphere patch)
+    ax3.plot(master_poly[:, 0], master_poly[:, 1], master_poly[:, 2], 'red', label='Master Facet (Sphere Patch)', linewidth=2.5)
+    
+    # Plot projected Master element
+    ax3.plot(proj_master_poly[:, 0], proj_master_poly[:, 1], proj_master_poly[:, 2], 'purple', linestyle=':', label='Projected Master (Plane)', alpha=0.8)
+    
+    # Plot intersection result
+    if len(clip_result_3d) > 0:
+        ax3.plot(clip_poly[:, 0], clip_poly[:, 1], clip_poly[:, 2], 'green', label='Intersection Polygon', linewidth=3)
+        ax3.scatter(clip_result_3d[:, 0], clip_result_3d[:, 1], clip_result_3d[:, 2], color='green', s=50)
+        
+        # Plot triangulation sub-cells
+        for tri in triangles_2d:
+            tri_3d = to_3d_coords(tri, p0, t1, t2)
+            tri_poly = np.vstack([tri_3d, tri_3d[0]])
+            ax3.plot(tri_poly[:, 0], tri_poly[:, 1], tri_poly[:, 2], 'orange', linestyle='--', alpha=0.8)
+            
+        print("\nClipped Intersection Polygon Corner Coordinates (Auxiliary Plane):")
+        for idx, pt in enumerate(clip_result_3d):
+            print(f"  Intersection Node {idx+1}: [{pt[0]:.6f}, {pt[1]:.6f}, {pt[2]:.6f}]")
+
+    ax3.set_xlabel('X')
+    ax3.set_ylabel('Y')
+    ax3.set_zlabel('Z')
+    ax3.set_title('Close-Up: Master & Slave Facets and Intersection')
+    ax3.legend()
+
+    # Equal scaling boundaries focused only on elements coordinates
+    max_range = np.array([all_nodes[:,0].max()-all_nodes[:,0].min(), all_nodes[:,1].max()-all_nodes[:,1].min(), all_nodes[:,2].max()-all_nodes[:,2].min()]).max() / 2.0
+    ax3.set_xlim(mid_x - max_range, mid_x + max_range)
+    ax3.set_ylim(mid_y - max_range, mid_y + max_range)
+    ax3.set_zlim(mid_z - max_range, mid_z + max_range)
+
+    output_closeup = os.path.join(output_dir, 'cylinder_sphere_closeup.png')
+    plt.savefig(output_closeup)
+    print(f"Saved cylinder-sphere close-up plot to: {output_closeup}")
 
 if __name__ == '__main__':
     test_curved_cylinder_sphere_projection()
