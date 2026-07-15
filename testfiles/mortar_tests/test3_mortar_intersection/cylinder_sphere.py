@@ -205,17 +205,36 @@ def test_curved_cylinder_sphere_projection():
 
     # Plot Slave element (Cylinder patch)
     ax3.plot(slave_poly[:, 0], slave_poly[:, 1], slave_poly[:, 2], 'blue', label='Slave Facet (Cylinder Patch)', linewidth=2.5)
+    for idx, pt in enumerate(slave_nodes_3d):
+        ax3.text(pt[0], pt[1], pt[2], f"S{idx+1}", color='blue', fontsize=12, fontweight='bold')
     
     # Plot Master element (Sphere patch)
     ax3.plot(master_poly[:, 0], master_poly[:, 1], master_poly[:, 2], 'red', label='Master Facet (Sphere Patch)', linewidth=2.5)
+    for idx, pt in enumerate(master_nodes_3d):
+        ax3.text(pt[0], pt[1], pt[2], f"M{idx+1}", color='red', fontsize=12, fontweight='bold')
     
     # Plot projected Master element
     ax3.plot(proj_master_poly[:, 0], proj_master_poly[:, 1], proj_master_poly[:, 2], 'purple', linestyle=':', label='Projected Master (Plane)', alpha=0.8)
+    for idx, pt in enumerate(projected_master):
+        ax3.text(pt[0], pt[1], pt[2], f"PM{idx+1}", color='purple', fontsize=10)
     
+    # Write coordinates to text file
+    txt_output_path = os.path.join(output_dir, 'curved_intersection_coordinates.txt')
+    with open(txt_output_path, 'w') as f:
+        f.write("================ CURVED INTERSECTION COORDINATES ================\n")
+        f.write("Slave (Cylinder Patch) Corner Coordinates:\n")
+        for idx, pt in enumerate(slave_nodes_3d):
+            f.write(f"  Node S{idx+1}: [{pt[0]:.6f}, {pt[1]:.6f}, {pt[2]:.6f}]\n")
+        f.write("\nMaster (Sphere Patch - Tilted/Skewed) Corner Coordinates:\n")
+        for idx, pt in enumerate(master_nodes_3d):
+            f.write(f"  Node M{idx+1}: [{pt[0]:.6f}, {pt[1]:.6f}, {pt[2]:.6f}]\n")
+
     # Plot intersection result
     if len(clip_result_3d) > 0:
         ax3.plot(clip_poly[:, 0], clip_poly[:, 1], clip_poly[:, 2], 'green', label='Intersection Polygon', linewidth=3)
         ax3.scatter(clip_result_3d[:, 0], clip_result_3d[:, 1], clip_result_3d[:, 2], color='green', s=50)
+        for idx, pt in enumerate(clip_result_3d):
+            ax3.text(pt[0], pt[1], pt[2], f"Int{idx+1}", color='green', fontsize=11, fontweight='bold')
         
         # Plot triangulation sub-cells
         for tri in triangles_2d:
@@ -224,8 +243,11 @@ def test_curved_cylinder_sphere_projection():
             ax3.plot(tri_poly[:, 0], tri_poly[:, 1], tri_poly[:, 2], 'orange', linestyle='--', alpha=0.8)
             
         print("\nClipped Intersection Polygon Corner Coordinates (Auxiliary Plane):")
-        for idx, pt in enumerate(clip_result_3d):
-            print(f"  Intersection Node {idx+1}: [{pt[0]:.6f}, {pt[1]:.6f}, {pt[2]:.6f}]")
+        with open(txt_output_path, 'a') as f:
+            f.write("\nClipped Intersection Polygon Corner Coordinates (Auxiliary Plane):\n")
+            for idx, pt in enumerate(clip_result_3d):
+                print(f"  Intersection Node {idx+1}: [{pt[0]:.6f}, {pt[1]:.6f}, {pt[2]:.6f}]")
+                f.write(f"  Intersection Node Int{idx+1}: [{pt[0]:.6f}, {pt[1]:.6f}, {pt[2]:.6f}]\n")
 
     ax3.set_xlabel('X')
     ax3.set_ylabel('Y')
@@ -242,6 +264,7 @@ def test_curved_cylinder_sphere_projection():
     output_closeup = os.path.join(output_dir, 'cylinder_sphere_closeup.png')
     plt.savefig(output_closeup)
     print(f"Saved cylinder-sphere close-up plot to: {output_closeup}")
+    print(f"Saved intersection coordinates to: {txt_output_path}")
 
 if __name__ == '__main__':
     test_curved_cylinder_sphere_projection()
