@@ -34,8 +34,10 @@ def test_curved_cylinder_sphere_projection():
     # y = c_y + r * sin(theta) * sin(phi)
     # z = c_z + r * cos(theta)
     # Let's generate a patch facing the cylinder (facing -X direction: phi = pi)
+    # We shift c_sphere by +0.6 in the Y direction so that the master facet
+    # only partially overlaps (about 1/3) with the slave cylinder patch.
     r_sphere = 1.0
-    c_sphere = np.array([2.9, 0.1, 0.0])
+    c_sphere = np.array([2.9, 0.7, 0.0])
     
     # We choose four points around theta = pi/2, phi = pi
     d_theta = 0.25
