@@ -1,0 +1,100 @@
+*include, input=ebt_6cm_nocontact_versuchsreihe1.inp
+
+*material, name=linearelastic, id=steel
+210000, 0.3
+
+*material, name=GCDP, id=concrete
+**E         nu      fcy         fcu         fbu         ftu        Df          Ah
+41069.0,    0.18,   18.93,      56.8,       64.93,      4.42,     0.85,       0.08,
+**Bh        Ch      Dh          As        softmod     l          m           omegaMax 
+0.003,      2.0,    1e-6,       15,        0.0031,   2.5,       1.0,          0.999,        
+**derivativeMethods dTThresholdElasticStiffness 
+0,                  0,            
+
+
+*job, name=myJob, domain=3d
+*solver, solver=NISTParallel, name=theSolver
+
+*section, name=sec_concrete, material=concrete, type=solid
+concrete
+
+*section, name=sec_steel_supp, material=steel, type=solid
+steel_supp
+
+** create output data to open with paraview
+
+*fieldOutput
+create=perNode, elSet=all,  name=displacement,  field=displacement, result=U
+create=perNode, elSet=all,  name=P,  field=displacement, result=P
+
+create=perElement, name=stress, elSet=concrete, result=stress, quadraturePoint=0:8, f(x)='np.mean(x,axis=1)'
+create=perElement, name=strain, elSet=concrete, result=strain, quadraturePoint=0:8, f(x)='np.mean(x,axis=1)'
+create=perElement, name=alphaP, elSet=concrete, result=alphaP, quadraturePoint=0:8, f(x)='np.mean(x[:,:],axis=1)'
+create=perElement, name=I1p,    elSet=concrete, result=I1p,    quadraturePoint=0:8, f(x)='np.mean(x[:,:],axis=1)'
+create=perElement, name=damage, elSet=concrete, result=omega, quadraturePoint=0:8, f(x)='np.mean(x[:,:],axis=1)'
+
+create=perNode, name=disp, nSet=load, field=displacement, result=U, f(x)='np.mean(x[:,1], axis=0)', saveHistory=True, export=disp
+create=perNode, name=force, nSet=load, field=displacement, result=P, f(x)='-np.sum(x[:,1], axis=0)*20', saveHistory=True, export=force
+
+** create=perNode, name=disp_bc_left, nSet=bc_left, field=displacement, result=U, f(x)='np.mean(x[:,1], axis=0)', saveHistory=True, export=disp_bc_left
+** creta=perNode, name=force_bc_left, nSet=bc_left, field=displacement, result=P, f(x)='-np.sum(x[:,1], axis=0)*20', saveHistory=True, export=force_bc_left
+
+*output, type=ensight, name=ensight_output
+create=perNode,     fieldOutput=displacement
+create=perNode,     fieldOutput=P
+create=perElement,  fieldOutput=strain
+create=perElement,  fieldOutput=stress
+create=perElement,  fieldOutput=I1p
+create=perElement,  fieldOutput=alphaP
+create=perElement,  fieldOutput=damage
+configuration, overwrite=yes
+
+*output, type=monitor, name=myNodeSetMonitor
+fieldOutput=disp
+fieldOutput=force
+
+*constraint, type=directionalspringpenalty, name=elasticBeddingLeft
+nSet=bc_left
+field=displacement
+component=1
+penalty=400
+
+*constraint, type=directionalspringpenalty, name=elasticBeddingRight
+nSet=bc_right
+field=displacement
+component=1
+penalty=400
+
+*constraint, type=nodetorigidsurfacepenalty, name=x_constraintLeft
+nSet=contactSteel_shaftLeft
+field=displacement
+component=0
+penalty=1e8
+value=0.0
+direction=1
+type=quadratic
+
+*constraint, type=nodetorigidsurfacepenalty, name=x_constraintRight
+nSet=contactSteel_shaftRight
+field=displacement
+component=0
+penalty=1e8
+value=0.0
+direction=-1
+type=quadratic
+
+** set step size between 1 and 1e-9, 1000 iterations, 25 max iterations and step length 1
+*step, solver=theSolver, maxInc=1e-2, minInc=1e-7, maxNumInc=10000, maxIter=25, stepLength=1
+options, category=NISTSolver, extrapolation=linear
+dirichlet, name=x_fix, nSet=x_fix, field=displacement, 1=0.0
+** dirichlet, name=BC_left,  nSet=bc_left, field=displacement, 2=0.0
+** dirichlet, name=BC_right,  nSet=bc_right, field=displacement, 2=0.0
+dirichlet, name=z_symm, nSet=z_symm, field=displacement, 3=0.0
+dirichlet, name=disp,  nSet=load, field=displacement, 2=1.1
+
+
+*output, type=meshPlot,
+figure=1, axSpec=111, create=xyData, x=disp, y=force
+
+*exportPlots
+figure=1, fileName=force_disp

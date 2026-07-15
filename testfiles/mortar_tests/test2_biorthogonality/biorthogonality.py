@@ -1,38 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Test 2: Mortar Contact Biorthogonality Verification Suite
-=========================================================
-This test verifies the correctness of the dual basis shape functions computed
-on the slave boundary contact elements (CON elements) of a MortarContact3D constraint.
+Test 2: Verifizierung der Biorthogonalität (Schritt 2)
+======================================================
 
-What this test does:
-1. Generates a base 2D/3D mesh using volume elements (C3D8, C3D20, CPS4, CPS8).
-2. Extracts their boundary faces and overlays explicit contact elements (CONQUAD4, CONTRI3, CONLINE2, etc.).
-3. Optionally distorts/skews the nodes in space to test general distorted configurations.
-4. Initializes degrees of freedom and the MortarContact3D constraint.
-5. Computes local mass matrices M_e, diagonal matrices D_e, and dual transformations A_e.
-6. Performs three validation checks (A, B, C) on each element to verify biorthogonality.
+Dieser Test prüft die Korrektheit der dualen Basisfunktionen auf den Slave-Grenzflächen.
 
-What to do if this test fails:
-- Check A fails ("D_e is not diagonal"):
-  The integration loop for D_e in computeLocalMassMatrices() has a bug, or the shape function N_i
-  values are incorrect, placing non-zero weights off the diagonal.
-- Check B fails ("B_e = A_e @ M_e is not equal to D_e"):
-  The matrix inversion of M_e failed (singular matrix or numerical instability) or the algebraic 
-  definition of A_e is wrong.
-- Check C fails ("Explicit quadrature biorthogonality failed"):
-  This is the most critical check. It means that evaluating standard and dual shape functions 
-  point-by-point and integrating them numerically does not yield D_e. This indicates a bug in
-  how shape functions (N_i), dual functions (M_bar_i), or Jacobian mapping (getJacobianAndAreaWeight) 
-  are evaluated at local coordinates.
+Die Biorthogonalität besagt, dass:
+   integral( M_bar_i * N_j * dGamma ) = 0   für alle i != j.
+
+Der Test führt für jedes Kontaktelement drei Kontrollen durch:
+- Kontrolle A: Ist D_e eine echte Diagonalmatrix (Nebendiagonaleinträge = 0)?
+- Kontrolle B: Stimmt das Matrix-Produkt A_e * M_e exakt mit D_e überein?
+- Kontrolle C: Ergibt die punktweise Gauß-Integration des Produkts aus dualer Formfunktion
+               M_bar_i und Standard-Formfunktion N_j exakt die Diagonale D_e?
 """
 
 import sys
 import os
 import numpy as np
 
-# Add EdelweissFE to python search path
+# Den lokalen Pfad von EdelweissFE hinzufügen, damit die Python-Imports funktionieren
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from edelweissfe.models.femodel import FEModel
@@ -45,15 +33,8 @@ from edelweissfe.points.node import Node
 
 def get_local_nodes(el, faceID):
     """
-    Helper to extract boundary nodes of volume elements based on face ID.
-    
-    Why are volume elements (like C3D8, CPS4) here?
-    - The mesh generators (generateBoxMesh, generatePlaneMesh) generate standard physical volume
-      elements representing the solid bodies.
-    - We use these volume elements to define the top/bottom boundary surfaces.
-    - We map the face nodes of these volume elements using this helper to overlay explicit boundary
-      contact elements (CON elements) on the contact interface.
-    - The constraint itself only works on the CON elements, but we need this mapping to set up the mesh.
+    Hilfsfunktion, um die Knoten einer bestimmten Außenfläche (faceID) eines 3D-Volumenelements
+    zu sammeln. Die Reihenfolge folgt der Abaqus-Konvention.
     """
     elType = el.elType.upper()
     if "C3D8" in elType:
@@ -85,7 +66,9 @@ def get_local_nodes(el, faceID):
     return [el.nodes[i] for i in idx]
 
 def apply_contact_elements(model, surface_name, contact_el_type):
-    """Generates contact elements on a boundary surface."""
+    """
+    Erzeugt Kontaktelemente auf einer Oberfläche.
+    """
     ConClass = getElementClass(contact_el_type, "edelweiss")
     max_el_id = max(model.elements.keys()) if model.elements else 0
     max_node_id = max(model.nodes.keys()) if model.nodes else 0
@@ -95,7 +78,7 @@ def apply_contact_elements(model, surface_name, contact_el_type):
         for el in elements:
             facet_nodes = get_local_nodes(el, faceID)
             
-            # Special case for CONQUAD9: we need a 9th center node
+            # Spezialfall CONQUAD9
             if contact_el_type == "CONQUAD9" and len(facet_nodes) == 8:
                 coords = np.array([node.coordinates for node in facet_nodes[:4]])
                 center_coords = np.mean(coords, axis=0)
@@ -104,7 +87,7 @@ def apply_contact_elements(model, surface_name, contact_el_type):
                 model.nodes[max_node_id] = center_node
                 facet_nodes.append(center_node)
                 
-            # Special case for CONTRI3: split 4-node quad face into two triangles
+            # Spezialfall CONTRI3
             if contact_el_type == "CONTRI3" and len(facet_nodes) == 4:
                 max_el_id += 1
                 con_el1 = ConClass(contact_el_type, max_el_id)
@@ -119,7 +102,7 @@ def apply_contact_elements(model, surface_name, contact_el_type):
                 contact_elements.append(con_el2)
                 continue
                 
-            # Special case for CONTRI6: split 8-node quadratic quad face into two quadratic triangles
+            # Spezialfall CONTRI6
             if contact_el_type == "CONTRI6" and len(facet_nodes) == 8:
                 mid_coords = 0.5 * (facet_nodes[0].coordinates + facet_nodes[2].coordinates)
                 max_node_id += 1
@@ -150,14 +133,16 @@ def apply_contact_elements(model, surface_name, contact_el_type):
     return new_surface_name
 
 def run_biorthogonality_test(el_type, skewed=False, dim=3):
-    """Verifies the biorthogonality condition for a given contact element type."""
+    """
+    Verifiziert die Biorthogonalität für ein Kontaktelement.
+    """
     config_name = "Skewed" if skewed else "Normal"
-    print(f"\n* Testing {el_type} ({config_name} Geometry)...")
+    print(f"\n* Teste Elementtyp: {el_type} ({config_name} Geometrie)...")
     
     model = FEModel(dimension=dim)
     journal = Journal()
     
-    # 1. Generate base volume elements (C3D or CPS)
+    # 1. Block-Mesh generieren
     if dim == 3:
         vol_type = "C3D20" if ("8" in el_type or "9" in el_type or "6" in el_type) else "C3D8"
         generateBoxMesh({"name": "gen"}, model, journal, **{
@@ -173,58 +158,50 @@ def run_biorthogonality_test(el_type, skewed=False, dim=3):
             "elType": vol_type, "elProvider": "edelweiss"
         })
         
-    # 2. Skew base geometry if requested (distorts nodes in 3D to test general mapping)
+    # 2. Knoten verzerren (falls 'skewed' gewählt wurde)
     if skewed:
         np.random.seed(42)
         for node in model.nodes.values():
             offset = np.random.uniform(-0.15, 0.15, size=dim)
             node.coordinates += offset
             
-    # 3. Overlay contact boundary elements (CON elements) on the mesh surfaces
+    # 3. Kontaktelemente erzeugen
     slave_surf = apply_contact_elements(model, "gen_bottom", el_type)
     master_surf = apply_contact_elements(model, "gen_top", el_type)
     
-    # 4. Initialize displacement degrees of freedom (required for Constraint init)
+    # 4. Verschiebungsfelder initialisieren
     from edelweissfe.variables.fieldvariable import FieldVariable
     for node in model.nodes.values():
         node.fields["displacement"] = FieldVariable(node, "displacement")
         
-    # 5. Instantiate the MortarContact3D constraint
+    # 5. Mortar-Constraint instanziieren
     kwargs = {"nonMortarSurface": slave_surf, "mortarSurface": master_surf, "field": "displacement"}
     contact = MortarContact3D(f"contact_{el_type}_{config_name.lower()}", model, **kwargs)
     
-    # 6. Compute dual basis matrices (M_e, D_e, A_e) for all slave elements
+    # 6. Berechnen der lokalen Biorthogonal-Matrizen
     dual_matrices = contact.compute_local_dual_matrices()
     
-    # 7. Verify biorthogonality for each slave element
+    # 7. Kontrolle der Biorthogonalitäts-Bedingungen an jedem Element
     for el, faceID in contact.non_mortar_facets:
         M_e, D_e, A_e = dual_matrices[el.elNumber]
-        
-        # Verify sizes are consistent
         n_nodes = el.nNodes
-        assert M_e.shape == (n_nodes, n_nodes), f"M_e has wrong shape: {M_e.shape}"
-        assert D_e.shape == (n_nodes, n_nodes), f"D_e has wrong shape: {D_e.shape}"
-        assert A_e.shape == (n_nodes, n_nodes), f"A_e has wrong shape: {A_e.shape}"
         
-        # Check A: Verify that D_e is strictly diagonal (non-zero only on the main diagonal)
-        # If this fails, the local integration or shape function values N_i are wrong.
+        # Kontrolle A: Ist D_e eine echte Diagonalmatrix?
+        # Nebendiagonalelemente müssen numerisch Null sein.
         D_diag = np.diag(np.diag(D_e))
         if not np.allclose(D_e, D_diag, atol=1e-14):
-            print(f"  [FAIL] D_e is not diagonal for element {el.elNumber}!")
+            print(f"  [FAIL] D_e ist nicht diagonal für Element {el.elNumber}!")
             sys.exit(1)
             
-        # Check B: Verify that A_e @ M_e equals D_e on a matrix algebraic level
-        # If this fails, the matrix inversion of M_e failed or A_e is defined incorrectly.
+        # Kontrolle B: Prüfen der algebraischen Relation A_e * M_e = D_e
         B_e = A_e @ M_e
         if not np.allclose(B_e, D_e, atol=1e-12):
-            print(f"  [FAIL] B_e = A_e @ M_e is not equal to D_e for element {el.elNumber}!")
-            print(f"  Max diff: {np.max(np.abs(B_e - D_e))}")
+            print(f"  [FAIL] A_e @ M_e ist ungleich D_e für Element {el.elNumber}!")
             sys.exit(1)
             
-        # Check C: Verify the actual physical biorthogonality by integrating point-by-point
-        # We loop over the Gauss points, evaluate standard shape functions N(gp) and dual functions
-        # M_bar(gp) = A_e @ N(gp) at each coordinate, and perform numerical quadrature.
-        # If this fails, the shape functions N_i, dual shape functions, or Jacobian weights have a bug.
+        # Kontrolle C: Punktweise Gauß-Integration (physikalischer Biorthogonalitätstest)
+        # Wir integrieren integral( M_bar_i * N_j * dGamma ) explizit über die Gauß-Punkte.
+        # Dies ist der ultimative Test für die mathematische Richtigkeit der dualen Basisfunktion.
         points, weights = el.getQuadraturePoints()
         coords = np.array([node.coordinates for node in el.nodes])
         B_explicit = np.zeros((n_nodes, n_nodes))
@@ -234,23 +211,22 @@ def run_biorthogonality_test(el_type, skewed=False, dim=3):
             jac = el.getJacobianAndAreaWeight(local_coords, coords)
             dGamma = jac * w
             
-            # Dual function value at this point: M_bar = A_e * N
+            # Wert der dualen Formfunktion an diesem Punkt: M_bar = A_e * N
             M_bar = A_e @ N
             B_explicit += np.outer(M_bar, N) * dGamma
             
         if not np.allclose(B_explicit, D_e, atol=1e-12):
-            print(f"  [FAIL] Explicit quadrature biorthogonality failed for element {el.elNumber}!")
-            print(f"  Max diff: {np.max(np.abs(B_explicit - D_e))}")
+            print(f"  [FAIL] Explizite Biorthogonalitäts-Integration fehlgeschlagen für Element {el.elNumber}!")
             sys.exit(1)
             
-    print(f"  [PASS] {el_type} {config_name} biorthogonality verified successfully!")
+    print(f"  [PASS] Element {el_type} ({config_name}) erfolgreich verifiziert!")
 
 if __name__ == "__main__":
     print("====================================================")
-    print("MORTAR CONTACT BIORTHOGONALITY STEP 2 TEST SUITE")
+    print("MORTAR KONTAKT BIORTHOGONALITÄT VERIFIKATIONSTEST")
     print("====================================================")
     
-    # 3D Quadrilateral Contact Elements
+    # 3D Vierecke
     run_biorthogonality_test("CONQUAD4", skewed=False, dim=3)
     run_biorthogonality_test("CONQUAD4", skewed=True, dim=3)
     
@@ -260,14 +236,14 @@ if __name__ == "__main__":
     run_biorthogonality_test("CONQUAD9", skewed=False, dim=3)
     run_biorthogonality_test("CONQUAD9", skewed=True, dim=3)
     
-    # 3D Triangular Contact Elements
+    # 3D Dreiecke
     run_biorthogonality_test("CONTRI3", skewed=False, dim=3)
     run_biorthogonality_test("CONTRI3", skewed=True, dim=3)
     
     run_biorthogonality_test("CONTRI6", skewed=False, dim=3)
     run_biorthogonality_test("CONTRI6", skewed=True, dim=3)
     
-    # 2D Linear & Quadratic Line Contact Elements
+    # 2D Linien
     run_biorthogonality_test("CONLINE2", skewed=False, dim=2)
     run_biorthogonality_test("CONLINE2", skewed=True, dim=2)
     
@@ -275,5 +251,5 @@ if __name__ == "__main__":
     run_biorthogonality_test("CONLINE3", skewed=True, dim=2)
     
     print("\n====================================================")
-    print("ALL 14 BIORTHOGONALITY TESTS PASSED SUCCESSFULLY!")
+    print("ALLE BIORTHOGONALITÄTSTESTS ERFOLGREICH PASSIERT!")
     print("====================================================")

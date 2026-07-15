@@ -1,31 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Test 1: Mortar Contact Normals Verification Suite
-==================================================
-This test verifies the correctness of computed node normal vectors on the slave
-(non-mortar) surface of a MortarContact3D constraint.
+Test 1: Verifizierung der Knotennormalen
+========================================
 
-What this test does:
-1. Generates a 2D or 3D block mesh of standard volume elements (C3D8, C3D20, CPS4, CPS8).
-2. Extracts their boundary faces and overlays explicit contact elements (CONQUAD4, CONTRI3, CONLINE2, etc.).
-3. Skews the nodes randomly to test general distorted configurations.
-4. Computes area-weighted knot normals on the slave surface.
-5. Verifies that all normals are unit vectors and properly oriented (perpendicular to surface).
+Dieser Test prüft die geometrische Korrektheit der Knotennormalen auf der Slave-Fläche.
 
-What to do if this test fails:
-- "Node normal is not normalized": The normalization division in compute_normals() has a bug.
-- "Flat orientation verify failed": The normals in a flat configuration are not pointing in the 
-  correct direction (-Y). This indicates an ordering/orientation or cross-product sign error.
-- "Orthogonality verify failed for skewed geometry": The computed knot normal is not orthogonal
-  to the adjacent contact element edges. This indicates a bug in how element tangents or the cross product is computed.
+Was dieser Test schrittweise tut:
+1. Er erzeugt ein einfaches Blockgitter (2D oder 3D) mit EdelweissFE-Standardelementen.
+2. Er identifiziert die Ränder und legt die Geometrie-Kontaktelemente (CON-Elemente) darüber.
+3. Er verzerrt (skews) optional die Knotenpositionen mit Zufallswerten, um gekrümmte Oberflächen zu testen.
+4. Er initialisiert das MortarContact3D-Constraint.
+5. Er prüft, ob die berechneten Knotennormalen Einheitsvektoren sind (Länge = 1) und
+   ob sie senkrecht auf den Elementfacetten stehen.
 """
 
 import sys
 import os
 import numpy as np
 
-# Add EdelweissFE to python search path
+# Den lokalen Pfad von EdelweissFE hinzufügen, damit die Python-Imports funktionieren
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from edelweissfe.models.femodel import FEModel
@@ -38,14 +32,9 @@ from edelweissfe.points.node import Node
 
 def get_local_nodes(el, faceID):
     """
-    Helper to extract boundary nodes of volume elements based on face ID.
-    
-    Why are volume elements (like C3D8 or CPS4) here?
-    - The FE mesh generators (generateBoxMesh, generatePlaneMesh) create physical volume elements
-      representing the actual blocks.
-    - We need these volume elements to define the boundary surfaces.
-    - We then use this helper to map face nodes of these volume elements to our custom boundary 
-      contact elements (CON elements) that are overlaid on the surface.
+    Hilfsfunktion, um die Knoten einer bestimmten Außenfläche (faceID) eines 3D-Volumenelements
+    zu sammeln. Die Reihenfolge folgt der Abaqus-Konvention, was sicherstellt, 
+    dass die Normale am Ende nach außen zeigt.
     """
     elType = el.elType.upper()
     if "C3D8" in elType:
@@ -78,8 +67,9 @@ def get_local_nodes(el, faceID):
 
 def apply_contact_elements(model, surface_name, contact_el_type):
     """
-    Instantiates explicit contact boundary elements (e.g. CONQUAD4, CONTRI3) on a surface.
-    This creates the surface mesh representing the contact interface.
+    Erzeugt Kontaktelemente auf einer Oberfläche.
+    Teilt z. B. Vierecksflächen in Dreiecke auf, falls Dreieckskontakt (CONTRI3/CONTRI6) getestet wird,
+    und erstellt das Kontakt-Oberflächen-Set ("con_...").
     """
     ConClass = getElementClass(contact_el_type, "edelweiss")
     max_el_id = max(model.elements.keys()) if model.elements else 0
@@ -90,7 +80,7 @@ def apply_contact_elements(model, surface_name, contact_el_type):
         for el in elements:
             facet_nodes = get_local_nodes(el, faceID)
             
-            # Special case for CONQUAD9: we need a 9th center node
+            # Spezialfall CONQUAD9: benötigt einen zusätzlichen Mittelknoten
             if contact_el_type == "CONQUAD9" and len(facet_nodes) == 8:
                 coords = np.array([node.coordinates for node in facet_nodes[:4]])
                 center_coords = np.mean(coords, axis=0)
@@ -99,7 +89,7 @@ def apply_contact_elements(model, surface_name, contact_el_type):
                 model.nodes[max_node_id] = center_node
                 facet_nodes.append(center_node)
                 
-            # Special case for CONTRI3: split 4-node quad face into two triangles
+            # Spezialfall CONTRI3: teilt Viereck in zwei Dreiecke
             if contact_el_type == "CONTRI3" and len(facet_nodes) == 4:
                 max_el_id += 1
                 con_el1 = ConClass(contact_el_type, max_el_id)
@@ -114,7 +104,7 @@ def apply_contact_elements(model, surface_name, contact_el_type):
                 contact_elements.append(con_el2)
                 continue
                 
-            # Special case for CONTRI6: split 8-node quadratic quad face into two quadratic triangles
+            # Spezialfall CONTRI6: teilt quadratisches Viereck in zwei quadratische Dreiecke
             if contact_el_type == "CONTRI6" and len(facet_nodes) == 8:
                 mid_coords = 0.5 * (facet_nodes[0].coordinates + facet_nodes[2].coordinates)
                 max_node_id += 1
@@ -145,14 +135,16 @@ def apply_contact_elements(model, surface_name, contact_el_type):
     return new_surface_name
 
 def run_contact_test(el_type, skewed=False, dim=3):
-    """Runs verification of node normals for flat or skewed configurations."""
+    """
+    Führt den Normalen-Verifikationstest aus.
+    """
     config_name = "Skewed" if skewed else "Normal"
-    print(f"\n* Testing {el_type} ({config_name} Geometry)...")
+    print(f"\n* Teste Elementtyp: {el_type} ({config_name} Geometrie)...")
     
     model = FEModel(dimension=dim)
     journal = Journal()
     
-    # 1. Generate base volume elements (CPS/C3D)
+    # 1. Block-Mesh generieren
     if dim == 3:
         vol_type = "C3D20" if ("8" in el_type or "9" in el_type or "6" in el_type) else "C3D8"
         generateBoxMesh({"name": "gen"}, model, journal, **{
@@ -168,64 +160,59 @@ def run_contact_test(el_type, skewed=False, dim=3):
             "elType": vol_type, "elProvider": "edelweiss"
         })
         
-    # 2. Skew nodes if requested (tests general geometry logic)
+    # 2. Knoten verzerren (falls 'skewed' gewählt wurde)
     if skewed:
         np.random.seed(42)
         for node in model.nodes.values():
             offset = np.random.uniform(-0.15, 0.15, size=dim)
             node.coordinates += offset
             
-    # 3. Create contact boundary elements on top of volume element surfaces
+    # 3. Kontaktelemente erzeugen
     slave_surf = apply_contact_elements(model, "gen_bottom", el_type)
     master_surf = apply_contact_elements(model, "gen_top", el_type)
     
-    # 4. Initialize displacement fields for degrees of freedom (required for Constraint init)
+    # 4. Verschiebungsfelder initialisieren
     from edelweissfe.variables.fieldvariable import FieldVariable
     for node in model.nodes.values():
         node.fields["displacement"] = FieldVariable(node, "displacement")
         
-    # 5. Instantiate the MortarContact3D constraint
+    # 5. Mortar-Constraint instanziieren
     kwargs = {"nonMortarSurface": slave_surf, "mortarSurface": master_surf, "field": "displacement"}
     contact = MortarContact3D(f"contact_{el_type}_{config_name.lower()}", model, **kwargs)
     
-    # 6. Verify Knot Normals
+    # 6. Normalen verifizieren
     normals = contact.undeformed_normals
     
-    # Check A: Verify that every normal vector has unit length
-    # If this fails, normal vectors were not normalized properly in the code.
+    # Test A: Prüfen, ob die Knotennormalen normiert sind (Länge = 1)
     for i, node in enumerate(contact.non_mortar_nodes):
         n = normals[i]
         length = np.linalg.norm(n)
         if not np.isclose(length, 1.0, atol=1e-7):
-            print(f"  [FAIL] Node {node.label} normal is not normalized: length = {length:.6f}")
+            print(f"  [FAIL] Knotennormale an Knoten {node.label} nicht normiert: Länge = {length:.6f}")
             sys.exit(1)
             
-    # Check B: Verify normal directions on flat surface
-    # In flat configurations, all normals should point straight down in the -Y direction ([0, -1, 0] or [0, -1]).
-    # If this fails, the normal computation is misoriented or pointing in the wrong direction.
+    # Test B: Richtungsprüfung auf ebener Fläche (muss straight nach unten zeigen: -Y)
     if not skewed:
         expected = np.zeros(dim)
-        expected[1] = -1.0
+        expected[1] = -1.0  # In Y-Richtung nach unten
         for i, node in enumerate(contact.non_mortar_nodes):
             n = normals[i]
             if not np.allclose(n, expected, atol=1e-7):
-                print(f"  [FAIL] Node {node.label} normal orientation incorrect: normal = {n}")
+                print(f"  [FAIL] Knoten {node.label} Normale falsch ausgerichtet: normal = {n}")
                 sys.exit(1)
-        print("  -> Flat orientation verify: OK")
-    # Check C: Verify normal directions on skewed surface
-    # On a distorted surface, the normal vector must be perpendicular to the surface facet tangents.
-    # If this fails, the tangent derivatives or the cross-product calculation has a bug.
+        print("  -> Ebener Ausrichtungstest: OK")
+        
+    # Test C: Orthogonalitätsprüfung auf verzerrter Geometrie
+    # Das Skalarprodukt zwischen der Normale und den Tangenten der Facette muss Null sein.
     else:
         all_orthogonal = True
         for el, faceID in contact.non_mortar_facets:
             coords = np.array([node.coordinates for node in el.nodes])
             if dim == 3:
                 if len(el.nodes) in (3, 6):
-                    # Triangle edges
                     v1 = coords[1] - coords[0]
                     v2 = coords[2] - coords[0]
                 else:
-                    # Quad diagonals
                     v1 = coords[2] - coords[0]
                     v2 = coords[3] - coords[1]
                 n_facet = np.cross(v1, v2)
@@ -234,7 +221,6 @@ def run_contact_test(el_type, skewed=False, dim=3):
                 if not (np.isclose(dot1, 0.0, atol=1e-12) and np.isclose(dot2, 0.0, atol=1e-12)):
                     all_orthogonal = False
             else: # dim == 2
-                # Tangent vector from start to end node
                 t = coords[-1] - coords[0]
                 n_facet = np.array([t[1], -t[0]])
                 dot = np.dot(n_facet, t)
@@ -242,19 +228,19 @@ def run_contact_test(el_type, skewed=False, dim=3):
                     all_orthogonal = False
                     
         if all_orthogonal:
-            print("  -> Skewed orthogonality verify: OK")
+            print("  -> Verzerrter Orthogonalitätstest: OK")
         else:
-            print("  [FAIL] Orthogonality verify failed for skewed geometry!")
+            print("  [FAIL] Orthogonalitätstest fehlgeschlagen für verzerrte Geometrie!")
             sys.exit(1)
             
-    print(f"  [PASS] {el_type} {config_name} test successful!")
+    print(f"  [PASS] Test für {el_type} ({config_name}) erfolgreich!")
 
 if __name__ == "__main__":
     print("====================================================")
-    print("MORTAR CONTACT ELEMENTS NORMALS VERIFICATION SUITE")
+    print("MORTAR KONTAKT NORMALE VERIFIKATIONSTEST")
     print("====================================================")
     
-    # 3D Quadrilateral Contact Elements
+    # 3D Vierecke
     run_contact_test("CONQUAD4", skewed=False, dim=3)
     run_contact_test("CONQUAD4", skewed=True, dim=3)
     
@@ -264,14 +250,14 @@ if __name__ == "__main__":
     run_contact_test("CONQUAD9", skewed=False, dim=3)
     run_contact_test("CONQUAD9", skewed=True, dim=3)
     
-    # 3D Triangular Contact Elements
+    # 3D Dreiecke
     run_contact_test("CONTRI3", skewed=False, dim=3)
     run_contact_test("CONTRI3", skewed=True, dim=3)
     
     run_contact_test("CONTRI6", skewed=False, dim=3)
     run_contact_test("CONTRI6", skewed=True, dim=3)
     
-    # 2D Linear & Quadratic Line Contact Elements
+    # 2D Linien
     run_contact_test("CONLINE2", skewed=False, dim=2)
     run_contact_test("CONLINE2", skewed=True, dim=2)
     
@@ -279,5 +265,5 @@ if __name__ == "__main__":
     run_contact_test("CONLINE3", skewed=True, dim=2)
     
     print("\n====================================================")
-    print("ALL NORMALS VERIFICATION TESTS PASSED SUCCESSFULLY!")
+    print("ALLE GEOMETRISCHEN NORMALENTESTS ERFOLGREICH PASSIERT!")
     print("====================================================")
