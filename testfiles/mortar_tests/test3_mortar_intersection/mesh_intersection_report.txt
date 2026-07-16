@@ -1,0 +1,30 @@
+================ LARGE MESH INTERSECTION REPORT ================
+This test verifies intersection on a multi-element 3D solid mesh.
+
+Slave facet quad nodes (top face of Slave Hex):
+  S1: [0.0, 0.0, 1.0]
+  S2: [1.0, 0.0, 1.0]
+  S3: [1.0, 1.0, 1.0]
+  S4: [0.0, 1.0, 1.0]
+
+Master facet quad nodes (bottom face of Master Hex):
+  M1: [0.5, 0.2, 1.0]
+  M2: [1.5, 0.2, 1.0]
+  M3: [1.5, 1.2, 1.0]
+  M4: [0.5, 1.2, 1.0]
+
+Projected Master nodes on Slave Plane:
+  PM1: [0.5, 0.2, 1.0]
+  PM2: [1.5, 0.2, 1.0]
+  PM3: [1.5, 1.2, 1.0]
+  PM4: [0.5, 1.2, 1.0]
+
+Clipped overlap intersection sub-triangles:
+  Cell 1 vertices:
+    v1: [0.5, 1.0, 1.0]
+    v2: [0.5, 0.2, 1.0]
+    v3: [1.0, 0.2, 1.0]
+  Cell 2 vertices:
+    v1: [0.5, 1.0, 1.0]
+    v2: [1.0, 0.2, 1.0]
+    v3: [1.0, 1.0, 1.0]
