@@ -102,6 +102,65 @@ def map_2d_to_natural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
     return local_coords
 
 
+class BVHNode:
+    """A node in the Bounding Volume Hierarchy (BVH) tree for contact detection."""
+    def __init__(self, aabb_min, aabb_max, left=None, right=None, facets=None):
+        self.aabb_min = aabb_min
+        self.aabb_max = aabb_max
+        self.left = left
+        self.right = right
+        self.facets = facets  # Only set for leaf nodes
+
+    def is_leaf(self) -> bool:
+        return self.facets is not None
+
+
+def build_bvh(facets_with_bounds) -> BVHNode:
+    """Recursively build a binary BVH tree from a list of tuples: (facet, centroid, aabb_min, aabb_max)."""
+    if not facets_with_bounds:
+        return None
+
+    # Compute enclosing AABB for all facets in the current subset
+    mins = np.array([f[2] for f in facets_with_bounds])
+    maxs = np.array([f[3] for f in facets_with_bounds])
+    aabb_min = np.min(mins, axis=0)
+    aabb_max = np.max(maxs, axis=0)
+
+    # Leaf node base case: 2 or fewer facets
+    if len(facets_with_bounds) <= 2:
+        return BVHNode(aabb_min, aabb_max, facets=[f[0] for f in facets_with_bounds])
+
+    # Find the longest axis to split along
+    extent = aabb_max - aabb_min
+    split_axis = np.argmax(extent)
+
+    # Sort facets by their centroid along the longest axis
+    facets_with_bounds.sort(key=lambda f: f[1][split_axis])
+    mid = len(facets_with_bounds) // 2
+
+    # Recursively build child nodes
+    left_child = build_bvh(facets_with_bounds[:mid])
+    right_child = build_bvh(facets_with_bounds[mid:])
+
+    return BVHNode(aabb_min, aabb_max, left=left_child, right=right_child)
+
+
+def query_bvh(node: BVHNode, q_min, q_max, candidates: list):
+    """Query the BVH tree to find all candidate facets overlapping the query AABB."""
+    if node is None:
+        return
+
+    # Check if query AABB overlaps with the node's AABB
+    if not (np.all(q_min <= node.aabb_max) and np.all(node.aabb_min <= q_max)):
+        return
+
+    if node.is_leaf():
+        candidates.extend(node.facets)
+    else:
+        query_bvh(node.left, q_min, q_max, candidates)
+        query_bvh(node.right, q_min, q_max, candidates)
+
+
 class Constraint(ConstraintBase):
     @caseInsensitiveKwargsChecker([kw.name for kw in module.requiredArgs], [kw.name for kw in module.optionalArgs])
     @castKwargsValuesAndAddDefaults(module)
@@ -319,6 +378,35 @@ class Constraint(ConstraintBase):
             triangulate_polygon,
             to_3d_coords
         )
+
+        # Precompute current deformed coordinates for all nodes
+        current_coords = {}
+        for node in self._nodes:
+            X = node.coordinates
+            if U_np is not None:
+                node_idx = self.node_to_global_idx[node]
+                u = U_np[self.sizeField * node_idx : self.sizeField * node_idx + dim]
+                current_coords[node] = X + u
+            else:
+                current_coords[node] = X
+
+        # Build AABB bounding boxes for all master elements to construct the BVH tree
+        facets_with_bounds = []
+        for m_el, m_faceID in self.mortar_facets:
+            m_nodes = m_el.nodes
+            m_coords = np.array([current_coords[n] for n in m_nodes])
+            centroid = np.mean(m_coords, axis=0)
+            
+            # Extract min and max coordinates with a safety margin (e.g. 15% of size)
+            aabb_min = np.min(m_coords, axis=0)
+            aabb_max = np.max(m_coords, axis=0)
+            margin = max(0.15 * np.max(aabb_max - aabb_min), 0.1)
+            aabb_min -= margin
+            aabb_max += margin
+            
+            facets_with_bounds.append(((m_el, m_faceID), centroid, aabb_min, aabb_max))
+            
+        bvh_root = build_bvh(facets_with_bounds)
         
         # Loop over each Slave facet
         for s_el, s_faceID in self.non_mortar_facets:
@@ -327,15 +415,7 @@ class Constraint(ConstraintBase):
             _, _, A_e = dual_mats[s_num]
             
             # Get physical coordinates of the Slave nodes
-            s_coords = []
-            for nd in s_nodes:
-                coord = nd.coordinates
-                if U_np is not None:
-                    idx = self._nodes.index(nd)
-                    u = U_np[self.sizeField * idx : self.sizeField * idx + dim]
-                    coord = coord + u
-                s_coords.append(coord)
-            s_coords = np.array(s_coords)
+            s_coords = np.array([current_coords[nd] for nd in s_nodes])
             
             # Setup the auxiliary local projection plane for this Slave facet
             p0 = np.mean(s_coords, axis=0)
@@ -355,21 +435,23 @@ class Constraint(ConstraintBase):
                 
             t1, t2 = get_tangent_basis(normal)
             s_2d = to_plane_coords(s_coords, p0, t1, t2)
+
+            # Query the BVH tree using the slave facet AABB to find nearby Master candidates
+            s_aabb_min = np.min(s_coords, axis=0)
+            s_aabb_max = np.max(s_coords, axis=0)
+            s_margin = max(0.15 * np.max(s_aabb_max - s_aabb_min), 0.1)
+            s_aabb_min -= s_margin
+            s_aabb_max += s_margin
+
+            candidates = []
+            query_bvh(bvh_root, s_aabb_min, s_aabb_max, candidates)
             
-            # Loop over all potential Master facets (search stage)
-            for m_el, m_faceID in self.mortar_facets:
+            # Loop over candidate Master facets (accelerated search)
+            for m_el, m_faceID in candidates:
                 m_nodes = m_el.nodes
                 
                 # Get physical coordinates of the Master nodes
-                m_coords = []
-                for nd in m_nodes:
-                    coord = nd.coordinates
-                    if U_np is not None:
-                        idx = self._nodes.index(nd)
-                        u = U_np[self.sizeField * idx : self.sizeField * idx + dim]
-                        coord = coord + u
-                    m_coords.append(coord)
-                m_coords = np.array(m_coords)
+                m_coords = np.array([current_coords[nd] for nd in m_nodes])
                 
                 # Project Master facet nodes onto the Slave projection plane
                 proj_m_coords = np.array([project_point_to_plane(p, p0, normal) for p in m_coords])
