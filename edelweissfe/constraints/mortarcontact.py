@@ -38,12 +38,12 @@ from edelweissfe.utils.misc import (
 )
 
 """
-A 3D mortar contact constraint with Lagrange multipliers and dual basis functions.
+A mortar contact constraint with Lagrange multipliers and dual basis functions.
 """
 
 module = Module(
-    "mortarcontact3d",
-    "A 3D mortar contact constraint with Lagrange multipliers and dual basis functions.",
+    "mortarcontact",
+    "A mortar contact constraint with Lagrange multipliers and dual basis functions.",
 )
 
 inputLanguage = InputLanguage()

@@ -1,6 +1,6 @@
 import os
 import numpy as np
-from edelweissfe.constraints.utils.intersection import (
+from edelweissfe.constraints.mortar_geom_utils import (
     project_point_to_plane,
     get_tangent_basis,
     to_plane_coords,
@@ -8,7 +8,7 @@ from edelweissfe.constraints.utils.intersection import (
     sutherland_hodgman_clip,
     triangulate_polygon
 )
-from edelweissfe.constraints.utils.vtk_exporter import write_vmesh_to_vtk
+from testfiles.mortar_tests.test3_mortar_intersection.vtk_exporter import write_vmesh_to_vtk
 
 def run_large_mesh_intersection_test():
     """
@@ -35,11 +35,10 @@ def run_large_mesh_intersection_test():
     # The Slave contact surface facet lies on the top face of the cube (nodes 4, 5, 6, 7)
     slave_facets = [[4, 5, 6, 7]]
     
-    # 2. Define nodes for Body 2 (Master Cube) shifted in X/Y to create partial overlap
-    # Master Cube bounds: [0.5, 1.5] x [0.2, 1.2] x [1.0, 2.0]
-    # Yields nodes 8 to 15 in global coordinates list
-    master_nodes_offset = len(nodes)
-    nodes.extend([
+    # 2. Define nodes for Body 2 (Master Cube) shifted in X/Y and rotated around Y axis by 30 degrees
+    # Base ranges: [0.5, 1.5] x [0.2, 1.2] x [1.0, 2.0] before rotation
+    # Center of rotation is Master face center: [1.0, 0.7, 1.0]
+    base_master_nodes = np.array([
         [0.5, 0.2, 1.0], # Node 8
         [1.5, 0.2, 1.0], # Node 9
         [1.5, 1.2, 1.0], # Node 10
@@ -49,6 +48,32 @@ def run_large_mesh_intersection_test():
         [1.5, 1.2, 2.0], # Node 14
         [0.5, 1.2, 2.0], # Node 15
     ])
+    
+    # Apply rotation of 20 degrees around Y axis (pitch) and 15 degrees around X axis (roll)
+    rad_y = np.radians(20)
+    rad_x = np.radians(15)
+    
+    R_y = np.array([
+        [np.cos(rad_y), 0, np.sin(rad_y)],
+        [0, 1, 0],
+        [-np.sin(rad_y), 0, np.cos(rad_y)]
+    ])
+    R_x = np.array([
+        [1, 0, 0],
+        [0, np.cos(rad_x), -np.sin(rad_x)],
+        [0, np.sin(rad_x), np.cos(rad_x)]
+    ])
+    R_total = np.dot(R_x, R_y)
+    
+    # Rotate around the centroid of the bottom face (approx [1.0, 0.7, 1.0])
+    center = np.array([1.0, 0.7, 1.0])
+    rotated_master_nodes = []
+    for pt in base_master_nodes:
+        rotated_pt = center + np.dot(R_total, pt - center)
+        rotated_master_nodes.append(rotated_pt.tolist())
+        
+    master_nodes_offset = len(nodes)
+    nodes.extend(rotated_master_nodes)
     hex_elements.append([8, 9, 10, 11, 12, 13, 14, 15])
     
     # The Master contact surface facet lies on the bottom face of the master cube (nodes 8, 9, 10, 11)

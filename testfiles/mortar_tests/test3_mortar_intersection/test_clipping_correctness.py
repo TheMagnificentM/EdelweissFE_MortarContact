@@ -1,7 +1,7 @@
 import os
 import unittest
 import numpy as np
-from edelweissfe.constraints.utils.intersection import (
+from edelweissfe.constraints.mortar_geom_utils import (
     project_point_to_plane,
     sutherland_hodgman_clip,
     triangulate_polygon,

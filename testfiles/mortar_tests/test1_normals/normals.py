@@ -27,7 +27,7 @@ from edelweissfe.generators.boxgen import generateModelData as generateBoxMesh
 from edelweissfe.generators.planerectquad import generateModelData as generatePlaneMesh
 from edelweissfe.journal.journal import Journal
 from edelweissfe.config.elementlibrary import getElementClass
-from edelweissfe.constraints.mortarcontact3d import Constraint as MortarContact3D
+from edelweissfe.constraints.mortarcontact import Constraint as MortarContact3D
 from edelweissfe.points.node import Node
 
 def get_local_nodes(el, faceID):

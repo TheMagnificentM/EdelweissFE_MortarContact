@@ -1,4 +1,3 @@
-import os
 import numpy as np
 
 def write_vmesh_to_vtk(filepath, nodes, hex_elements, slave_facets=None, master_facets=None, intersection_cells=None):

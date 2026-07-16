@@ -2,7 +2,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-from edelweissfe.constraints.utils.intersection import (
+from edelweissfe.constraints.mortar_geom_utils import (
     project_point_to_plane,
     get_tangent_basis,
     to_plane_coords,
