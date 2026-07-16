@@ -178,6 +178,12 @@ class Constraint(ConstraintBase):
         # Precompute undeformed normals
         self.undeformed_normals = self.compute_normals()
 
+        # Initialize PDASS variables
+        self.active_set = np.zeros(self.nNonMortarNodes, dtype=bool)
+        self.use_active_set = True
+        self.last_timestep_number = -1
+        self.current_iteration = 0
+
     @property
     def nodes(self) -> list:
         return self._nodes
@@ -442,4 +448,88 @@ class Constraint(ConstraintBase):
         K: np.ndarray,
         timeStep: TimeStep,
     ):
-        pass
+        if not self.active:
+            return
+
+        dim = self.model.domainSize
+
+        # Detect new increment to track iterations and reset current_iteration
+        if timeStep.number != self.last_timestep_number:
+            self.last_timestep_number = timeStep.number
+            self.current_iteration = 0
+        else:
+            self.current_iteration += 1
+
+        # Compute normals and mortar matrices D and C in the deformed configuration
+        normals = self.compute_normals(U_np)
+        D, C = self.compute_mortar_coupling_matrices(U_np)
+
+        # Compute current coordinates of all nodes in deformed configuration
+        current_coords = {}
+        for node in self._nodes:
+            X = node.coordinates
+            node_idx = self.node_to_global_idx[node]
+            u = U_np[self.sizeField * node_idx : self.sizeField * node_idx + dim]
+            current_coords[node] = X + u
+
+        # Loop over non-mortar nodes to update active set, residues, and stiffness
+        for I, node_s in enumerate(self.non_mortar_nodes):
+            idx_LM_I = self.sizeField * len(self._nodes) + I
+            lambda_I = U_np[idx_LM_I]
+            node_s_idx = self.node_to_global_idx[node_s]
+
+            # Compute weak gap for node I:
+            # g_I_weak = -D_I * (x_I . n_I) + sum_J C_IJ * (x_J . n_I)
+            x_I = current_coords[node_s]
+            n_I = normals[I]
+            g_I_weak = -D[I, I] * np.dot(x_I, n_I)
+            for J, node_m in enumerate(self.mortar_nodes):
+                if C[I, J] != 0:
+                    x_J = current_coords[node_m]
+                    g_I_weak += C[I, J] * np.dot(x_J, n_I)
+
+            if self.use_active_set:
+                # To prevent active set oscillations/cycling, freeze the active set after 5 iterations
+                if self.current_iteration < 5:
+                    sgn_D = np.sign(D[I, I])
+                    if self.active_set[I]:
+                        # If active, check for tension (lambda_I * sgn_D > 1e-10)
+                        if lambda_I * sgn_D > 1e-10:
+                            self.active_set[I] = False
+                    else:
+                        # If inactive, check for penetration (g_I_weak * sgn_D < -1e-10)
+                        if g_I_weak * sgn_D < -1e-10:
+                            self.active_set[I] = True
+
+            # Assemble based on updated active status
+            if self.active_set[I]:
+                # 1. Multiplier residual equation (weak gap)
+                PExt[idx_LM_I] -= g_I_weak
+
+                # 2. Slave force contribution
+                PExt[self.sizeField * node_s_idx : self.sizeField * node_s_idx + dim] += lambda_I * D[I, I] * n_I
+
+                # 3. Master forces contributions
+                for J, node_m in enumerate(self.mortar_nodes):
+                    if C[I, J] != 0:
+                        node_m_idx = self.node_to_global_idx[node_m]
+                        PExt[self.sizeField * node_m_idx : self.sizeField * node_m_idx + dim] -= lambda_I * C[I, J] * n_I
+
+                # 4. Stiffness matrix entries (symmetric coupling terms)
+                # K[u_I, lambda_I] and K[lambda_I, u_I]
+                K[self.sizeField * node_s_idx : self.sizeField * node_s_idx + dim, idx_LM_I] -= D[I, I] * n_I
+                K[idx_LM_I, self.sizeField * node_s_idx : self.sizeField * node_s_idx + dim] -= D[I, I] * n_I
+
+                # K[u_J, lambda_I] and K[lambda_I, u_J]
+                for J, node_m in enumerate(self.mortar_nodes):
+                    if C[I, J] != 0:
+                        node_m_idx = self.node_to_global_idx[node_m]
+                        K[self.sizeField * node_m_idx : self.sizeField * node_m_idx + dim, idx_LM_I] += C[I, J] * n_I
+                        K[idx_LM_I, self.sizeField * node_m_idx : self.sizeField * node_m_idx + dim] += C[I, J] * n_I
+            else:
+                # Inactive node: lambda_I = 0
+                # 1. Multiplier residual equation
+                PExt[idx_LM_I] -= lambda_I
+
+                # 2. Stiffness matrix diagonal entry
+                K[idx_LM_I, idx_LM_I] += 1.0
