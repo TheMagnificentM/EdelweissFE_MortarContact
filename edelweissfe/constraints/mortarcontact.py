@@ -59,6 +59,49 @@ module.addOptionalArg("field", "The field this constraint acts on (e.g. displace
 documentation = [module]
 
 
+def map_2d_to_natural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
+    """Map a 2D local plane coordinate point_2d to the element's natural space."""
+    el_type = el.elType.upper()
+    
+    # 1D line elements
+    if "LINE" in el_type:
+        local_coords = np.zeros(1)
+        for _ in range(max_iter):
+            N = el.getShapeFunctions(local_coords)
+            x_mapped = N @ coords_2d
+            res = x_mapped - point_2d
+            if np.linalg.norm(res) < tol:
+                break
+            dN = el.getShapeFunctionDerivatives(local_coords) # shape (1, n_nodes)
+            J = dN @ coords_2d # shape (1, dim_of_coords_2d)
+            J_norm = np.dot(J[0], J[0])
+            if J_norm < 1e-14:
+                break
+            delta = np.dot(J[0], res) / J_norm
+            local_coords[0] -= delta
+        return local_coords
+
+    # 2D surface elements (Quads and Triangles)
+    local_coords = np.zeros(2)
+    if "TRI" in el_type:
+        local_coords = np.array([1.0 / 3.0, 1.0 / 3.0])
+        
+    for _ in range(max_iter):
+        N = el.getShapeFunctions(local_coords)
+        x_mapped = N @ coords_2d
+        res = x_mapped - point_2d
+        if np.linalg.norm(res) < tol:
+            break
+        dN = el.getShapeFunctionDerivatives(local_coords) # shape (2, n_nodes)
+        J = (dN @ coords_2d).T # shape (2, 2)
+        try:
+            delta = np.linalg.solve(J, res)
+        except np.linalg.LinAlgError:
+            break
+        local_coords -= delta
+    return local_coords
+
+
 class Constraint(ConstraintBase):
     @caseInsensitiveKwargsChecker([kw.name for kw in module.requiredArgs], [kw.name for kw in module.optionalArgs])
     @castKwargsValuesAndAddDefaults(module)
@@ -360,24 +403,10 @@ class Constraint(ConstraintBase):
                         x_gp_3d = to_3d_coords([x_gp_2d], p0, t1, t2)[0]
                         
                         # --- Map to Slave natural space (xi_s, eta_s) ---
-                        # For a bilinear quad, we invert the mapping. Since quads are flat on local plane,
-                        # we can project directly or perform local coordinate transformation.
-                        # For CONQUAD4, natural coordinates range in [-1, 1].
-                        # Let's map x_gp_2d to slave natural space:
-                        s_min = np.min(s_2d, axis=0)
-                        s_max = np.max(s_2d, axis=0)
-                        s_size = s_max - s_min
-                        xi_s = 2.0 * (x_gp_2d[0] - s_min[0]) / s_size[0] - 1.0
-                        eta_s = 2.0 * (x_gp_2d[1] - s_min[1]) / s_size[1] - 1.0
-                        local_s = np.array([xi_s, eta_s])
+                        local_s = map_2d_to_natural(s_el, s_2d, x_gp_2d)
                         
                         # --- Map to Master natural space (xi_m, eta_m) ---
-                        m_min = np.min(m_2d, axis=0)
-                        m_max = np.max(m_2d, axis=0)
-                        m_size = m_max - m_min
-                        xi_m = 2.0 * (x_gp_2d[0] - m_min[0]) / m_size[0] - 1.0
-                        eta_m = 2.0 * (x_gp_2d[1] - m_min[1]) / m_size[1] - 1.0
-                        local_m = np.array([xi_m, eta_m])
+                        local_m = map_2d_to_natural(m_el, m_2d, x_gp_2d)
                         
                         # Evaluate standard shape functions N at mapped locations
                         N_s = s_el.getShapeFunctions(local_s)
