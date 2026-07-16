@@ -237,6 +237,174 @@ class Constraint(ConstraintBase):
             
         return dual_matrices
 
+    def compute_mortar_coupling_matrices(self, U_np: np.ndarray = None) -> tuple[np.ndarray, np.ndarray]:
+        """Compute the global mortar coupling matrices D (slave-slave) and C (slave-master).
+        
+        This method performs the core Mortar integration:
+        1. For each Slave (non-mortar) boundary facet:
+           - Finds overlapping Master (mortar) boundary facets.
+           - Projects Master facets onto the local Slave plane.
+           - Clips the polygons using Sutherland-Hodgman in 2D.
+           - Triangulates the overlap into integration sub-cells.
+           - Performs numerical integration using a 3-point Gauss rule on each sub-triangle.
+           - Evaluates the dual Slave shape functions \bar{M} and standard Master shape functions N.
+           - Assembles the local integration contributions into the global D and C matrices.
+        """
+        dim = self.model.domainSize
+        n_slave = self.nNonMortarNodes
+        n_master = self.nMortarNodes
+        
+        # Initialize global matrices D (n_slave x n_slave) and C (n_slave x n_master)
+        D = np.zeros((n_slave, n_slave))
+        C = np.zeros((n_slave, n_master))
+        
+        # Precompute the local dual transformation matrices A_e for all slave elements
+        dual_mats = self.compute_local_dual_matrices(U_np)
+        
+        # Import geometry helper functions directly
+        from edelweissfe.constraints.mortar_geom_utils import (
+            project_point_to_plane,
+            get_tangent_basis,
+            to_plane_coords,
+            sutherland_hodgman_clip,
+            triangulate_polygon,
+            to_3d_coords
+        )
+        
+        # Loop over each Slave facet
+        for s_el, s_faceID in self.non_mortar_facets:
+            s_nodes = s_el.nodes
+            s_num = s_el.elNumber
+            _, _, A_e = dual_mats[s_num]
+            
+            # Get physical coordinates of the Slave nodes
+            s_coords = []
+            for nd in s_nodes:
+                coord = nd.coordinates
+                if U_np is not None:
+                    idx = self._nodes.index(nd)
+                    u = U_np[self.sizeField * idx : self.sizeField * idx + dim]
+                    coord = coord + u
+                s_coords.append(coord)
+            s_coords = np.array(s_coords)
+            
+            # Setup the auxiliary local projection plane for this Slave facet
+            p0 = np.mean(s_coords, axis=0)
+            if dim == 3:
+                if len(s_nodes) in (3, 6):
+                    v1 = s_coords[1] - s_coords[0]
+                    v2 = s_coords[2] - s_coords[0]
+                else:
+                    v1 = s_coords[2] - s_coords[0]
+                    v2 = s_coords[3] - s_coords[1]
+                normal = np.cross(v1, v2)
+                normal /= np.linalg.norm(normal)
+            else: # dim == 2
+                t = s_coords[-1] - s_coords[0]
+                normal = np.array([t[1], -t[0]])
+                normal /= np.linalg.norm(normal)
+                
+            t1, t2 = get_tangent_basis(normal)
+            s_2d = to_plane_coords(s_coords, p0, t1, t2)
+            
+            # Loop over all potential Master facets (search stage)
+            for m_el, m_faceID in self.mortar_facets:
+                m_nodes = m_el.nodes
+                
+                # Get physical coordinates of the Master nodes
+                m_coords = []
+                for nd in m_nodes:
+                    coord = nd.coordinates
+                    if U_np is not None:
+                        idx = self._nodes.index(nd)
+                        u = U_np[self.sizeField * idx : self.sizeField * idx + dim]
+                        coord = coord + u
+                    m_coords.append(coord)
+                m_coords = np.array(m_coords)
+                
+                # Project Master facet nodes onto the Slave projection plane
+                proj_m_coords = np.array([project_point_to_plane(p, p0, normal) for p in m_coords])
+                m_2d = to_plane_coords(proj_m_coords, p0, t1, t2)
+                
+                # Clip the Master facet with the Slave facet to find overlap
+                overlap_2d = sutherland_hodgman_clip(m_2d, s_2d)
+                if len(overlap_2d) < 3:
+                    continue # No overlap or degenerate intersection polygon
+                    
+                # Triangulate the overlap polygon into sub-triangles
+                sub_triangles = triangulate_polygon(overlap_2d)
+                
+                # Integrate over each sub-triangle using a 3-point symmetric Gauss rule
+                # Local coordinates and weights on standard reference triangle: [0, 1]x[0, 1]
+                gauss_pts = [
+                    np.array([1.0 / 6.0, 1.0 / 6.0]),
+                    np.array([2.0 / 3.0, 1.0 / 6.0]),
+                    np.array([1.0 / 6.0, 2.0 / 3.0])
+                ]
+                gauss_w = [1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0]
+                
+                for tri in sub_triangles:
+                    # Vertices of the sub-triangle in local 2D plane coordinates
+                    v0, v1, v2 = tri[0], tri[1], tri[2]
+                    
+                    # Compute the area/Jacobian of the sub-triangle mapping
+                    area_jac = abs((v1[0] - v0[0]) * (v2[1] - v0[1]) - (v2[0] - v0[0]) * (v1[1] - v0[1]))
+                    
+                    for gp, w in zip(gauss_pts, gauss_w):
+                        # Interpolate the Gauss point inside the sub-triangle
+                        L1, L2 = gp[0], gp[1]
+                        L0 = 1.0 - L1 - L2
+                        x_gp_2d = L0 * v0 + L1 * v1 + L2 * v2
+                        
+                        # Map the local 2D Gauss point back to 3D physical coordinates
+                        x_gp_3d = to_3d_coords([x_gp_2d], p0, t1, t2)[0]
+                        
+                        # --- Map to Slave natural space (xi_s, eta_s) ---
+                        # For a bilinear quad, we invert the mapping. Since quads are flat on local plane,
+                        # we can project directly or perform local coordinate transformation.
+                        # For CONQUAD4, natural coordinates range in [-1, 1].
+                        # Let's map x_gp_2d to slave natural space:
+                        s_min = np.min(s_2d, axis=0)
+                        s_max = np.max(s_2d, axis=0)
+                        s_size = s_max - s_min
+                        xi_s = 2.0 * (x_gp_2d[0] - s_min[0]) / s_size[0] - 1.0
+                        eta_s = 2.0 * (x_gp_2d[1] - s_min[1]) / s_size[1] - 1.0
+                        local_s = np.array([xi_s, eta_s])
+                        
+                        # --- Map to Master natural space (xi_m, eta_m) ---
+                        m_min = np.min(m_2d, axis=0)
+                        m_max = np.max(m_2d, axis=0)
+                        m_size = m_max - m_min
+                        xi_m = 2.0 * (x_gp_2d[0] - m_min[0]) / m_size[0] - 1.0
+                        eta_m = 2.0 * (x_gp_2d[1] - m_min[1]) / m_size[1] - 1.0
+                        local_m = np.array([xi_m, eta_m])
+                        
+                        # Evaluate standard shape functions N at mapped locations
+                        N_s = s_el.getShapeFunctions(local_s)
+                        N_m = m_el.getShapeFunctions(local_m)
+                        
+                        # Evaluate dual shape functions: M_bar = A_e * N_s
+                        M_bar = A_e @ N_s
+                        
+                        # Differential area element on the sub-triangle
+                        dGamma = area_jac * w
+                        
+                        # Assemble into global coupling matrices D and C
+                        for i, s_nd in enumerate(s_nodes):
+                            global_s_idx = self.slave_node_to_idx[s_nd]
+                            
+                            # Add to D matrix (Slave shape functions)
+                            for j, s_nd_inner in enumerate(s_nodes):
+                                global_s_inner_idx = self.slave_node_to_idx[s_nd_inner]
+                                D[global_s_idx, global_s_inner_idx] += M_bar[i] * N_s[j] * dGamma
+                                
+                            # Add to C matrix (Master shape functions)
+                            for j, m_nd in enumerate(m_nodes):
+                                global_m_idx = self.master_node_to_idx[m_nd]
+                                C[global_s_idx, global_m_idx] += M_bar[i] * N_m[j] * dGamma
+                                
+        return D, C
+
     def applyConstraint(
         self,
         U_np: np.ndarray,
