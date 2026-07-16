@@ -72,7 +72,7 @@ class ContactElement(BaseElement):
 
     @property
     def hasMaterial(self) -> bool:
-        return False
+        return True
 
     @property
     def fields(self) -> list[list[str]]:
