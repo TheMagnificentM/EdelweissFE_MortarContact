@@ -26,11 +26,12 @@ OUTPUT_FILENAME = "Mesh_POTDejori_edelweissfe.inp"
 
 # Elementtyp-Ersetzung für bestimmte Elementgruppen (ELSET)
 # Hier kann man eintragen, welcher Elementtyp für welche Gruppe genutzt werden soll.
-# Standardmäßig auf Hex20 konfiguriert.
+# Beispiel für Hex8: {"CONCRETE": "GC3D8R", "STEEL_SUPPORTS": "C3D8R", "STEEL_ANCHOR": "C3D8R"}
+# Beispiel für Hex20: {"CONCRETE": "GC3D20R", "STEEL_SUPPORTS": "C3D20R", "STEEL_ANCHOR": "C3D20R"}
 ELSET_TYPE_REPLACEMENT = {
-    "CONCRETE": "GC3D20R",
-    "STEEL_SUPPORTS": "C3D20R",
-    "STEEL_ANCHOR": "C3D20R",
+    "CONCRETE": "GC3D8",
+    "STEEL_SUPPORTS": "C3D8",
+    "STEEL_ANCHOR": "C3D8",
 }
 
 # Start-Zeile: Alles VOR dieser Zeile wird komplett verworfen!

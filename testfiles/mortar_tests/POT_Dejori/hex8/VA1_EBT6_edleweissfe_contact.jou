@@ -1,0 +1,357 @@
+# ==============================================================================
+# INITIALIZATION
+# ==============================================================================
+# Clear workspace
+reset
+
+# ==============================================================================
+# PARAMETERS (VARIABLES)
+# ==============================================================================
+# General tolerance for selections
+# {TOL=1e-2}
+
+# Geometry: Headed stud / Anchor
+# {embedment_depth=60} {head_width=80} {head_height=20} {stud_width=10}
+
+# Geometry: Concrete block
+# {conc_h=500} {conc_w=700} {conc_d=4}
+
+# Geometry: Supports
+# {supp_h=15} {supp_w=50} {supp_span=560}
+
+
+# ==============================================================================
+# GEOMETRY CREATION (2D SURFACES)
+# ==============================================================================
+# Create base surfaces for concrete, stud head, and stud shaft
+create surface rectangle width {conc_w} height {conc_h} zplane
+create surface rectangle width {head_width} height {head_height} zplane
+create surface rectangle width {stud_width} height {embedment_depth} zplane
+
+# Position stud shaft (centered at concrete top edge)
+move surface 3 midpoint location curve 1 except z include_merged
+move surface 3 y {-embedment_depth/2} include_merged
+
+# Position stud head (flush at the bottom of the shaft)
+move surface 2 midpoint location curve 11 except z include_merged
+move surface 2 y {-head_height/2} include_merged
+
+# Unite head and shaft into a single surface
+unite surface 2 3 
+
+# Cut hole for the anchor from the concrete block (keep the tool)
+subtract surface 2 from surface 1 keep_tool
+
+# Color anchor surface for visibility
+color volume 2 lightblue
+
+
+# ==============================================================================
+# EXTRUSION (3D VOLUMES) & SUPPORTS
+# ==============================================================================
+# Clean up surfaces and sweep concrete block into depth
+subtract surface 2 from surface 4
+sweep surface 4 vector 0 0 {-conc_d} keep
+
+# Create, position, and sweep right support
+create surface rectangle width {supp_w} height {supp_h} zplane
+move surface 19 x {supp_span/2} y {conc_h/2+supp_h/2}
+sweep surface 19 vector 0 0 {-conc_d}
+
+# Create, position, and sweep left support
+create surface rectangle width {supp_w} height {supp_h} zplane
+move surface 25 x {-supp_span/2} y {conc_h/2+supp_h/2}
+sweep surface 25 vector 0 0 {-conc_d}
+
+
+# ==============================================================================
+# PARTITIONING (WEBCUTS FOR STRUCTURED MESH)
+# ==============================================================================
+# Separate coarse mesh regions (Level 1)
+webcut body 1 with plane yplane offset {conc_h/2-embedment_depth*1.6} imprint merge
+webcut body 7 with plane xplane offset {supp_span/2} imprint merge
+webcut body 8 with plane xplane offset {-supp_span/2} imprint merge
+
+# Define fine mesh regions around the load introduction / anchor area
+webcut body 8 with plane xplane offset 160 imprint merge
+webcut body 10 with plane xplane offset -160 imprint merge
+webcut body 8 with plane yplane offset {conc_h/2-embedment_depth/1.2} imprint merge
+webcut body 11 with plane yplane offset {conc_h/2-embedment_depth/1.2} imprint merge
+
+# Imprint/merge topology and delete 2D helper bodies
+imprint all
+merge all
+delete body 1 and 7 to 13
+
+# --- REBUILD 3D HEADED STUD (INDEPENDENT VOLUME) ---
+
+# Create 3D stud shaft and move into position
+create brick x {stud_width} y {embedment_depth} z {conc_d}
+volume 14 move x 0 y {conc_h/2 - embedment_depth/2} z {-conc_d/2}
+
+# Create 3D stud head and move below shaft
+create brick x {head_width} y {head_height} z {conc_d}
+volume 15 move x 0 y {conc_h/2 - embedment_depth - head_height/2} z {-conc_d/2}
+
+# Unite head and shaft into a continuous anchor (Volume 14)
+unite volume 14 15
+color volume 14 red
+
+
+# ==============================================================================
+# MESHING
+# ==============================================================================
+# Mesh the anchor (Volume 14) first to fix edge intervals
+volume 14 scheme sweep
+volume 14 size 2.5
+curve 200 interval 1
+mesh volume 14
+
+# Base mesh settings for the front plane (Z=0).
+# Exclude Volume 14 surfaces to preserve its fine mesh.
+surface all with z_coord=0 except surface in volume 14 size 20
+surface all with z_coord=0 except surface in volume 14 scheme submap
+mesh surface all with z_coord=0 except surface in volume 14
+
+# Local mesh refinement in the concrete around the hole
+refine surface 39 41 42 43 44 numsplit 2 depth 0
+refine surface 39 42 44 numsplit 1 depth 0
+
+# Volume meshing (Sweep from front plane into depth)
+volume all redistribute nodes on
+volume 4 scheme Sweep source surface with z_coord=0 in volume 4 target surface 17 sweep transform translate propagate bias
+volume 4 autosmooth target off
+
+# Mesh remaining volumes (Concrete, Supports)
+mesh volume all
+
+
+# ==============================================================================
+# BLOCKS (MATERIAL & ELEMENT ASSIGNMENT)
+# ==============================================================================
+# Concrete block
+block {NumBlocks()+1} add vol 4
+block {NumBlocks()} name "concrete"
+block {NumBlocks()} element type hex8
+
+# Steel supports
+block {NumBlocks()+1} add vol 5 6
+block {NumBlocks()} name "steel_supports"
+block {NumBlocks()} element type hex8
+
+# Steel anchor
+block {NumBlocks()+1} add vol 14
+block {NumBlocks()} name "steel_anchor"
+block {NumBlocks()} element type hex8
+
+
+# ==============================================================================
+# BOUNDARY CONDITIONS, LOADS & CONTACT (NODESETS & SIDESETS)
+# ==============================================================================
+
+# --- SUPPORTS & SYMMETRY & ETC---
+
+# Load application at the stud head
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 14 with y_coord > {conc_h/2 - TOL}
+nodeset {NumNodesets()} name "load"
+
+# Anchor displacement (bottom)
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 14 with y_coord < {conc_h/2 - embedment_depth - head_height + TOL}
+nodeset {NumNodesets()} name "displacement_anchor"
+
+# Concrete global nodeset
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 4
+nodeset {NumNodesets()} name "nodeset_conc"
+
+# Steel supports global nodeset
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 5 6
+nodeset {NumNodesets()} name "nodeset_stl_supports"
+
+# Steel anchor global nodeset
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 14
+nodeset {NumNodesets()} name "nodeset_stl_anchor"
+
+# BC: Left support
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node with x_coord < 0 and y_coord > {conc_h/2 + supp_h - TOL}
+nodeset {NumNodesets()} name "bc_left"
+
+# BC: Right support
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node with x_coord > 0 and y_coord > {conc_h/2 + supp_h - TOL}
+nodeset {NumNodesets()} name "bc_right"
+
+# BC: Symmetry in Z-direction
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node with z_coord < {-conc_d + TOL}
+nodeset {NumNodesets()} name "z_symm"
+
+# BC: Symmetry in X-direction
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node with x_coord > {-TOL} and x_coord < {TOL} and y_coord < {-conc_h/2 + TOL} and z_coord > {-TOL}
+nodeset {NumNodesets()} name "x_fix"
+
+# BC: Left support surface
+create sideset {NumSidesets()+1}
+sideset {NumSidesets()} add surface with x_coord < 0 and y_coord > {conc_h/2 + supp_h - TOL}
+sideset {NumSidesets()} name "bc_left_surface"
+
+# BC: Right support surface
+create sideset {NumSidesets()+1}
+sideset {NumSidesets()} add surface with x_coord > 0 and y_coord > {conc_h/2 + supp_h - TOL}
+sideset {NumSidesets()} name "bc_right_surface"
+
+
+# --- CONTACT: NODESETS (LEFT SIDE) ---
+
+# Contact steel left 1
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 14 with y_coord > {conc_h/2 - embedment_depth - TOL} and y_coord < {conc_h/2 + TOL} and x_coord < {0 - stud_width/2 + TOL} and x_coord > {0 - stud_width/2 - TOL}
+nodeset {NumNodesets()} name "cont_stl_l_stud_vert"
+
+# Contact concrete left 1
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 4 with y_coord > {conc_h/2 - embedment_depth - TOL} and y_coord < {conc_h/2 + TOL} and x_coord < {0 - stud_width/2 + TOL} and x_coord > {0 - stud_width/2 - TOL}
+nodeset {NumNodesets()} name "cont_conc_l_stud_vert"
+
+# Contact steel left 2
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 14 with y_coord < {conc_h/2 - embedment_depth + TOL} and y_coord > {conc_h/2 - embedment_depth - TOL} and x_coord < {0 - stud_width/2 + TOL}
+nodeset {NumNodesets()} name "cont_stl_l_head_horiz"
+
+# Contact concrete left 2
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 4 with y_coord < {conc_h/2 - embedment_depth + TOL} and y_coord > {conc_h/2 - embedment_depth - TOL} and x_coord < {0 - stud_width/2 + TOL}
+nodeset {NumNodesets()} name "cont_conc_l_head_horiz"
+
+# Contact steel left 3
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 14 with y_coord > {conc_h/2 - embedment_depth - head_height - TOL} and y_coord < {conc_h/2 - embedment_depth + TOL} and x_coord < {0 - head_width/2 + TOL}
+nodeset {NumNodesets()} name "cont_stl_l_head_vert"
+
+# Contact concrete left 3
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 4 with y_coord > {conc_h/2 - embedment_depth - head_height - TOL} and y_coord < {conc_h/2 - embedment_depth + TOL} and x_coord < {0 - head_width/2 + TOL} and x_coord > {0 - head_width/2 - TOL} 
+nodeset {NumNodesets()} name "cont_conc_l_head_vert"
+
+
+# --- CONTACT: NODESETS (RIGHT SIDE) ---
+
+# Contact steel right 1
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 14 with y_coord > {conc_h/2 - embedment_depth - TOL} and y_coord < {conc_h/2 + TOL} and x_coord > {0 + stud_width/2 - TOL} and x_coord < {0 + stud_width/2 + TOL}
+nodeset {NumNodesets()} name "cont_stl_r_stud_vert"
+
+# Contact concrete right 1
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 4 with y_coord > {conc_h/2 - embedment_depth - TOL} and y_coord < {conc_h/2 + TOL} and x_coord > {0 + stud_width/2 - TOL} and x_coord < {0 + stud_width/2 + TOL}
+nodeset {NumNodesets()} name "cont_conc_r_stud_vert"
+
+# Contact steel right 2
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 14 with y_coord < {conc_h/2 - embedment_depth + TOL} and y_coord > {conc_h/2 - embedment_depth - TOL} and x_coord > {0 + stud_width/2 - TOL}
+nodeset {NumNodesets()} name "cont_stl_r_head_horiz"
+
+# Contact concrete right 2
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 4 with y_coord < {conc_h/2 - embedment_depth + TOL} and y_coord > {conc_h/2 - embedment_depth - TOL} and x_coord > {0 + stud_width/2 - TOL}
+nodeset {NumNodesets()} name "cont_conc_r_head_horiz"
+
+# Contact steel right 3
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 14 with y_coord > {conc_h/2 - embedment_depth - head_height - TOL} and y_coord < {conc_h/2 - embedment_depth + TOL} and x_coord < {0 + head_width/2 + TOL} and x_coord > {0 + head_width/2 - TOL}
+nodeset {NumNodesets()} name "cont_stl_r_head_vert"
+
+# Contact concrete right 3
+create nodeset {NumNodesets()+1}
+nodeset {NumNodesets()} add node in volume 4 with y_coord > {conc_h/2 - embedment_depth - head_height - TOL} and y_coord < {conc_h/2 - embedment_depth + TOL} and x_coord < {0 + head_width/2 + TOL} and x_coord > {0 + head_width/2 - TOL}
+nodeset {NumNodesets()} name "cont_conc_r_head_vert"
+
+
+# --- CONTACT: SIDESETS (LEFT SIDE) ---
+
+# Contact steel left 1
+create sideset {NumSidesets()+1}
+sideset {NumSidesets()} add surface in volume 14 with x_coord < {-stud_width/2 + TOL} and x_coord > {-stud_width/2 - TOL}
+sideset {NumSidesets()} name "cont_surf_stl_l_stud_vert"
+
+# Contact concrete left 1
+create sideset {NumSidesets()+1}
+sideset {NumSidesets()} add surface in volume 4 with x_coord < {-stud_width/2 + TOL} and x_coord > {-stud_width/2 - TOL}
+sideset {NumSidesets()} name "cont_surf_conc_l_stud_vert"
+
+# Contact steel left 2
+create sideset {NumSidesets()+1}
+sideset {NumSidesets()} add surface in volume 14 with y_coord < {conc_h/2 - embedment_depth + TOL} and y_coord > {conc_h/2 - embedment_depth - TOL} and x_coord < {-stud_width/2 + TOL}
+sideset {NumSidesets()} name "cont_surf_stl_l_head_horiz"
+
+# Contact concrete left 2
+create sideset {NumSidesets()+1}
+sideset {NumSidesets()} add surface in volume 4 with y_coord < {conc_h/2 - embedment_depth + TOL} and y_coord > {conc_h/2 - embedment_depth - TOL} and x_coord < {-stud_width/2 + TOL}
+sideset {NumSidesets()} name "cont_surf_conc_l_head_horiz"
+
+# Contact steel left 3
+create sideset {NumSidesets()+1}
+sideset {NumSidesets()} add surface in volume 14 with y_coord > {conc_h/2 - embedment_depth - head_height - TOL} and y_coord < {conc_h/2 - embedment_depth + TOL} and x_coord < {-head_width/2 + TOL}
+sideset {NumSidesets()} name "cont_surf_stl_l_head_vert"
+
+# Contact concrete left 3
+create sideset {NumSidesets()+1}
+sideset {NumSidesets()} add surface in volume 4 with y_coord > {conc_h/2 - embedment_depth - head_height - TOL} and y_coord < {conc_h/2 - embedment_depth + TOL} and x_coord < {-head_width/2 + TOL} and x_coord > {-head_width/2 - TOL}
+sideset {NumSidesets()} name "cont_surf_conc_l_head_vert"
+
+
+# --- CONTACT: SIDESETS (RIGHT SIDE) ---
+
+# Contact steel right 1
+create sideset {NumSidesets()+1}
+sideset {NumSidesets()} add surface in volume 14 with x_coord < {+stud_width/2 + TOL} and x_coord > {+stud_width/2 - TOL}
+sideset {NumSidesets()} name "cont_surf_stl_r_stud_vert"
+
+# Contact concrete right 1
+create sideset {NumSidesets()+1}
+sideset {NumSidesets()} add surface in volume 4 with x_coord < {+stud_width/2 + TOL} and x_coord > {+stud_width/2 - TOL}
+sideset {NumSidesets()} name "cont_surf_conc_r_stud_vert"
+
+# Contact steel right 2
+create sideset {NumSidesets()+1}
+sideset {NumSidesets()} add surface in volume 14 with y_coord < {conc_h/2 - embedment_depth + TOL} and y_coord > {conc_h/2 - embedment_depth - TOL} and x_coord < {+head_width/2 - TOL} and x_coord > {+stud_width/2 - TOL}
+sideset {NumSidesets()} name "cont_surf_stl_r_head_horiz"
+
+# Contact concrete right 2
+create sideset {NumSidesets()+1}
+sideset {NumSidesets()} add surface in volume 4 with y_coord < {conc_h/2 - embedment_depth + TOL} and y_coord > {conc_h/2 - embedment_depth - TOL} and x_coord < {+head_width/2 - TOL} and x_coord > {+stud_width/2 - TOL}
+sideset {NumSidesets()} name "cont_surf_conc_r_head_horiz"
+
+# Contact steel right 3
+create sideset {NumSidesets()+1}
+sideset {NumSidesets()} add surface in volume 14 with y_coord > {conc_h/2 - embedment_depth - head_height - TOL} and y_coord < {conc_h/2 - embedment_depth + TOL} and x_coord < {+head_width/2 + TOL} and x_coord > {+head_width/2 - TOL}
+sideset {NumSidesets()} name "cont_surf_stl_r_head_vert"
+
+# Contact concrete right 3
+create sideset {NumSidesets()+1}
+sideset {NumSidesets()} add surface in volume 4 with y_coord > {conc_h/2 - embedment_depth - head_height - TOL} and y_coord < {conc_h/2 - embedment_depth + TOL} and x_coord < {+head_width/2 + TOL} and x_coord > {+head_width/2 - TOL}
+sideset {NumSidesets()} name "cont_surf_conc_r_head_vert"
+
+
+# ==============================================================================
+# CHECK MESH QUALITY
+# ==============================================================================
+# Check for distorted or inverted elements
+#quality volume all shape global draw mesh
+#quality volume all scaled jacobian global draw mesh
+
+
+# ==============================================================================
+# EXPORT
+# ==============================================================================
+export abaqus "~/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/testfiles/mortar_tests/POT_Dejori/hex8/Mesh_POTDejori.inp" overwrite
+
+
+
+

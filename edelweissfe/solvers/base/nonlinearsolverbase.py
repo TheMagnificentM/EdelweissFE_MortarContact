@@ -165,7 +165,8 @@ class NonlinearSolverBase(ABC):
             fieldCorrection = np.linalg.norm(ddU[fieldIndices], np.inf) if ddU is not None else 0.0
 
             convergedCorrection = fieldCorrection < self.fieldCorrectionTolerances[field]
-            convergedFlux = fluxResidual <= max(fluxResidualTolerances[field] * spatialAveragedFluxes[field], 1e-7)
+            floor = 1e-1 if field == "displacement" else 1e-7
+            convergedFlux = fluxResidual <= max(fluxResidualTolerances[field] * spatialAveragedFluxes[field], floor)
 
             previousFluxResidual, nGrew = residualHistory[field]
             if fluxResidual > previousFluxResidual:

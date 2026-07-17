@@ -1,0 +1,964 @@
+<frozen importlib._bootstrap>:491: RuntimeWarning: The global interpreter lock (GIL) has been enabled to load module 'edelweissfe.elements.marmotelement.element', which has not declared that it can run safely without the GIL. To override this behavior and keep the GIL disabled (at your own risk), run with PYTHON_GIL=0 or -Xgil=0.
++--------------------------------------------------------------------------------------------------+
+ Setting up finite element model                                                             feCore 
+   Activating fields on nodes from Elements and Constraints                                 FEModel 
+   Bundling fields on nodes to NodeFields                                                   FEModel 
+   Assembling ScalarVariables                                                               FEModel 
+     Constraint contact_l_stud_vert requests 123 additional ScalarVariables                 FEModel 
+     Constraint contact_l_head_horiz requests 83 additional ScalarVariables                 FEModel 
+     Constraint contact_l_head_vert requests 43 additional ScalarVariables                  FEModel 
+     Constraint contact_r_stud_vert requests 123 additional ScalarVariables                 FEModel 
+     Constraint contact_r_head_horiz requests 83 additional ScalarVariables                 FEModel 
+     Constraint contact_r_head_vert requests 43 additional ScalarVariables                  FEModel 
+ +------------------------------------+------------------------------------+                 feCore 
+ |Model setup time                    |    2.4622s                         |                 feCore 
+ +------------------------------------+------------------------------------+                 feCore 
+ Finite element model with spatial dimension 3 has                               PrettyModelSummary 
+  nodes:              68496                                                      PrettyModelSummary 
+  node sets:          23                                                         PrettyModelSummary 
+   [ALLNODES, load, displacement_anchor, nodeset_conc,                           PrettyModelSummary 
+   nodeset_stl_supports, nodeset_stl_anchor, bc_left, bc_right, z_symm,          PrettyModelSummary 
+   x_fix, cont_stl_l_stud_vert, cont_conc_l_stud_vert,                           PrettyModelSummary 
+   cont_stl_l_head_horiz, cont_conc_l_head_horiz, cont_stl_l_head_vert,          PrettyModelSummary 
+   cont_conc_l_head_vert, cont_stl_r_stud_vert, cont_conc_r_stud_vert,           PrettyModelSummary 
+   cont_stl_r_head_horiz, cont_conc_r_head_horiz, cont_stl_r_head_vert,          PrettyModelSummary 
+   cont_conc_r_head_vert, all]                                                   PrettyModelSummary 
+  node fields:        2                                                          PrettyModelSummary 
+   [displacement (68496), nonlocal damage (65257)]                               PrettyModelSummary 
+  elements:           9768                                                       PrettyModelSummary 
+  element sets:       38                                                         PrettyModelSummary 
+   [concrete, steel_supports, steel_anchor, elset_con_conc_l_stud_vert,          PrettyModelSummary 
+   elset_con_stl_l_stud_vert, elset_con_conc_l_head_horiz,                       PrettyModelSummary 
+   elset_con_stl_l_head_horiz, elset_con_conc_l_head_vert,                       PrettyModelSummary 
+   elset_con_stl_l_head_vert, elset_con_conc_r_stud_vert,                        PrettyModelSummary 
+   elset_con_stl_r_stud_vert, elset_con_conc_r_head_horiz,                       PrettyModelSummary 
+   elset_con_stl_r_head_horiz, elset_con_conc_r_head_vert,                       PrettyModelSummary 
+   elset_con_stl_r_head_vert, bc_left_surface_S3, bc_left_surface_S6,            PrettyModelSummary 
+   bc_right_surface_S3, bc_right_surface_S6,                                     PrettyModelSummary 
+   cont_surf_stl_l_stud_vert_S3, cont_surf_conc_l_stud_vert_S3,                  PrettyModelSummary 
+   cont_surf_conc_l_stud_vert_S6, cont_surf_stl_l_head_horiz_S6,                 PrettyModelSummary 
+   cont_surf_conc_l_head_horiz_S3, cont_surf_conc_l_head_horiz_S6,               PrettyModelSummary 
+   cont_surf_stl_l_head_vert_S5, cont_surf_conc_l_head_vert_S3,                  PrettyModelSummary 
+   cont_surf_conc_l_head_vert_S6, cont_surf_stl_r_stud_vert_S5,                  PrettyModelSummary 
+   cont_surf_conc_r_stud_vert_S3, cont_surf_conc_r_stud_vert_S6,                 PrettyModelSummary 
+   cont_surf_stl_r_head_horiz_S6, cont_surf_conc_r_head_horiz_S3,                PrettyModelSummary 
+   cont_surf_conc_r_head_horiz_S6, cont_surf_stl_r_head_vert_S3,                 PrettyModelSummary 
+   cont_surf_conc_r_head_vert_S3, cont_surf_conc_r_head_vert_S6, all]            PrettyModelSummary 
+  constraints:        8                                                          PrettyModelSummary 
+  scalar variables:   498                                                        PrettyModelSummary 
+  materials:          2                                                          PrettyModelSummary 
+   [steel, concrete]                                                             PrettyModelSummary 
++--------------------------------------------------------------------------------------------------+
+   Setting fluxResidualTolerance/scalar variables to 0.001                            configuration 
+   Setting fluxResidualToleranceAlternative/scalar variables to 0.001                 configuration 
+   Setting fieldCorrectionTolerance/scalar variables to 100000.0                      configuration 
+   StepAction definitions:                                                              StepManager 
+     Creating "StepAction-0" [category=NISTSolver, extrapolation=linear,                StepManager 
+                             defaultmaxiter=10, defaultcriticaliter=5,                  StepManager 
+                             defaultmaxgrowingiter=10, linsolver=pardiso,               StepManager 
+                             linsolverconfigfile=,                                      StepManager 
+                             arclengthcontroller=None, stopcondition=None,              StepManager 
+                             intermediatesaveinterval=None,                             StepManager 
+                             mindtforoutput=None,                                       StepManager 
+                             inputfile=POT_Dejori_mortar_contact.inp]                   StepManager 
+     Creating "x_fix" [nset=x_fix, field=displacement, 1=0.0, 2=None,                   StepManager 
+                      3=None, 4=None, 5=None, 6=None, components=None,                  StepManager 
+                      analyticalfield=None, f(t)=None,                                  StepManager 
+                      inputfile=POT_Dejori_mortar_contact.inp]                          StepManager 
+     Creating "z_symm" [nset=z_symm, field=displacement, 3=0.0, 1=None,                 StepManager 
+                       2=None, 4=None, 5=None, 6=None, components=None,                 StepManager 
+                       analyticalfield=None, f(t)=None,                                 StepManager 
+                       inputfile=POT_Dejori_mortar_contact.inp]                         StepManager 
+     Creating "disp" [nset=load, field=displacement, 2=1.1, 1=None, 3=None,             StepManager 
+                     4=None, 5=None, 6=None, components=None,                           StepManager 
+                     analyticalfield=None, f(t)=None,                                   StepManager 
+                     inputfile=POT_Dejori_mortar_contact.inp]                           StepManager 
+   Using 8 threads                                                                      NISTPSolver 
+ Creating monolithic equation system                                                    NISTPSolver 
+ total size of eq. system: 271243                                                       NISTPSolver 
++--------------------------------------------------------------------------------------------------+
++--------------------------------------------------------------------------------------------------+
+   increment 0: 0.000000, 0.000000; time   0.000000 to   0.000000                       NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      0.00e+00✓   0.00e+00✓    0.00e+00✓   0.00e+00✓    0.00e+00✓   0.00e+00✓           NISTPSolver 
+   Converged in 1 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.0                                                                      Monitor 
+   Monitor (force): -0.0                                                                    Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 1: 0.010000, 0.010000; time   0.000000 to   0.010000                       NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      3.79e-11✓   1.10e-02     0.00e+00✓   0.00e+00✓    3.47e-02    0.00e+00✓           NISTPSolver 
+      1.01e+01    1.02e-02     0.00e+00✓   0.00e+00✓    4.98e+00    1.45e+01✓           NISTPSolver 
+      2.79e+00    1.45e-04     1.51e-25✓   2.41e-27✓    1.27e+00    4.98e+00✓           NISTPSolver 
+      4.90e+00    1.97e-04     1.52e-25✓   3.25e-27✓    3.54e+00    3.96e+00✓           NISTPSolver 
+      2.10e-11✓   1.72e-04     1.06e-25✓   5.71e-27✓    2.27e-13✓   3.54e+00✓           NISTPSolver 
+      2.00e-11✓   1.21e-13✓    1.31e-35✓   5.71e-27✓    2.83e-13✓   5.89e-09✓           NISTPSolver 
+   Converged in 6 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.011000000000000003                                                     Monitor 
+   Monitor (force): -2201.6042219724313                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 2: 0.010000, 0.020000; time   0.010000 to   0.020000                       NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      4.87e+00    0.00e+00✓    1.44e-04    0.00e+00✓    1.47e+00    0.00e+00✓           NISTPSolver 
+      1.06e+01    3.79e-04     2.69e-05    1.94e-05     4.06e+00    6.50e+00✓           NISTPSolver 
+      4.00e+00    2.62e-03     8.20e-06    7.42e-06     1.08e+00    4.06e+00✓           NISTPSolver 
+      2.80e-01    7.79e-05     1.68e-06    1.36e-06     1.26e-01    1.08e+00✓           NISTPSolver 
+      6.23e-05✓   3.37e-06     2.92e-09✓   1.08e-07     3.06e-13✓   1.26e-01✓           NISTPSolver 
+      2.54e-11✓   1.13e-09✓    3.37e-16✓   4.99e-11✓    3.78e-13✓   1.45e-05✓           NISTPSolver 
+   Converged in 5 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.022000000000000006                                                     Monitor 
+   Monitor (force): -4344.277712568712                                                      Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 3: 0.010000, 0.030000; time   0.020000 to   0.030000                       NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      3.46e+00    0.00e+00✓    1.08e-04    0.00e+00✓    1.83e+00    0.00e+00✓           NISTPSolver 
+      5.88e+00    1.56e-03     6.49e-05    2.04e-05     1.81e+00    3.31e+00✓           NISTPSolver 
+      3.85e+00    1.96e-04     1.97e-05    3.09e-06     1.61e+00    3.52e+00✓           NISTPSolver 
+      6.95e-02✓   9.47e-05     1.44e-05    8.72e-07     2.34e-13✓   1.61e+00✓           NISTPSolver 
+      7.69e-04✓   1.19e-06     2.27e-09✓   6.93e-07     2.27e-13✓   1.35e-02✓           NISTPSolver 
+      7.05e-08✓   2.38e-08✓    5.06e-13✓   5.46e-10✓    4.20e-13✓   2.43e-04✓           NISTPSolver 
+   Converged in 5 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.03300000000000001                                                      Monitor 
+   Monitor (force): -6484.470122796849                                                      Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 4: 0.010000, 0.040000; time   0.030000 to   0.040000                       NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      4.44e+00    0.00e+00✓    3.39e-04    0.00e+00✓    1.97e-01    0.00e+00✓           NISTPSolver 
+      1.39e+00    1.91e-04     7.44e-05    3.41e-05     4.82e-01    2.53e+00✓           NISTPSolver 
+      6.13e-01    4.83e-05     1.29e-05    6.93e-06     3.41e-13✓   4.82e-01✓           NISTPSolver 
+      1.83e-02✓   5.99e-06     3.65e-08✓   4.48e-07     3.69e-13✓   2.25e-02✓           NISTPSolver 
+      1.08e-04✓   1.76e-07     3.10e-11✓   1.36e-08     2.84e-13✓   6.23e-04✓           NISTPSolver 
+      1.24e-08✓   1.42e-09✓    2.04e-15✓   1.30e-10✓    3.41e-13✓   5.76e-06✓           NISTPSolver 
+   Converged in 5 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.04400000000000001                                                      Monitor 
+   Monitor (force): -8589.637062036089                                                      Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 5: 0.010000, 0.050000; time   0.040000 to   0.050000                       NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      3.82e+00    0.00e+00✓    2.75e-04    0.00e+00✓    1.74e+00    0.00e+00✓           NISTPSolver 
+      5.43e+00    2.29e-04     2.57e-04    4.43e-05     2.34e-05✓   1.74e+00✓           NISTPSolver 
+      3.56e-01    4.34e-05     3.07e-05    7.55e-06     4.22e-13✓   2.92e-01✓           NISTPSolver 
+      2.29e-02✓   3.59e-06     8.99e-06    9.00e-07     3.55e-13✓   1.05e-02✓           NISTPSolver 
+      4.99e-04✓   5.46e-07     3.71e-10✓   4.13e-07     3.69e-13✓   9.64e-04✓           NISTPSolver 
+      3.83e-07✓   9.21e-09✓    2.68e-13✓   5.93e-10✓    2.86e-13✓   9.40e-06✓           NISTPSolver 
+   Converged in 5 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.05499999999999999                                                      Monitor 
+   Monitor (force): -10650.967333642484                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 6: 0.010000, 0.060000; time   0.050000 to   0.060000                       NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      4.28e+00    0.00e+00✓    2.98e-04    0.00e+00✓    1.69e-02    0.00e+00✓           NISTPSolver 
+      6.66e+00    2.98e-04     1.92e-04    5.52e-05     9.49e-02    4.09e+00✓           NISTPSolver 
+      2.56e+00    7.58e-05     3.95e-05    1.05e-05     1.03e-06✓   1.62e-01✓           NISTPSolver 
+      2.39e-01    2.05e-05     9.37e-06    1.11e-06     3.93e-13✓   5.11e-02✓           NISTPSolver 
+      5.94e-02✓   6.22e-06     8.92e-08✓   5.28e-07     2.84e-13✓   2.52e-03✓           NISTPSolver 
+      3.87e-03✓   1.65e-06     7.84e-06    1.69e-07     3.69e-13✓   8.92e-04✓           NISTPSolver 
+      2.63e-05✓   1.24e-07     1.85e-11✓   3.20e-07     2.56e-13✓   1.88e-04✓           NISTPSolver 
+      1.00e-09✓   6.89e-10✓    5.03e-16✓   7.22e-11✓    3.80e-13✓   4.74e-07✓           NISTPSolver 
+   Converged in 7 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.06600000000000002                                                      Monitor 
+   Monitor (force): -12651.731873461089                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 7: 0.010000, 0.070000; time   0.060000 to   0.070000                       NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      3.89e+00    0.00e+00✓    3.45e-04    0.00e+00✓    3.38e-01    0.00e+00✓           NISTPSolver 
+      1.02e+01    4.58e-04     2.12e-04    7.61e-05     5.07e-02    2.74e+00✓           NISTPSolver 
+      3.84e+00    1.60e-04     1.45e-04    2.67e-05     2.30e-13✓   3.03e-01✓           NISTPSolver 
+      2.63e-01    3.72e-05     1.89e-05    3.94e-06     2.56e-13✓   3.27e-02✓           NISTPSolver 
+      6.72e-02✓   1.85e-05     9.18e-06    1.66e-06     4.06e-13✓   4.90e-03✓           NISTPSolver 
+      9.78e-03✓   5.25e-06     7.91e-06    6.45e-07     3.65e-13✓   1.79e-03✓           NISTPSolver 
+      1.72e-04✓   1.02e-06     3.56e-09✓   3.52e-07     2.90e-13✓   5.35e-04✓           NISTPSolver 
+      4.33e-08✓   7.26e-09✓    1.44e-13✓   8.21e-10✓    3.29e-13✓   2.21e-06✓           NISTPSolver 
+   Converged in 7 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.077                                                                    Monitor 
+   Monitor (force): -14556.886668610208                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 8: 0.010000, 0.080000; time   0.070000 to   0.080000                       NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      4.05e+00    0.00e+00✓    3.51e-04    0.00e+00✓    2.75e-01    0.00e+00✓           NISTPSolver 
+      1.25e+01    6.97e-04     4.25e-04    1.25e-04     1.84e-01    4.59e+00✓           NISTPSolver 
+      7.33e+00    1.59e-04     1.24e-04    2.66e-05     4.24e-13✓   9.69e-01✓           NISTPSolver 
+      3.15e-01    5.91e-05     1.99e-05    5.58e-06     3.68e-13✓   5.56e-02✓           NISTPSolver 
+      3.43e-02✓   9.43e-06     8.23e-06    9.89e-07     2.29e-13✓   4.78e-03✓           NISTPSolver 
+      1.75e-03✓   7.47e-07     1.40e-09✓   3.44e-07     4.55e-13✓   5.79e-04✓           NISTPSolver 
+      7.04e-06✓   4.99e-08✓    1.29e-11✓   2.52e-09✓    2.80e-13✓   6.48e-06✓           NISTPSolver 
+   Converged in 6 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.08800000000000002                                                      Monitor 
+   Monitor (force): -16338.885814213776                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 9: 0.010000, 0.090000; time   0.080000 to   0.090000                       NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      6.58e+00    0.00e+00✓    3.89e-04    0.00e+00✓    2.00e+00    0.00e+00✓           NISTPSolver 
+      1.17e+01    9.62e-04     4.06e-04    1.83e-04     5.56e-01    4.42e+00✓           NISTPSolver 
+      1.93e+01    4.87e-04     2.78e-04    7.45e-05     5.15e-02    9.12e-01✓           NISTPSolver 
+      6.62e-01    2.02e-04     2.27e-05    1.40e-05     3.33e-13✓   6.34e-02✓           NISTPSolver 
+      1.36e-01    7.91e-05     2.16e-05    6.70e-06     3.49e-13✓   1.59e-02✓           NISTPSolver 
+      7.04e-02✓   3.22e-05     1.28e-05    2.81e-06     2.70e-13✓   7.06e-03✓           NISTPSolver 
+      1.94e-03✓   4.89e-06     9.85e-06    3.91e-07     3.01e-13✓   1.22e-03✓           NISTPSolver 
+      1.84e-05✓   5.03e-07     6.76e-10✓   4.10e-07     3.02e-13✓   1.31e-04✓           NISTPSolver 
+      1.03e-09✓   3.18e-09✓    2.32e-14✓   2.59e-10✓    2.42e-13✓   2.51e-07✓           NISTPSolver 
+   Converged in 8 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.09900000000000002                                                      Monitor 
+   Monitor (force): -17905.626432208428                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 10: 0.010000, 0.100000; time   0.090000 to   0.100000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      5.04e+00    0.00e+00✓    4.10e-04    0.00e+00✓    2.25e+00    0.00e+00✓           NISTPSolver 
+      3.01e+01    2.04e-03     7.55e-04    3.43e-04     1.52e+00    6.77e+00✓           NISTPSolver 
+   GCDPModel::computeStress: Return mapping failed: std::exception                      NISTPSolver 
+     Cutback to increment size 0.005                                             AdaptiveTimeStepper 
++--------------------------------------------------------------------------------------------------+
+   increment 10: 0.005000, 0.095000; time   0.090000 to   0.095000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      1.97e+01    5.50e-03     2.48e-04    7.97e-16✓    9.30e+00    1.23e+01✓           NISTPSolver 
+      1.05e+01    1.50e-03     2.46e-04    2.52e-04     1.84e+00    1.31e+01✓           NISTPSolver 
+      1.21e+01    6.29e-04     1.77e-04    1.02e-04     3.78e-13✓   4.26e+00✓           NISTPSolver 
+      2.22e+00    2.77e-04     2.93e-05    2.01e-05     2.52e-13✓   2.19e-01✓           NISTPSolver 
+      2.02e-01    6.42e-05     6.49e-06    4.38e-06     3.47e-13✓   3.46e-02✓           NISTPSolver 
+      1.79e-02✓   1.12e-05     1.31e-07    1.08e-06     3.40e-13✓   2.93e-03✓           NISTPSolver 
+      9.73e-06✓   4.82e-07     1.01e-10✓   4.61e-08     4.49e-13✓   1.17e-04✓           NISTPSolver 
+      9.44e-11✓   1.16e-09✓    6.43e-16✓   1.11e-10✓    2.27e-13✓   2.70e-07✓           NISTPSolver 
+   Converged in 8 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.1045                                                                   Monitor 
+   Monitor (force): -18555.102588258338                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 11: 0.005000, 0.100000; time   0.095000 to   0.100000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      3.53e+00    0.00e+00✓    2.71e-04    0.00e+00✓    1.43e+00    0.00e+00✓           NISTPSolver 
+      9.82e+00    5.78e-04     1.77e-04    1.03e-04     1.13e+00    6.62e+00✓           NISTPSolver 
+      4.73e-01    1.87e-04     2.77e-05    1.96e-05     4.66e-13✓   1.13e+00✓           NISTPSolver 
+      5.44e-02✓   1.92e-05     9.37e-06    2.97e-06     2.84e-13✓   2.10e-02✓           NISTPSolver 
+      2.12e-03✓   5.02e-06     6.41e-08✓   3.96e-07     3.98e-13✓   4.25e-04✓           NISTPSolver 
+      9.68e-06✓   1.24e-07     6.41e-11✓   5.75e-09✓    3.13e-13✓   1.06e-05✓           NISTPSolver 
+      2.05e-10✓   4.08e-10✓    4.37e-16✓   2.34e-11✓    2.90e-13✓   2.33e-08✓           NISTPSolver 
+   Converged in 6 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.10999999999999999                                                      Monitor 
+   Monitor (force): -19082.56163292761                                                      Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 12: 0.005000, 0.105000; time   0.100000 to   0.105000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      3.89e+00    0.00e+00✓    2.77e-04    0.00e+00✓    1.18e+00    0.00e+00✓           NISTPSolver 
+      1.08e+01    5.99e-04     2.69e-04    1.16e-04     8.25e-01    9.39e+00✓           NISTPSolver 
+      5.38e+00    2.04e-04     6.52e-05    2.80e-05     1.39e+00    1.70e+00✓           NISTPSolver 
+      2.40e-01    5.88e-05     1.17e-05    6.22e-06     2.28e-13✓   1.39e+00✓           NISTPSolver 
+      2.23e-01    3.94e-05     1.01e-05    3.94e-06     3.76e-13✓   3.97e-03✓           NISTPSolver 
+      2.66e-04✓   4.20e-06     1.87e-08✓   4.36e-07     2.88e-13✓   5.97e-04✓           NISTPSolver 
+      2.29e-08✓   4.24e-08✓    1.94e-12✓   3.82e-09✓    2.76e-13✓   5.14e-06✓           NISTPSolver 
+   Converged in 6 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.11549999999999999                                                      Monitor 
+   Monitor (force): -19492.424116170383                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 13: 0.005000, 0.110000; time   0.105000 to   0.110000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      4.12e+00    0.00e+00✓    3.03e-04    0.00e+00✓    2.55e+00    0.00e+00✓           NISTPSolver 
+      1.33e+01    7.99e-04     3.78e-04    1.67e-04     3.03e+00    9.09e+00✓           NISTPSolver 
+      1.09e+01    2.80e-04     2.43e-04    5.50e-05     2.84e-13✓   3.03e+00✓           NISTPSolver 
+      4.51e-01    1.66e-04     2.14e-05    1.23e-05     2.42e-13✓   2.87e-02✓           NISTPSolver 
+      1.25e-01    3.00e-05     9.65e-06    2.63e-06     2.84e-13✓   4.35e-03✓           NISTPSolver 
+      6.56e-03✓   1.38e-05     3.99e-07    1.76e-06     3.06e-13✓   2.76e-03✓           NISTPSolver 
+      1.68e-05✓   4.26e-07     6.70e-10✓   4.37e-08     2.84e-13✓   3.08e-05✓           NISTPSolver 
+      3.60e-10✓   5.67e-10✓    2.46e-15✓   6.50e-11✓    3.42e-13✓   2.05e-08✓           NISTPSolver 
+   Converged in 7 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.12100000000000001                                                      Monitor 
+   Monitor (force): -19713.813160519127                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 14: 0.005000, 0.115000; time   0.110000 to   0.115000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      1.11e+01    0.00e+00✓    3.34e-04    0.00e+00✓    3.40e+00    0.00e+00✓           NISTPSolver 
+      1.54e+01    1.04e-03     3.64e-04    1.98e-04     1.20e+00    7.99e+00✓           NISTPSolver 
+      1.54e+01    7.43e-04     3.33e-04    1.08e-04     3.84e-07✓   2.62e+00✓           NISTPSolver 
+      1.25e+00    1.53e-04     3.36e-05    1.56e-05     1.03e-03    1.18e-01✓           NISTPSolver 
+      3.84e-01    1.30e-04     1.17e-05    9.72e-06     3.26e-13✓   9.82e-03✓           NISTPSolver 
+      4.26e-02✓   5.53e-05     9.33e-06    5.25e-06     3.55e-13✓   5.95e-03✓           NISTPSolver 
+      1.84e-03✓   9.96e-06     1.11e-07    8.42e-07     4.36e-13✓   1.71e-03✓           NISTPSolver 
+      1.22e-06✓   3.12e-07     3.61e-11✓   2.61e-08     3.69e-13✓   4.68e-05✓           NISTPSolver 
+      9.69e-12✓   3.41e-10✓    5.90e-17✓   2.77e-11✓    3.74e-13✓   4.43e-08✓           NISTPSolver 
+   Converged in 8 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.12650000000000003                                                      Monitor 
+   Monitor (force): -19680.065885990065                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 15: 0.005000, 0.120000; time   0.115000 to   0.120000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      7.25e+00    0.00e+00✓    3.84e-04    0.00e+00✓    2.46e+00    0.00e+00✓           NISTPSolver 
+      3.59e+01    1.25e-03     1.09e-03    3.05e-04     6.35e+00    1.18e+01✓           NISTPSolver 
+      2.42e+01    6.60e-04     5.90e-04    8.88e-05     2.75e-01    6.35e+00✓           NISTPSolver 
+      5.49e+00    2.87e-04     6.05e-05    3.52e-05     3.41e-13✓   2.75e-01✓           NISTPSolver 
+      3.05e-01    1.43e-04     1.10e-05    1.27e-05     2.63e-13✓   2.80e-02✓           NISTPSolver 
+      3.06e-01    1.40e-04     1.80e-05    1.79e-05     2.27e-13✓   6.20e-02✓           NISTPSolver 
+      3.81e-01    3.75e-05     7.03e-06    4.94e-06     2.24e-13✓   1.93e-02✓           NISTPSolver 
+      3.28e-03✓   1.70e-05     1.49e-07    1.12e-06     3.13e-13✓   2.71e-03✓           NISTPSolver 
+      1.07e-06✓   1.21e-07     8.85e-11✓   1.75e-08     1.97e-13✓   5.30e-05✓           NISTPSolver 
+      3.69e-12✓   1.16e-10✓    1.04e-16✓   7.28e-12✓    2.20e-13✓   1.49e-08✓           NISTPSolver 
+   Converged in 9 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.13200000000000006                                                      Monitor 
+   Monitor (force): -19403.124994789105                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 16: 0.005000, 0.125000; time   0.120000 to   0.125000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      6.18e+00    0.00e+00✓    4.23e-04    0.00e+00✓    2.39e+00    0.00e+00✓           NISTPSolver 
+      5.18e+01    1.67e-03     1.42e-03    3.76e-04     2.50e+00    7.38e+00✓           NISTPSolver 
+      4.17e+01    1.18e-03     7.13e-04    1.53e-04     1.34e+00    2.50e+00✓           NISTPSolver 
+      3.87e+00    8.49e-04     8.46e-05    4.79e-05     1.11e-01    1.34e+00✓           NISTPSolver 
+      4.29e+00    7.53e-04     9.52e-05    3.43e-05     2.84e-13✓   1.20e-01✓           NISTPSolver 
+      2.31e-01    1.89e-04     5.86e-06    1.10e-05     2.15e-13✓   2.55e-02✓           NISTPSolver 
+      2.28e-01    6.51e-05     5.10e-06    5.12e-06     1.91e-13✓   7.91e-03✓           NISTPSolver 
+      2.98e-04✓   5.07e-06     8.21e-06    4.75e-07     4.40e-13✓   1.82e-03✓           NISTPSolver 
+      2.45e-07✓   3.24e-07     2.46e-11✓   3.50e-07     3.54e-13✓   1.21e-04✓           NISTPSolver 
+      3.04e-10✓   4.61e-11✓    7.98e-17✓   5.46e-12✓    1.85e-13✓   2.98e-08✓           NISTPSolver 
+   Converged in 9 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.1375000000000001                                                       Monitor 
+   Monitor (force): -18843.541883796286                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 17: 0.005000, 0.130000; time   0.125000 to   0.130000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      1.05e+01    0.00e+00✓    4.76e-04    0.00e+00✓    1.11e+01    0.00e+00✓           NISTPSolver 
+      6.53e+01    2.38e-03     4.24e-03    5.88e-04     2.60e+00    1.24e+01✓           NISTPSolver 
+      1.12e+03    1.48e-02     3.61e-02    1.83e-03     5.02e+00    5.69e+00✓           NISTPSolver 
+      2.39e+03    3.29e-02     7.02e-02    4.15e-03     6.12e+00    2.06e+01✓           NISTPSolver 
+      1.48e+03    2.91e-02     4.20e-02    1.77e-03     7.80e+00    1.66e+01✓           NISTPSolver 
+      9.20e+02    6.25e-02     1.63e-02    1.04e-03     2.03e-13✓   7.80e+00✓           NISTPSolver 
+   GCDPModel::computeStress: Return mapping failed: std::exception                      NISTPSolver 
+     Cutback to increment size 0.0025                                            AdaptiveTimeStepper 
++--------------------------------------------------------------------------------------------------+
+   increment 17: 0.002500, 0.127500; time   0.125000 to   0.127500                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      3.38e+00    2.75e-03     2.61e-04    6.06e-18✓    4.10e-13✓   1.21e+01✓           NISTPSolver 
+      4.35e+00    2.05e-03     5.46e-04    4.20e-04     3.42e-13✓   1.05e+01✓           NISTPSolver 
+      7.16e+00    1.16e-03     1.89e-04    1.54e-04     3.84e-13✓   2.36e+00✓           NISTPSolver 
+      2.28e+00    4.74e-04     4.07e-05    2.89e-05     3.25e-13✓   2.41e-01✓           NISTPSolver 
+      6.91e-02✓   2.64e-05     8.77e-06    3.83e-06     2.82e-13✓   5.59e-02✓           NISTPSolver 
+      4.57e-02✓   2.89e-06     4.10e-07    3.79e-07     3.65e-13✓   7.73e-04✓           NISTPSolver 
+      2.78e-04✓   1.11e-06     2.75e-09✓   5.94e-08     2.13e-13✓   9.21e-05✓           NISTPSolver 
+      1.52e-08✓   5.12e-09✓    1.56e-13✓   3.55e-10✓    3.44e-13✓   2.89e-07✓           NISTPSolver 
+   Converged in 8 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.14025                                                                  Monitor 
+   Monitor (force): -18617.778567283767                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 18: 0.002500, 0.130000; time   0.127500 to   0.130000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      3.86e+01    0.00e+00✓    1.97e-04    0.00e+00✓    1.58e+01    0.00e+00✓           NISTPSolver 
+      5.76e+01    3.04e-03     5.71e-04    1.45e-04     2.03e+01    2.57e+01✓           NISTPSolver 
+      7.09e+00    1.19e-03     5.77e-05    1.12e-04     3.94e+00    2.03e+01✓           NISTPSolver 
+      1.31e+00    7.05e-04     1.25e-05    4.60e-05     1.14e+00    4.98e+00✓           NISTPSolver 
+      6.23e-02✓   2.35e-04     8.28e-06    7.97e-06     7.81e-05✓   1.14e+00✓           NISTPSolver 
+      1.01e-02✓   7.70e-05     1.24e-08✓   1.21e-06     4.69e-13✓   1.64e-01✓           NISTPSolver 
+      9.45e-06✓   5.96e-07     3.53e-12✓   3.65e-08     1.99e-13✓   2.76e-03✓           NISTPSolver 
+      3.50e-11✓   1.20e-09✓    1.32e-16✓   1.95e-11✓    2.56e-13✓   2.11e-06✓           NISTPSolver 
+   Converged in 7 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.1430000000000001                                                       Monitor 
+   Monitor (force): -18200.926484328582                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 19: 0.002500, 0.132500; time   0.130000 to   0.132500                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      1.99e+01    0.00e+00✓    2.65e-04    0.00e+00✓    7.90e+00    0.00e+00✓           NISTPSolver 
+      4.58e+01    2.71e-03     9.25e-04    1.57e-04     4.99e+00    3.06e+01✓           NISTPSolver 
+      3.33e+00    8.46e-04     4.46e-05    6.45e-05     1.27e+00    7.20e+00✓           NISTPSolver 
+      6.58e-01    2.77e-04     1.29e-05    1.66e-05     2.78e-02    3.29e+00✓           NISTPSolver 
+      4.11e-01    1.34e-04     9.93e-06    1.03e-05     2.79e-13✓   3.65e-01✓           NISTPSolver 
+      9.66e-02✓   8.18e-05     1.69e-06    4.99e-06     2.38e-13✓   8.86e-03✓           NISTPSolver 
+      1.33e-01    1.47e-05     1.61e-06    1.25e-06     1.99e-13✓   2.87e-03✓           NISTPSolver 
+      6.23e-05✓   1.23e-06     4.06e-09✓   6.42e-08     2.56e-13✓   1.34e-04✓           NISTPSolver 
+      1.94e-09✓   6.61e-09✓    9.29e-14✓   5.70e-10✓    2.49e-13✓   7.03e-07✓           NISTPSolver 
+   Converged in 8 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.14575000000000005                                                      Monitor 
+   Monitor (force): -17905.351943852613                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 20: 0.002500, 0.135000; time   0.132500 to   0.135000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      1.03e+01    0.00e+00✓    2.07e-04    0.00e+00✓    2.43e+00    0.00e+00✓           NISTPSolver 
+      3.54e+01    3.26e-03     2.82e-04    1.24e-04     1.36e+01    2.26e+01✓           NISTPSolver 
+      4.80e+00    1.05e-03     4.85e-05    1.05e-04     3.25e+00    1.37e+01✓           NISTPSolver 
+      8.42e-01    4.19e-04     2.00e-05    2.48e-05     1.76e-01    3.25e+00✓           NISTPSolver 
+      1.06e-01    1.02e-04     1.79e-05    7.23e-06     2.22e-13✓   5.80e-01✓           NISTPSolver 
+      6.86e-04✓   9.11e-06     4.88e-09✓   1.10e-06     3.14e-13✓   3.09e-02✓           NISTPSolver 
+      1.88e-08✓   4.20e-08✓    3.11e-13✓   1.67e-09✓    2.98e-13✓   1.37e-04✓           NISTPSolver 
+   Converged in 6 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.1485                                                                   Monitor 
+   Monitor (force): -17604.059774297366                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 21: 0.002500, 0.137500; time   0.135000 to   0.137500                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      8.30e+00    0.00e+00✓    1.97e-04    0.00e+00✓    5.20e+00    0.00e+00✓           NISTPSolver 
+      4.51e+01    3.38e-03     8.77e-04    1.37e-04     1.04e+01    3.49e+01✓           NISTPSolver 
+      1.62e+01    2.93e-03     6.00e-05    5.41e-05     4.69e+00    1.04e+01✓           NISTPSolver 
+      2.45e+00    9.09e-04     3.67e-05    3.07e-05     7.74e-01    5.22e+00✓           NISTPSolver 
+      3.87e-01    2.21e-04     9.00e-06    5.54e-06     3.98e-06✓   9.60e-01✓           NISTPSolver 
+      1.47e-01    2.12e-05     8.52e-06    1.25e-06     2.27e-13✓   1.44e-01✓           NISTPSolver 
+      1.22e-03✓   1.14e-05     6.56e-09✓   5.50e-07     2.66e-13✓   1.14e-01✓           NISTPSolver 
+      2.82e-08✓   2.97e-08✓    1.44e-13✓   1.09e-09✓    2.50e-13✓   2.05e-04✓           NISTPSolver 
+   Converged in 7 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.15125000000000008                                                      Monitor 
+   Monitor (force): -17245.892603570457                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 22: 0.002500, 0.140000; time   0.137500 to   0.140000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      1.18e+01    0.00e+00✓    2.09e-04    0.00e+00✓    3.36e+00    0.00e+00✓           NISTPSolver 
+      3.56e+01    3.57e-03     3.48e-04    2.11e-04     1.02e+01    2.30e+01✓           NISTPSolver 
+      1.17e+01    1.12e-03     2.88e-04    1.28e-04     6.52e+00    1.51e+01✓           NISTPSolver 
+      4.09e+00    8.51e-04     2.56e-05    3.83e-05     1.66e+00    6.52e+00✓           NISTPSolver 
+      1.64e-01    1.34e-04     4.30e-06    1.04e-05     6.79e-02    2.45e+00✓           NISTPSolver 
+      2.83e-03✓   6.59e-06     6.20e-08✓   6.36e-07     3.27e-13✓   7.56e-02✓           NISTPSolver 
+      1.55e-05✓   5.67e-07     4.00e-10✓   6.96e-08     2.58e-13✓   2.11e-04✓           NISTPSolver 
+      1.32e-10✓   1.10e-09✓    6.29e-15✓   8.20e-11✓    3.20e-13✓   1.09e-07✓           NISTPSolver 
+   Converged in 7 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.154                                                                    Monitor 
+   Monitor (force): -16946.02427686726                                                      Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 23: 0.002500, 0.142500; time   0.140000 to   0.142500                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      4.80e+00    0.00e+00✓    2.02e-04    0.00e+00✓    2.40e+00    0.00e+00✓           NISTPSolver 
+      3.59e+01    3.30e-03     6.34e-04    1.33e-04     3.33e-01    2.99e+01✓           NISTPSolver 
+      2.64e+00    1.32e-03     6.33e-04    7.96e-05     6.83e-01    5.31e+00✓           NISTPSolver 
+      2.20e-01    5.65e-04     4.58e-05    2.12e-05     6.47e-02    1.36e+00✓           NISTPSolver 
+      4.36e-02✓   5.25e-04     3.49e-05    1.87e-05     2.79e-13✓   2.27e-01✓           NISTPSolver 
+      3.52e-03✓   1.72e-04     2.95e-06    7.03e-06     2.53e-13✓   6.60e-02✓           NISTPSolver 
+      2.12e-05✓   1.23e-05     1.45e-08✓   5.19e-07     3.51e-13✓   4.62e-03✓           NISTPSolver 
+      7.43e-10✓   6.91e-08✓    4.52e-13✓   2.80e-09✓    2.84e-13✓   2.62e-05✓           NISTPSolver 
+   Converged in 7 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.15675000000000008                                                      Monitor 
+   Monitor (force): -16601.72977852146                                                      Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 24: 0.002500, 0.145000; time   0.142500 to   0.145000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      8.93e+00    0.00e+00✓    1.97e-04    0.00e+00✓    3.86e+00    0.00e+00✓           NISTPSolver 
+      2.08e+01    2.67e-03     1.50e-03    2.40e-04     7.67e+00    3.53e+01✓           NISTPSolver 
+      8.70e+00    1.74e-03     3.19e-04    1.00e-04     3.18e+00    1.11e+01✓           NISTPSolver 
+      4.61e-01    4.83e-04     1.41e-04    5.47e-05     2.60e-01    3.55e+00✓           NISTPSolver 
+      2.75e-01    1.00e-03     1.59e-04    4.70e-05     2.65e-13✓   1.41e+00✓           NISTPSolver 
+      1.16e-01    1.75e-03     8.71e-05    5.58e-05     1.71e-13✓   6.91e-01✓           NISTPSolver 
+      4.24e-03✓   3.64e-04     5.09e-06    1.36e-05     1.92e-13✓   3.42e-02✓           NISTPSolver 
+      5.12e-05✓   1.91e-05     1.95e-08✓   7.00e-07     3.10e-13✓   6.79e-03✓           NISTPSolver 
+      1.18e-08✓   2.67e-07     2.74e-12✓   9.79e-09✓    1.90e-13✓   8.77e-05✓           NISTPSolver 
+      2.15e-12✓   5.15e-11✓    1.67e-16✓   1.90e-12✓    2.27e-13✓   1.88e-08✓           NISTPSolver 
+   Converged in 9 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.15950000000000003                                                      Monitor 
+   Monitor (force): -16305.469366450989                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 25: 0.002500, 0.147500; time   0.145000 to   0.147500                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      5.65e+00    0.00e+00✓    2.54e-04    0.00e+00✓    1.39e+00    0.00e+00✓           NISTPSolver 
+      1.66e+01    4.47e-03     1.10e-03    1.23e-04     7.84e+00    3.82e+01✓           NISTPSolver 
+      1.18e+00    1.97e-03     1.21e-03    1.38e-04     8.84e-01    9.39e+00✓           NISTPSolver 
+      1.40e+00    9.50e-04     3.89e-05    3.96e-05     2.85e-13✓   8.84e-01✓           NISTPSolver 
+      5.19e-02✓   6.78e-04     3.93e-05    2.39e-05     1.99e-13✓   1.63e-01✓           NISTPSolver 
+      1.20e-02✓   4.44e-04     8.65e-06    1.60e-05     2.99e-13✓   8.12e-02✓           NISTPSolver 
+      4.36e-04✓   8.32e-05     2.62e-07    3.23e-06     5.30e-13✓   1.57e-02✓           NISTPSolver 
+      4.11e-07✓   2.21e-06     2.26e-10✓   8.90e-08     3.84e-13✓   4.27e-04✓           NISTPSolver 
+      1.99e-11✓   1.97e-09✓    2.36e-16✓   8.05e-11✓    4.26e-13✓   3.76e-07✓           NISTPSolver 
+   Converged in 8 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.16225000000000012                                                      Monitor 
+   Monitor (force): -16010.598328243756                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 26: 0.002500, 0.150000; time   0.147500 to   0.150000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      7.61e+00    0.00e+00✓    3.61e-04    0.00e+00✓    4.03e+00    0.00e+00✓           NISTPSolver 
+      1.64e+01    3.52e-03     2.12e-03    2.15e-04     2.92e+00    3.78e+01✓           NISTPSolver 
+      4.42e+01    6.34e-03     4.59e-03    2.25e-04     3.82e+00    2.32e+01✓           NISTPSolver 
+      7.12e+00    3.46e-03     1.23e-03    2.98e-04     1.27e+00    2.94e+01✓           NISTPSolver 
+      1.31e+00    6.97e-04     1.21e-04    3.59e-05     3.89e-01    1.96e+00✓           NISTPSolver 
+      1.32e-01    2.68e-04     1.06e-05    1.12e-05     2.17e-13✓   3.89e-01✓           NISTPSolver 
+      7.98e-03✓   5.08e-05     5.72e-07    2.70e-06     1.71e-13✓   1.87e-02✓           NISTPSolver 
+      1.07e-05✓   1.32e-06     7.69e-10✓   1.35e-07     3.98e-13✓   6.77e-04✓           NISTPSolver 
+      1.46e-10✓   3.22e-09✓    9.97e-15✓   2.92e-10✓    2.30e-13✓   7.26e-07✓           NISTPSolver 
+   Converged in 8 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.16500000000000006                                                      Monitor 
+   Monitor (force): -15698.711029846143                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 27: 0.002500, 0.152500; time   0.150000 to   0.152500                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      1.36e+01    0.00e+00✓    6.52e-04    0.00e+00✓    6.69e+00    0.00e+00✓           NISTPSolver 
+      1.60e+01    5.95e-03     1.77e-03    1.83e-04     3.28e+00    4.39e+01✓           NISTPSolver 
+      1.80e+00    1.90e-03     1.16e-03    9.84e-05     1.74e-13✓   1.26e+01✓           NISTPSolver 
+      6.12e-01    3.10e-04     2.99e-04    3.45e-05     2.44e-13✓   6.66e-01✓           NISTPSolver 
+      1.06e-01    7.75e-04     7.66e-05    3.34e-05     2.56e-13✓   3.94e-01✓           NISTPSolver 
+      2.80e-02✓   8.41e-04     7.58e-06    3.36e-05     1.85e-13✓   1.19e-01✓           NISTPSolver 
+      1.49e-03✓   1.77e-04     1.16e-06    7.56e-06     1.85e-13✓   2.32e-02✓           NISTPSolver 
+      1.43e-06✓   3.31e-06     2.14e-09✓   1.86e-07     2.70e-13✓   1.05e-03✓           NISTPSolver 
+      6.02e-10✓   3.92e-09✓    6.87e-16✓   1.60e-10✓    1.95e-13✓   5.79e-07✓           NISTPSolver 
+   Converged in 8 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.16775                                                                  Monitor 
+   Monitor (force): -15441.844735127663                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 28: 0.002500, 0.155000; time   0.152500 to   0.155000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      5.74e+00    0.00e+00✓    6.98e-04    0.00e+00✓    7.06e+00    0.00e+00✓           NISTPSolver 
+      2.18e+01    3.48e-03     4.51e-03    2.48e-04     3.03e+00    5.22e+01✓           NISTPSolver 
+      3.74e+01    7.02e-03     6.48e-03    2.55e-04     5.11e+00    2.23e+01✓           NISTPSolver 
+      1.40e+01    3.67e-03     7.50e-04    3.74e-04     6.06e+00    2.38e+01✓           NISTPSolver 
+      8.80e+00    1.50e-03     7.31e-05    7.62e-05     2.10e+00    6.06e+00✓           NISTPSolver 
+      2.96e-01    5.86e-04     1.24e-05    2.16e-05     1.81e-13✓   2.10e+00✓           NISTPSolver 
+      8.52e-03✓   6.78e-05     3.18e-07    3.38e-06     1.59e-13✓   1.57e-01✓           NISTPSolver 
+      2.69e-06✓   1.53e-06     2.13e-10✓   7.88e-08     4.56e-13✓   1.22e-03✓           NISTPSolver 
+      2.53e-11✓   9.97e-10✓    2.08e-16✓   5.17e-11✓    2.68e-13✓   5.92e-07✓           NISTPSolver 
+   Converged in 8 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.17050000000000007                                                      Monitor 
+   Monitor (force): -15157.679525986197                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 29: 0.002500, 0.157500; time   0.155000 to   0.157500                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      6.92e+00    0.00e+00✓    6.40e-04    0.00e+00✓    7.25e-01    0.00e+00✓           NISTPSolver 
+      3.04e+01    5.13e-03     1.11e-03    1.79e-04     1.42e+00    4.97e+01✓           NISTPSolver 
+      1.29e+01    2.00e-03     1.78e-03    1.32e-04     8.63e-04✓   7.21e+00✓           NISTPSolver 
+      3.77e-01    5.98e-04     1.67e-04    8.78e-05     1.53e-04✓   1.76e+00✓           NISTPSolver 
+      4.71e-01    5.24e-04     2.66e-05    2.46e-05     2.34e-13✓   3.78e-01✓           NISTPSolver 
+      4.73e-03✓   3.28e-04     5.30e-06    1.27e-05     2.27e-13✓   3.96e-02✓           NISTPSolver 
+      1.91e-04✓   4.90e-05     4.99e-08✓   1.88e-06     2.57e-13✓   7.02e-03✓           NISTPSolver 
+      7.30e-08✓   5.44e-07     7.95e-12✓   2.15e-08     3.26e-13✓   1.05e-04✓           NISTPSolver 
+      2.03e-12✓   7.66e-11✓    1.67e-16✓   3.04e-12✓    1.99e-13✓   1.67e-08✓           NISTPSolver 
+   Converged in 8 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.17325000000000002                                                      Monitor 
+   Monitor (force): -14908.188868843563                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 30: 0.002500, 0.160000; time   0.157500 to   0.160000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      5.79e+00    0.00e+00✓    3.77e-04    0.00e+00✓    5.38e-01    0.00e+00✓           NISTPSolver 
+      1.86e+01    5.47e-03     1.91e-03    5.54e-04     6.51e+00    4.59e+01✓           NISTPSolver 
+      3.50e+01    4.79e-03     5.52e-04    2.86e-04     2.27e+01    2.27e+01✓           NISTPSolver 
+      1.38e+01    1.10e-03     3.06e-04    1.23e-04     9.15e+00    2.27e+01✓           NISTPSolver 
+      8.72e+00    7.70e-04     1.70e-04    8.48e-05     1.73e+00    9.15e+00✓           NISTPSolver 
+      3.05e-01    1.70e-03     2.92e-04    5.53e-05     4.12e-13✓   1.76e+00✓           NISTPSolver 
+      1.41e-01    5.41e-04     1.55e-05    2.78e-05     2.84e-13✓   1.12e-01✓           NISTPSolver 
+      8.13e-03✓   5.14e-05     3.84e-07    2.34e-06     3.90e-13✓   1.07e-02✓           NISTPSolver 
+      7.19e-05✓   4.28e-06     2.42e-09✓   2.25e-07     3.77e-13✓   6.10e-04✓           NISTPSolver 
+      2.43e-09✓   1.42e-08✓    3.59e-14✓   1.35e-09✓    2.63e-13✓   4.26e-06✓           NISTPSolver 
+   Converged in 9 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.17600000000000007                                                      Monitor 
+   Monitor (force): -14647.265450374933                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 31: 0.002500, 0.162500; time   0.160000 to   0.162500                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      6.22e+00    0.00e+00✓    6.55e-04    0.00e+00✓    2.80e+00    0.00e+00✓           NISTPSolver 
+      1.30e+01    3.99e-03     1.81e-03    2.25e-04     7.65e+00    5.15e+01✓           NISTPSolver 
+      1.33e+01    2.08e-03     1.52e-03    1.56e-04     4.00e-01    1.10e+01✓           NISTPSolver 
+      9.31e-01    5.92e-04     2.56e-04    5.66e-05     4.51e-01    1.75e+00✓           NISTPSolver 
+      4.26e-01    5.33e-04     2.87e-05    2.92e-05     2.82e-13✓   4.51e-01✓           NISTPSolver 
+      3.54e+01    4.67e-04     1.05e-03    1.97e-05     2.34e-13✓   8.71e-02✓           NISTPSolver 
+      1.09e+00    3.90e-04     2.88e-05    1.35e-05     2.68e-13✓   4.48e-02✓           NISTPSolver 
+      8.44e-02✓   1.62e-05     2.73e-06    7.08e-07     3.23e-13✓   7.40e-03✓           NISTPSolver 
+      3.00e-01    7.42e-06     5.51e-06    2.77e-07     5.01e-13✓   7.93e-04✓           NISTPSolver 
+      2.26e-01    5.90e-06     7.07e-06    2.27e-07     2.12e-13✓   6.19e-04✓           NISTPSolver 
+      3.92e-02✓   3.11e-06     6.49e-07    2.75e-07     1.82e-13✓   1.57e-03✓           NISTPSolver 
+      3.35e-02✓   3.55e-06     5.44e-07    1.40e-07     2.03e-13✓   2.59e-04✓           NISTPSolver 
+      2.57e-05✓   7.94e-07     5.30e-11✓   2.69e-08     2.43e-13✓   1.03e-05✓           NISTPSolver 
+      2.18e-10✓   5.39e-10✓    3.75e-16✓   4.94e-11✓    2.27e-13✓   2.97e-08✓           NISTPSolver 
+   Converged in 13 iteration(s)                                                         NISTPSolver 
+   Monitor (disp): 0.17875000000000005                                                      Monitor 
+   Monitor (force): -14414.312466662854                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 32: 0.002500, 0.165000; time   0.162500 to   0.165000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      5.14e+00    0.00e+00✓    2.67e-04    0.00e+00✓    1.40e+00    0.00e+00✓           NISTPSolver 
+      8.14e+01    6.75e-03     4.42e-03    6.91e-04     6.63e+00    4.41e+01✓           NISTPSolver 
+      5.33e+01    4.84e-03     5.30e-04    2.71e-04     1.28e+01    2.26e+01✓           NISTPSolver 
+      4.06e+01    4.13e-03     9.37e-04    1.48e-04     1.05e+01    1.97e+01✓           NISTPSolver 
+      7.80e+00    1.27e-03     1.56e-04    1.33e-04     3.28e+00    1.05e+01✓           NISTPSolver 
+      2.56e+00    1.18e-03     2.24e-04    1.69e-04     2.68e-13✓   4.67e+00✓           NISTPSolver 
+      6.72e+00    5.17e-04     1.85e-04    7.57e-05     1.99e-13✓   5.02e-01✓           NISTPSolver 
+      8.09e-01    1.97e-04     5.01e-05    1.35e-05     1.72e-13✓   5.25e-02✓           NISTPSolver 
+      1.96e+02    1.86e-03     5.50e-03    6.65e-05     1.76e-13✓   2.46e-01✓           NISTPSolver 
+      9.34e+00    1.92e-03     2.66e-04    6.98e-05     3.94e-13✓   2.48e-01✓           NISTPSolver 
+      2.12e-01    7.95e-05     6.56e-06    8.30e-06     2.61e-13✓   1.28e-02✓           NISTPSolver 
+      8.50e-02✓   1.70e-05     3.54e-06    1.76e-06     2.70e-13✓   4.00e-03✓           NISTPSolver 
+      9.47e-01    1.05e-05     2.32e-05    5.85e-07     1.85e-13✓   6.68e-04✓           NISTPSolver 
+      2.76e-02✓   1.39e-05     4.67e-07    1.14e-06     1.57e-13✓   2.06e-03✓           NISTPSolver 
+      6.04e-01    1.01e-05     1.37e-05    2.84e-07     2.70e-13✓   1.07e-03✓           NISTPSolver 
+      5.02e-03✓   8.91e-06     8.33e-08✓   7.45e-07     2.98e-13✓   1.63e-03✓           NISTPSolver 
+      1.24e-01    1.12e-05     2.91e-06✓   3.92e-07     2.92e-13✓   2.82e-04✓           NISTPSolver 
+      2.51e-02✓   4.29e-06     4.43e-07✓   1.48e-07     2.03e-13✓   1.51e-04✓           NISTPSolver 
+      5.41e-02✓   6.31e-06     1.26e-06✓   2.36e-07     2.13e-13✓   1.36e-04✓           NISTPSolver 
+      1.00e-04✓   2.34e-06     1.13e-10✓   7.79e-08     2.79e-13✓   5.48e-05✓           NISTPSolver 
+      3.51e-09✓   7.99e-09✓    2.23e-15✓   2.08e-10✓    4.97e-13✓   2.92e-07✓           NISTPSolver 
+   Converged in 20 iteration(s)                                                         NISTPSolver 
+   Monitor (disp): 0.18150000000000013                                                      Monitor 
+   Monitor (force): -14171.037283754358                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 33: 0.002500, 0.167500; time   0.165000 to   0.167500                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      4.97e+00    0.00e+00✓    7.47e-04    0.00e+00✓    2.30e+00    0.00e+00✓           NISTPSolver 
+      2.20e+01    4.20e-03     1.46e-03    2.14e-04     4.99e+00    5.25e+01✓           NISTPSolver 
+      5.73e+01    6.23e-03     1.11e-03    1.34e-04     4.06e-01    2.86e+01✓           NISTPSolver 
+      1.12e+01    3.24e-03     5.88e-04    6.03e-05     9.38e-07✓   2.09e+01✓           NISTPSolver 
+      5.08e-01    6.04e-04     1.92e-04    4.34e-05     3.86e-03    3.42e+00✓           NISTPSolver 
+      1.51e-02✓   6.69e-05     6.47e-06    9.09e-06     3.21e-13✓   1.32e-01✓           NISTPSolver 
+      1.86e-01    3.89e-06     6.35e-06    3.03e-07     3.14e-13✓   3.81e-04✓           NISTPSolver 
+      1.53e-04✓   1.79e-06     2.50e-09✓   2.89e-07     2.89e-13✓   1.46e-04✓           NISTPSolver 
+      1.49e-07✓   1.86e-07     6.20e-13✓   8.66e-09✓    2.27e-13✓   7.60e-06✓           NISTPSolver 
+      1.71e-12✓   5.81e-12✓    2.50e-16✓   4.02e-13✓    1.99e-13✓   6.15e-09✓           NISTPSolver 
+   Converged in 9 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.18425000000000008                                                      Monitor 
+   Monitor (force): -13956.202622646233                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 34: 0.002500, 0.170000; time   0.167500 to   0.170000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      6.49e+00    0.00e+00✓    3.91e-04    0.00e+00✓    2.68e+00    0.00e+00✓           NISTPSolver 
+      1.16e+02    8.07e-03     8.59e-03    8.05e-04     5.76e+00    5.81e+01✓           NISTPSolver 
+      3.39e+02    5.45e-03     1.11e-02    4.80e-04     1.09e+01    4.01e+01✓           NISTPSolver 
+      2.43e+02    6.07e-03     2.23e-03    1.88e-04     2.36e+01    4.12e+01✓           NISTPSolver 
+      9.07e+02    3.18e-02     6.43e-03    5.21e-04     1.31e+02    1.61e+02✓           NISTPSolver 
+      4.55e+02    5.71e-02     2.14e-02    1.35e-03     2.85e-13✓   2.64e+02✓           NISTPSolver 
+   GCDPModel::computeStress: Return mapping failed: std::exception                      NISTPSolver 
+     Cutback to increment size 0.00125                                           AdaptiveTimeStepper 
++--------------------------------------------------------------------------------------------------+
+   increment 34: 0.001250, 0.168750; time   0.167500 to   0.168750                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      2.51e+01    3.92e-03     1.95e-03    1.83e-17✓    2.98e-13✓   6.24e+01✓           NISTPSolver 
+      4.64e+01    1.55e-03     1.40e-03    2.42e-04     2.79e-13✓   1.09e+01✓           NISTPSolver 
+      3.35e+01    1.19e-03     7.18e-04    2.34e-04     2.27e-13✓   5.16e+00✓           NISTPSolver 
+      9.66e+00    9.92e-04     1.97e-04    8.22e-05     3.20e-13✓   2.74e+00✓           NISTPSolver 
+      7.34e+00    2.70e-04     1.45e-04    6.29e-05     1.94e-13✓   6.94e-01✓           NISTPSolver 
+      2.82e-01    4.19e-05     6.37e-06    4.69e-06     2.51e-13✓   4.11e-02✓           NISTPSolver 
+      3.32e-02✓   3.14e-05     2.37e-06    3.52e-06     2.96e-13✓   6.62e-03✓           NISTPSolver 
+      3.79e-03✓   1.89e-06     6.19e-08✓   2.77e-07     3.00e-13✓   1.27e-03✓           NISTPSolver 
+      1.25e-07✓   7.28e-08✓    9.20e-12✓   3.85e-09✓    2.28e-13✓   6.22e-06✓           NISTPSolver 
+   Converged in 9 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.18562500000000004                                                      Monitor 
+   Monitor (force): -13782.671471191845                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 35: 0.001250, 0.170000; time   0.168750 to   0.170000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      5.62e+01    0.00e+00✓    8.15e-04    0.00e+00✓    3.34e+01    0.00e+00✓           NISTPSolver 
+      9.20e+02    2.58e-02     2.05e-02    1.79e-03     1.55e+01    6.27e+01✓           NISTPSolver 
+      1.50e+02    5.41e-02     1.26e-03    1.54e-03     2.25e+01    1.02e+02✓           NISTPSolver 
+      2.16e+02    3.30e-02     4.05e-03    2.42e-04     2.10e+01    4.99e+01✓           NISTPSolver 
+      3.43e+02    2.70e-02     3.76e-03    4.01e-04     3.40e+01    5.35e+01✓           NISTPSolver 
+      7.95e+02    5.11e-02     3.71e-03    3.17e-04     2.27e-13✓   1.31e+02✓           NISTPSolver 
+      8.22e+02    1.94e-01     1.27e-02    5.74e-04     1.71e-13✓   2.88e+02✓           NISTPSolver 
+   GCDPModel::computeStress: Return mapping failed: std::exception                      NISTPSolver 
+     Cutback to increment size 0.000625                                          AdaptiveTimeStepper 
++--------------------------------------------------------------------------------------------------+
+   increment 35: 0.000625, 0.169375; time   0.168750 to   0.169375                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      1.85e+01    5.26e-03     1.38e-03    3.70e-13✓    3.38e-13✓   7.98e+01✓           NISTPSolver 
+      3.75e+01    2.07e-03     1.15e-03    1.64e-04     2.27e-13✓   1.43e+01✓           NISTPSolver 
+      1.45e+01    2.88e-03     3.92e-04    9.20e-05     4.47e-13✓   1.11e+01✓           NISTPSolver 
+      4.70e+00    7.27e-04     1.71e-04    8.28e-05     2.75e-13✓   1.40e+00✓           NISTPSolver 
+      3.97e+00    1.52e-04     1.02e-04    1.04e-05     2.24e-13✓   6.38e-01✓           NISTPSolver 
+      1.05e+00    3.60e-05     2.77e-05    3.05e-06     2.88e-13✓   1.83e-02✓           NISTPSolver 
+      4.41e-01    8.34e-06     9.75e-06    1.11e-06     4.05e-13✓   4.60e-03✓           NISTPSolver 
+      3.48e-02✓   5.31e-06     1.07e-09✓   7.57e-07     2.70e-13✓   2.10e-03✓           NISTPSolver 
+      1.44e-03✓   2.74e-07     8.95e-14✓   9.08e-10✓    2.86e-13✓   7.24e-05✓           NISTPSolver 
+      7.82e-12✓   1.66e-08✓    2.78e-16✓   2.33e-11✓    4.25e-13✓   1.83e-06✓           NISTPSolver 
+   Converged in 10 iteration(s)                                                         NISTPSolver 
+   Monitor (disp): 0.18631250000000005                                                      Monitor 
+   Monitor (force): -13684.075170946306                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 36: 0.000625, 0.170000; time   0.169375 to   0.170000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      8.82e+01    0.00e+00✓    3.09e-04    0.00e+00✓    3.50e+01    0.00e+00✓           NISTPSolver 
+      4.15e+02    1.34e-02     5.76e-03    5.10e-04     1.37e+01    1.15e+02✓           NISTPSolver 
+      9.68e+01    2.07e-02     1.94e-03    4.14e-04     1.01e+01    5.96e+01✓           NISTPSolver 
+      3.36e+02    1.23e-02     2.10e-03    2.22e-04     2.56e+01    3.97e+01✓           NISTPSolver 
+      1.83e+02    1.62e-02     1.43e-02    6.94e-04     4.06e+01    4.06e+01✓           NISTPSolver 
+   GCDPModel::computeStress: Return mapping failed: std::exception                      NISTPSolver 
+     Cutback to increment size 0.0003125                                         AdaptiveTimeStepper 
++--------------------------------------------------------------------------------------------------+
+   increment 36: 0.000313, 0.169688; time   0.169375 to   0.169688                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      1.86e+01    4.66e-03     7.44e-04    2.39e-17✓    2.11e-13✓   1.03e+02✓           NISTPSolver 
+      1.51e+01    2.44e-03     3.71e-04    7.47e-05     3.22e-13✓   3.07e+01✓           NISTPSolver 
+      3.03e+00    3.41e-03     6.16e-05    9.25e-05     2.84e-13✓   1.29e+01✓           NISTPSolver 
+      5.25e-01    1.83e-03     3.36e-05    4.12e-05     2.49e-13✓   4.26e+00✓           NISTPSolver 
+      3.30e-01    5.33e-04     5.25e-06    1.57e-05     2.27e-13✓   1.04e+00✓           NISTPSolver 
+      1.92e-01    3.69e-05     6.15e-06    5.08e-06     2.52e-13✓   6.43e-02✓           NISTPSolver 
+      3.24e-02✓   1.85e-05     7.30e-07    1.47e-06     2.56e-13✓   4.64e-03✓           NISTPSolver 
+      1.22e-02✓   2.18e-06     1.32e-07    1.31e-07     2.64e-13✓   5.49e-04✓           NISTPSolver 
+      1.39e-04✓   8.34e-07     7.40e-09✓   3.60e-08     3.41e-13✓   6.89e-05✓           NISTPSolver 
+      1.08e-09✓   2.70e-09✓    9.16e-14✓   5.58e-10✓    3.22e-13✓   2.12e-06✓           NISTPSolver 
+   Converged in 10 iteration(s)                                                         NISTPSolver 
+   Monitor (disp): 0.18665625000000005                                                      Monitor 
+   Monitor (force): -13600.601069429922                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 37: 0.000313, 0.170000; time   0.169688 to   0.170000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      1.04e+02    0.00e+00✓    1.47e-03    0.00e+00✓    6.24e+01    0.00e+00✓           NISTPSolver 
+      7.14e+02    2.85e-02     2.21e-02    1.60e-03     1.05e+02    1.09e+02✓           NISTPSolver 
+      4.13e+02    8.87e-02     7.42e-03    1.33e-03     3.70e+01    1.05e+02✓           NISTPSolver 
+      4.95e+02    6.17e-02     2.03e-02    8.19e-04     4.72e+01    8.40e+01✓           NISTPSolver 
+   GCDPModel::computeStress: Return mapping failed: std::exception                      NISTPSolver 
+     Cutback to increment size 0.00015625                                        AdaptiveTimeStepper 
++--------------------------------------------------------------------------------------------------+
+   increment 37: 0.000156, 0.169844; time   0.169688 to   0.169844                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      4.68e+01    7.52e-03     1.86e-03    3.68e-15✓    2.68e-13✓   1.36e+02✓           NISTPSolver 
+      8.15e+01    5.08e-03     1.46e-03    3.36e-04     4.08e-13✓   4.70e+01✓           NISTPSolver 
+      6.07e+00    3.09e-03     5.23e-04    3.47e-04     6.16e-13✓   2.19e+01✓           NISTPSolver 
+      3.76e+00    1.74e-03     1.28e-04    2.63e-04     3.48e-13✓   5.72e+00✓           NISTPSolver 
+      1.87e+00    1.21e-03     6.60e-05    1.90e-04     3.98e-13✓   2.89e+00✓           NISTPSolver 
+      7.00e-01    4.11e-04     1.16e-05    5.20e-05     3.69e-13✓   8.40e-01✓           NISTPSolver 
+      1.05e-01    1.14e-04     8.46e-06    1.08e-05     2.66e-13✓   6.53e-02✓           NISTPSolver 
+      2.68e-02✓   4.40e-05     8.40e-06    4.27e-06     4.76e-13✓   9.94e-03✓           NISTPSolver 
+      1.33e-04✓   2.31e-06     3.65e-09✓   3.78e-07     2.27e-13✓   1.06e-03✓           NISTPSolver 
+      1.78e-08✓   3.29e-08✓    5.47e-13✓   3.25e-09✓    3.41e-13✓   7.26e-06✓           NISTPSolver 
+   Converged in 10 iteration(s)                                                         NISTPSolver 
+   Monitor (disp): 0.186828125                                                              Monitor 
+   Monitor (force): -13350.066455911045                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 38: 0.000156, 0.170000; time   0.169844 to   0.170000                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      1.86e+02    0.00e+00✓    1.06e-03    0.00e+00✓    1.21e+02    0.00e+00✓           NISTPSolver 
+      5.50e+03    1.18e-01     8.14e-02    7.06e-03     1.45e+02    1.95e+02✓           NISTPSolver 
+      3.73e+03    4.66e-01     6.19e-02    4.79e-03     6.09e+02    6.09e+02✓           NISTPSolver 
+   GCDPModel::computeStress: Return mapping failed: std::exception                      NISTPSolver 
+     Cutback to increment size 7.8125e-05                                        AdaptiveTimeStepper 
++--------------------------------------------------------------------------------------------------+
+   increment 38: 0.000078, 0.169922; time   0.169844 to   0.169922                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      1.73e+02    5.97e-03     1.34e-03    1.67e-14✓    1.97e+02    1.97e+02✓           NISTPSolver 
+      3.42e+02    3.83e-02     2.83e-02    1.00e-03     2.32e-13✓   1.97e+02✓           NISTPSolver 
+      2.66e+02    4.56e-02     4.86e-03    9.94e-04     4.47e-13✓   3.38e+01✓           NISTPSolver 
+      4.75e+02    9.66e-02     1.50e-02    1.33e-03     4.64e-13✓   4.86e+01✓           NISTPSolver 
+      7.28e+02    2.69e-01     1.64e-02    9.59e-04     2.70e-13✓   6.63e+01✓           NISTPSolver 
+   GCDPModel::computeStress: Return mapping failed: std::exception                      NISTPSolver 
+     Cutback to increment size 3.90625e-05                                       AdaptiveTimeStepper 
++--------------------------------------------------------------------------------------------------+
+   increment 38: 0.000039, 0.169883; time   0.169844 to   0.169883                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      4.08e+01    6.11e-03     5.92e-04    1.67e-14✓    2.84e-13✓   1.73e+02✓           NISTPSolver 
+      1.38e+01    2.96e-03     9.60e-04    1.56e-04     3.09e-13✓   3.33e+01✓           NISTPSolver 
+      6.86e+00    1.82e-03     5.48e-04    3.21e-04     2.08e-13✓   1.44e+01✓           NISTPSolver 
+      1.44e+00    6.40e-04     1.16e-04    1.31e-04     2.56e-13✓   5.89e+00✓           NISTPSolver 
+      2.48e-01    1.82e-04     1.58e-05    2.48e-05     3.13e-13✓   5.54e-01✓           NISTPSolver 
+      3.17e-01    3.55e-05     5.70e-06    2.26e-06     1.85e-13✓   4.50e-02✓           NISTPSolver 
+      1.77e-03✓   1.26e-05     3.36e-08✓   6.47e-07     4.51e-13✓   9.13e-04✓           NISTPSolver 
+      7.92e-07✓   1.50e-07     1.78e-11✓   9.43e-09✓    3.19e-13✓   6.67e-05✓           NISTPSolver 
+      7.02e-13✓   1.50e-10✓    1.94e-16✓   7.64e-12✓    2.64e-13✓   2.28e-08✓           NISTPSolver 
+   Converged in 9 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.18687109375000008                                                      Monitor 
+   Monitor (force): -13258.13390452323                                                      Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 39: 0.000039, 0.169922; time   0.169883 to   0.169922                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      1.02e+02    0.00e+00✓    2.05e-03    0.00e+00✓    1.23e+02    0.00e+00✓           NISTPSolver 
+   GCDPModel::computeStress: Return mapping failed: std::exception                      NISTPSolver 
+     Cutback to increment size 1.953125e-05                                      AdaptiveTimeStepper 
++--------------------------------------------------------------------------------------------------+
+   increment 39: 0.000020, 0.169902; time   0.169883 to   0.169902                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      9.69e+01    8.99e-03     6.23e-04    2.09e-17✓    6.30e+01    1.55e+02✓           NISTPSolver 
+      2.58e+02    1.01e-02     4.37e-03    3.49e-04     2.75e+01    6.30e+01✓           NISTPSolver 
+      8.76e+01    1.02e-02     6.65e-04    3.81e-04     7.02e+00    2.99e+01✓           NISTPSolver 
+      1.69e+03    5.35e-02     3.24e-02    2.90e-03     1.94e-13✓   7.23e+00✓           NISTPSolver 
+      3.46e+02    1.77e-01     7.85e-03    2.67e-03     2.42e-13✓   1.77e+01✓           NISTPSolver 
+   GCDPModel::computeStress: Return mapping failed: std::exception                      NISTPSolver 
+     Cutback to increment size 9.765625e-06                                      AdaptiveTimeStepper 
++--------------------------------------------------------------------------------------------------+
+   increment 39: 0.000010, 0.169893; time   0.169883 to   0.169893                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      2.43e+01    7.63e-03     1.17e-03    2.09e-17✓    2.59e-13✓   1.38e+02✓           NISTPSolver 
+      1.76e+01    2.24e-03     6.41e-04    1.48e-04     3.00e-13✓   4.70e+01✓           NISTPSolver 
+      1.65e+00    1.23e-03     1.21e-04    8.17e-05     3.48e-13✓   1.24e+01✓           NISTPSolver 
+      2.11e+00    2.53e-04     7.89e-05    6.26e-05     2.27e-13✓   1.81e+00✓           NISTPSolver 
+      7.65e-01    5.53e-05     2.06e-05    1.34e-05     1.99e-13✓   1.06e-01✓           NISTPSolver 
+      4.61e-02✓   1.22e-05     6.94e-06    1.22e-06     2.47e-13✓   7.78e-03✓           NISTPSolver 
+      1.13e-02✓   8.19e-07     1.16e-07    3.04e-07     1.84e-13✓   3.07e-04✓           NISTPSolver 
+      3.37e-06✓   1.36e-07     5.44e-11✓   6.23e-09✓    2.15e-13✓   8.50e-06✓           NISTPSolver 
+      8.28e-13✓   2.96e-11✓    2.22e-16✓   3.28e-12✓    1.99e-13✓   6.33e-09✓           NISTPSolver 
+   Converged in 9 iteration(s)                                                          NISTPSolver 
+   Monitor (disp): 0.18688183593750007                                                      Monitor 
+   Monitor (force): -13127.38032868088                                                      Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 40: 0.000010, 0.169902; time   0.169893 to   0.169902                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      1.09e+02    0.00e+00✓    1.69e-03    0.00e+00✓    1.08e+02    0.00e+00✓           NISTPSolver 
+      6.53e+02    2.74e-02     9.90e-03    9.31e-04     2.49e+01    1.19e+02✓           NISTPSolver 
+      1.44e+02    5.47e-02     6.23e-03    7.82e-04     2.87e+01    6.68e+01✓           NISTPSolver 
+      1.68e+02    2.80e-02     1.03e-02    4.37e-04     2.52e+01    8.68e+01✓           NISTPSolver 
+      6.22e+02    9.18e-02     2.85e-02    2.24e-03     3.90e+01    7.25e+01✓           NISTPSolver 
+      6.36e+02    3.37e-01     1.87e-02    2.03e-03     2.24e-13✓   2.17e+02✓           NISTPSolver 
+      2.99e+03    7.77e-01     5.25e-02    5.69e-03     3.55e-13✓   1.62e+02✓           NISTPSolver 
+   GCDPModel::computeStress: Return mapping failed: std::exception                      NISTPSolver 
+     Cutback to increment size 4.8828125e-06                                     AdaptiveTimeStepper 
++--------------------------------------------------------------------------------------------------+
+   increment 40: 0.000005, 0.169897; time   0.169893 to   0.169897                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      1.83e+01    8.69e-03     3.14e-03    1.99e-17✓    2.63e-13✓   1.21e+02✓           NISTPSolver 
+      5.53e+00    2.25e-03     1.78e-03    3.74e-04     1.99e-13✓   2.89e+01✓           NISTPSolver 
+      5.86e+00    1.31e-03     3.23e-04    1.76e-04     2.84e-13✓   9.63e+00✓           NISTPSolver 
+      2.43e+00    1.25e-03     2.29e-04    2.29e-04     3.72e-13✓   5.12e+00✓           NISTPSolver 
+      1.89e+01    9.32e-04     4.42e-04    1.02e-04     2.95e-13✓   1.16e+00✓           NISTPSolver 
+      8.90e-01    1.37e-04     1.20e-05    1.48e-05     2.74e-13✓   2.44e-02✓           NISTPSolver 
+      1.15e-01    4.40e-05     2.23e-06    4.87e-06     2.56e-13✓   1.84e-02✓           NISTPSolver 
+      4.10e-03✓   2.49e-05     1.48e-07    1.16e-06     2.56e-13✓   6.98e-04✓           NISTPSolver 
+      5.98e-06✓   6.72e-07     1.66e-10✓   3.71e-08     4.12e-13✓   9.44e-05✓           NISTPSolver 
+      2.43e-11✓   1.62e-09✓    6.62e-16✓   8.09e-11✓    2.27e-13✓   6.81e-08✓           NISTPSolver 
+   Converged in 10 iteration(s)                                                         NISTPSolver 
+   Monitor (disp): 0.18688720703125003                                                      Monitor 
+   Monitor (force): -12793.383943008012                                                     Monitor 
++--------------------------------------------------------------------------------------------------+
+   increment 41: 0.000005, 0.169902; time   0.169897 to   0.169902                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      8.88e+01    0.00e+00✓    3.74e-03    0.00e+00✓    4.03e+01    0.00e+00✓           NISTPSolver 
+      1.05e+03    9.60e-02     1.16e-02    1.89e-03     4.61e+00    2.22e+02✓           NISTPSolver 
+      1.75e+03    4.61e-01     4.64e-02    1.89e-03     3.00e+02    3.06e+02✓           NISTPSolver 
+   GCDPModel::computeStress: Return mapping failed: std::exception                      NISTPSolver 
+     Cutback to increment size 2.44140625e-06                                    AdaptiveTimeStepper 
++--------------------------------------------------------------------------------------------------+
+   increment 41: 0.000002, 0.169900; time   0.169897 to   0.169900                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      9.53e+01    1.26e-02     9.16e-04    2.63e-17✓    4.30e+01    1.31e+02✓           NISTPSolver 
+      1.12e+02    1.02e-02     1.76e-03    1.62e-04     6.11e-13✓   5.10e+01✓           NISTPSolver 
+      7.72e+00    3.98e-03     4.60e-04    2.11e-04     3.98e-13✓   1.49e+01✓           NISTPSolver 
+      1.01e+01    3.49e-03     6.99e-04    1.45e-04     2.67e-13✓   4.39e+00✓           NISTPSolver 
+      2.45e+00    3.40e-03     1.86e-04    1.04e-04     2.98e-13✓   3.73e-01✓           NISTPSolver 
+      1.25e+01    4.35e-03     7.85e-04    1.27e-04     2.49e-13✓   1.34e-01✓           NISTPSolver 
+      3.30e+00    5.21e-03     2.90e-04    1.61e-04     1.78e-13✓   1.52e-01✓           NISTPSolver 
+      1.29e+01    5.74e-03     8.20e-04    1.76e-04     2.84e-13✓   9.35e-02✓           NISTPSolver 
+      4.40e+00    6.50e-03     4.00e-04    2.02e-04     2.24e-13✓   1.06e-01✓           NISTPSolver 
+      1.37e+01    7.18e-03     7.54e-04    1.96e-04     2.73e-13✓   9.53e-02✓           NISTPSolver 
+      5.58e+00    7.91e-03     5.31e-04    2.16e-04     1.99e-13✓   9.22e-02✓           NISTPSolver 
+      1.44e+01    8.36e-03     3.08e-04    2.09e-04     2.49e-13✓   8.77e-02✓           NISTPSolver 
+      7.04e+00    9.43e-03     2.76e-04    3.05e-04     4.41e-13✓   2.61e-01✓           NISTPSolver 
+      1.52e+01    1.00e-02     1.62e-03    1.73e-04     2.98e-13✓   9.78e-02✓           NISTPSolver 
+      1.21e+01    1.09e-02     6.67e-04    2.15e-04     2.16e-13✓   1.13e-01✓           NISTPSolver 
+      1.55e+01    1.14e-02     2.18e-03    1.78e-04     3.27e-13✓   1.90e-01✓           NISTPSolver 
+      1.43e+01    1.21e-02     7.77e-04    2.14e-04     2.98e-13✓   1.06e-01✓           NISTPSolver 
+      1.57e+01    1.24e-02     2.81e-03    1.68e-04     2.86e-13✓   1.36e-01✓           NISTPSolver 
+      1.58e+01    1.28e-02     8.40e-04    1.80e-04     2.60e-13✓   1.11e-01✓           NISTPSolver 
+   Residual outliers:                                                                   NISTPSolver 
+     |displacement        |node      33428|                                             NISTPSolver 
+     |nonlocal damage     |node      10822|                                             NISTPSolver 
+   Residual grew 10 times, cutting back                                                 NISTPSolver 
+     Cutback to increment size 6.103515625e-07                                   AdaptiveTimeStepper 
++--------------------------------------------------------------------------------------------------+
+   increment 41: 0.000001, 0.169898; time   0.169897 to   0.169898                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      2.30e+01    1.33e-02     1.12e-03    2.63e-17✓    2.06e-13✓   1.35e+02✓           NISTPSolver 
+      1.94e+01    4.81e-03     1.87e-03    1.50e-04     1.99e-13✓   3.38e+01✓           NISTPSolver 
+      3.35e+00    4.56e-03     3.23e-04    2.30e-04     3.81e-13✓   1.00e+01✓           NISTPSolver 
+      1.04e+01    3.62e-03     6.46e-04    1.58e-04     2.36e-13✓   1.68e+00✓           NISTPSolver 
+      2.55e+00    3.27e-03     2.00e-04    1.07e-04     1.78e-13✓   1.69e-01✓           NISTPSolver 
+      1.41e+01    4.67e-03     8.90e-04    1.49e-04     3.02e-13✓   2.13e-01✓           NISTPSolver 
+      3.64e+00    5.89e-03     3.22e-04    2.00e-04     2.64e-13✓   2.57e-01✓           NISTPSolver 
+      1.41e+01    6.46e-03     7.98e-04    2.03e-04     1.73e-13✓   1.33e-01✓           NISTPSolver 
+      4.37e+00    7.19e-03     3.09e-04    2.41e-04     3.50e-13✓   1.71e-01✓           NISTPSolver 
+      1.45e+01    7.84e-03     7.20e-04    2.29e-04     2.66e-13✓   9.10e-02✓           NISTPSolver 
+      4.91e+00    8.64e-03     3.65e-04    2.50e-04     3.38e-13✓   9.33e-02✓           NISTPSolver 
+      1.52e+01    9.12e-03     2.94e-04    2.35e-04     3.27e-13✓   8.07e-02✓           NISTPSolver 
+      1.12e+01    1.03e-02     6.85e-04    3.21e-04     3.14e-13✓   2.95e-01✓           NISTPSolver 
+      1.57e+01    1.09e-02     1.96e-03    1.79e-04     3.96e-13✓   8.80e-02✓           NISTPSolver 
+      1.33e+01    1.15e-02     8.06e-04    2.10e-04     3.62e-13✓   9.28e-02✓           NISTPSolver 
+      1.57e+01    1.18e-02     2.51e-03    1.73e-04     2.56e-13✓   9.92e-02✓           NISTPSolver 
+      1.51e+01    1.22e-02     9.02e-04    2.01e-04     3.85e-13✓   9.24e-02✓           NISTPSolver 
+      1.58e+01    1.24e-02     2.94e-03    1.68e-04     5.90e-13✓   9.03e-02✓           NISTPSolver 
+      1.60e+01    1.26e-02     9.29e-04    1.77e-04     4.00e-13✓   9.53e-02✓           NISTPSolver 
+      1.58e+01    1.27e-02     3.06e-03    1.65e-04     3.97e-13✓   9.21e-02✓           NISTPSolver 
+   Residual outliers:                                                                   NISTPSolver 
+     |displacement        |node       7694|                                             NISTPSolver 
+     |nonlocal damage     |node       8111|                                             NISTPSolver 
+   Residual grew 10 times, cutting back                                                 NISTPSolver 
+     Cutback to increment size 1.52587890625e-07                                 AdaptiveTimeStepper 
++--------------------------------------------------------------------------------------------------+
+   increment 41: 0.000000, 0.169898; time   0.169897 to   0.169898                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      2.30e+01    1.33e-02     1.12e-03    2.63e-17✓    3.34e-13✓   1.35e+02✓           NISTPSolver 
+      1.94e+01    4.81e-03     1.87e-03    1.50e-04     3.33e-13✓   3.38e+01✓           NISTPSolver 
+      3.35e+00    4.56e-03     3.23e-04    2.30e-04     2.56e-13✓   1.00e+01✓           NISTPSolver 
+      1.04e+01    3.62e-03     6.46e-04    1.58e-04     2.88e-13✓   1.68e+00✓           NISTPSolver 
+      2.55e+00    3.27e-03     2.00e-04    1.07e-04     2.21e-13✓   1.69e-01✓           NISTPSolver 
+      1.41e+01    4.67e-03     8.91e-04    1.49e-04     2.27e-13✓   2.13e-01✓           NISTPSolver 
+      3.64e+00    5.89e-03     3.22e-04    2.00e-04     3.84e-13✓   2.57e-01✓           NISTPSolver 
+      1.41e+01    6.46e-03     7.98e-04    2.03e-04     5.84e-13✓   1.33e-01✓           NISTPSolver 
+      4.37e+00    7.19e-03     3.09e-04    2.41e-04     4.06e-13✓   1.71e-01✓           NISTPSolver 
+      1.45e+01    7.84e-03     7.20e-04    2.29e-04     2.06e-13✓   9.10e-02✓           NISTPSolver 
+      4.91e+00    8.64e-03     3.65e-04    2.50e-04     4.26e-13✓   9.33e-02✓           NISTPSolver 
+      1.52e+01    9.12e-03     2.94e-04    2.35e-04     3.13e-13✓   8.07e-02✓           NISTPSolver 
+      1.12e+01    1.03e-02     6.85e-04    3.21e-04     2.42e-13✓   2.95e-01✓           NISTPSolver 
+      1.57e+01    1.09e-02     1.96e-03    1.79e-04     2.27e-13✓   8.79e-02✓           NISTPSolver 
+      1.33e+01    1.15e-02     8.06e-04    2.10e-04     2.87e-13✓   9.28e-02✓           NISTPSolver 
+      1.57e+01    1.18e-02     2.51e-03    1.73e-04     5.97e-13✓   9.92e-02✓           NISTPSolver 
+      1.51e+01    1.22e-02     9.02e-04    2.01e-04     3.41e-13✓   9.24e-02✓           NISTPSolver 
+      1.58e+01    1.24e-02     2.94e-03    1.68e-04     3.98e-13✓   9.03e-02✓           NISTPSolver 
+      1.60e+01    1.26e-02     9.29e-04    1.77e-04     2.91e-13✓   9.53e-02✓           NISTPSolver 
+      1.58e+01    1.27e-02     3.06e-03    1.65e-04     3.48e-13✓   9.21e-02✓           NISTPSolver 
+   Residual outliers:                                                                   NISTPSolver 
+     |displacement        |node       7694|                                             NISTPSolver 
+     |nonlocal damage     |node       8111|                                             NISTPSolver 
+   Residual grew 10 times, cutting back                                                 NISTPSolver 
+     Cutback to increment size 1e-07                                             AdaptiveTimeStepper 
++--------------------------------------------------------------------------------------------------+
+   increment 41: 0.000000, 0.169898; time   0.169897 to   0.169898                      NISTPSolver 
+           displacement            nonlocal damage         scalar variables             NISTPSolver 
+      ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞     ||R||∞      ||ddU||∞            NISTPSolver 
+      2.30e+01    1.33e-02     1.12e-03    2.63e-17✓    3.20e-13✓   1.35e+02✓           NISTPSolver 
+      1.94e+01    4.81e-03     1.87e-03    1.50e-04     2.95e-13✓   3.38e+01✓           NISTPSolver 
+      3.35e+00    4.56e-03     3.23e-04    2.30e-04     3.51e-13✓   1.00e+01✓           NISTPSolver 
+      1.04e+01    3.62e-03     6.46e-04    1.58e-04     2.39e-13✓   1.68e+00✓           NISTPSolver 
+      2.55e+00    3.27e-03     2.00e-04    1.07e-04     2.49e-13✓   1.69e-01✓           NISTPSolver 
+      1.41e+01    4.67e-03     8.91e-04    1.49e-04     3.65e-13✓   2.13e-01✓           NISTPSolver 
+   GCDPModel::computeStress: Return mapping failed: std::exception                      NISTPSolver 
+ > > > Cannot reduce increment size                                        AdaptiveTimeStepper < < < 
+ > > > Incrementation failed                                                      NISTPSolver < < < 
+ +-----------------------------------------+-----------------------+------------+       NISTPSolver 
+ | function                                | acc. runtime          | calls      |       NISTPSolver 
+ +-----------------------------------------+-----------------------+------------+       NISTPSolver 
+ | elements                                | 3.7000E+02s           | 504        |       NISTPSolver 
+ | assemble loads                          | 3.7584E-03s           | 491        |       NISTPSolver 
+ |  distributed loads                      |  5.1403E-04s          | 491        |       NISTPSolver 
+ |  body forces                            |  4.1914E-04s          | 491        |       NISTPSolver 
+ | assemble constraints                    | 2.8679E+01s           | 491        |       NISTPSolver 
+ | dirichlet R                             | 7.5819E-03s           | 57         |       NISTPSolver 
+ | assemble stiffness CSR                  | 4.7722E+01s           | 447        |       NISTPSolver 
+ | dirichlet K on CSR                      | 1.6785E+01s           | 447        |       NISTPSolver 
+ | linear solve                            | 2.0569E+03s           | 447        |       NISTPSolver 
+ | convergence check                       | 2.5490E-01s           | 474        |       NISTPSolver 
+ +-----------------------------------------+-----------------------+------------+       NISTPSolver 
+
+ > > > Simulation failed                                                               feCore < < < 
+ |Job computation time                |    0.0000s                         |                 feCore 
+ +------------------------------------+------------------------------------+                 feCore 

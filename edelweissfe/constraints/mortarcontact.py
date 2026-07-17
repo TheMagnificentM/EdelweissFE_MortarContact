@@ -536,15 +536,19 @@ class Constraint(ConstraintBase):
         dim = self.model.domainSize
 
         # Detect new increment to track iterations and reset current_iteration
-        if timeStep.number != self.last_timestep_number:
+        if timeStep.number != self.last_timestep_number or not hasattr(self, "current_normals"):
             self.last_timestep_number = timeStep.number
             self.current_iteration = 0
+            self.current_normals = self.compute_normals(U_np)
+            D_full, C_full = self.compute_mortar_coupling_matrices(U_np)
+            self.current_D = np.diag(np.sum(D_full, axis=1))
+            self.current_C = C_full
         else:
             self.current_iteration += 1
 
-        # Compute normals and mortar matrices D and C in the deformed configuration
-        normals = self.compute_normals(U_np)
-        D, C = self.compute_mortar_coupling_matrices(U_np)
+        normals = self.current_normals
+        D = self.current_D
+        C = self.current_C
 
         # Compute current coordinates of all nodes in deformed configuration
         current_coords = {}
