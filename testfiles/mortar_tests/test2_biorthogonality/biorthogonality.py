@@ -6,14 +6,22 @@ Test 2: Verifizierung der Biorthogonalität (Schritt 2)
 
 Dieser Test prüft die Korrektheit der dualen Basisfunktionen auf den Slave-Grenzflächen.
 
-Die Biorthogonalität besagt, dass:
-   integral( M_bar_i * N_j * dGamma ) = 0   für alle i != j.
+Die Biorthogonalität wird bezüglich der TRANSFORMIERTEN Basis N_tilde = T_e * N
+erzwungen (Basistransformation nach Popp et al. 2012 / Farah 2018, Abschn. 6.2.3.2;
+T_e = Identität für lineare Elemente):
 
-Der Test führt für jedes Kontaktelement drei Kontrollen durch:
+   integral( M_bar_i * N_tilde_j * dGamma ) = delta_ij * integral( N_tilde_i * dGamma )
+
+Der Test führt für jedes Kontaktelement vier Kontrollen durch:
 - Kontrolle A: Ist D_e eine echte Diagonalmatrix (Nebendiagonaleinträge = 0)?
-- Kontrolle B: Stimmt das Matrix-Produkt A_e * M_e exakt mit D_e überein?
+- Kontrolle B: Stimmt das Matrix-Produkt A_e * inv(T_e) * M_e exakt mit D_e überein?
+               (M_e ist die Massenmatrix der transformierten Basis, A_e bildet
+               Standard-Formfunktionswerte N auf duale Werte M_bar ab.)
 - Kontrolle C: Ergibt die punktweise Gauß-Integration des Produkts aus dualer Formfunktion
-               M_bar_i und Standard-Formfunktion N_j exakt die Diagonale D_e?
+               M_bar_i und transformierter Formfunktion N_tilde_j exakt die Diagonale D_e?
+- Kontrolle D: Sind alle dualen Gewichte D_e[i,i] strikt positiv? (Zweck der
+               Basistransformation; ohne sie wären z.B. die Eckknoten-Gewichte
+               eines CONQUAD8 negativ.)
 """
 
 import sys
@@ -185,38 +193,48 @@ def run_biorthogonality_test(el_type, skewed=False, dim=3):
     for el, faceID in contact.non_mortar_facets:
         M_e, D_e, A_e = dual_matrices[el.elNumber]
         n_nodes = el.nNodes
-        
+        T_e = el.getBasisTransformation()
+
         # Kontrolle A: Ist D_e eine echte Diagonalmatrix?
         # Nebendiagonalelemente müssen numerisch Null sein.
         D_diag = np.diag(np.diag(D_e))
         if not np.allclose(D_e, D_diag, atol=1e-14):
             print(f"  [FAIL] D_e ist nicht diagonal für Element {el.elNumber}!")
             sys.exit(1)
-            
-        # Kontrolle B: Prüfen der algebraischen Relation A_e * M_e = D_e
-        B_e = A_e @ M_e
+
+        # Kontrolle B: Prüfen der algebraischen Relation A_e * inv(T_e) * M_e = D_e
+        # (A_e = D_e * inv(M_e) * T_e, mit M_e als Massenmatrix der transformierten Basis)
+        B_e = A_e @ np.linalg.solve(T_e, M_e)
         if not np.allclose(B_e, D_e, atol=1e-12):
-            print(f"  [FAIL] A_e @ M_e ist ungleich D_e für Element {el.elNumber}!")
+            print(f"  [FAIL] A_e @ inv(T_e) @ M_e ist ungleich D_e für Element {el.elNumber}!")
             sys.exit(1)
-            
+
         # Kontrolle C: Punktweise Gauß-Integration (physikalischer Biorthogonalitätstest)
-        # Wir integrieren integral( M_bar_i * N_j * dGamma ) explizit über die Gauß-Punkte.
-        # Dies ist der ultimative Test für die mathematische Richtigkeit der dualen Basisfunktion.
+        # Wir integrieren integral( M_bar_i * N_tilde_j * dGamma ) explizit über die
+        # Gauß-Punkte. Dies ist der ultimative Test für die mathematische Richtigkeit
+        # der dualen Basisfunktion bezüglich der transformierten Basis.
         points, weights = el.getQuadraturePoints()
         coords = np.array([node.coordinates for node in el.nodes])
         B_explicit = np.zeros((n_nodes, n_nodes))
-        
+
         for local_coords, w in zip(points, weights):
             N = el.getShapeFunctions(local_coords)
+            N_tilde = T_e @ N
             jac = el.getJacobianAndAreaWeight(local_coords, coords)
             dGamma = jac * w
-            
+
             # Wert der dualen Formfunktion an diesem Punkt: M_bar = A_e * N
             M_bar = A_e @ N
-            B_explicit += np.outer(M_bar, N) * dGamma
-            
+            B_explicit += np.outer(M_bar, N_tilde) * dGamma
+
         if not np.allclose(B_explicit, D_e, atol=1e-12):
             print(f"  [FAIL] Explizite Biorthogonalitäts-Integration fehlgeschlagen für Element {el.elNumber}!")
+            sys.exit(1)
+
+        # Kontrolle D: Positivität der dualen Gewichte (Popp et al. 2012)
+        if np.any(np.diag(D_e) <= 0.0):
+            print(f"  [FAIL] Duale Gewichte D_e[i,i] nicht strikt positiv für Element {el.elNumber}!")
+            print(f"         diag(D_e) = {np.diag(D_e)}")
             sys.exit(1)
             
     print(f"  [PASS] Element {el_type} ({config_name}) erfolgreich verifiziert!")

@@ -102,6 +102,66 @@ def map_2d_to_natural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
     return local_coords
 
 
+# Decomposition of contact facets into linear sub-cells for the mortar
+# segmentation (polygon clipping). The clip polygons must be simple convex
+# polygons, so curved (quadratic) facets are subdivided into linear cells
+# using their mid-side nodes, following MOOSE (AutomaticMortarGeneration,
+# "Step 1.1: Linearize secondary face elements") and the segment-based
+# integration of Farah/Popp/Wall. The curvature of the facet enters only
+# through the shape function evaluation at the mapped Gauss points, never
+# through the clipping geometry itself.
+SUB_CELL_MAP = {
+    "CONQUAD4": [[0, 1, 2, 3]],
+    "CONTRI3": [[0, 1, 2]],
+    "CONQUAD8": [[0, 4, 7], [4, 1, 5], [5, 2, 6], [7, 6, 3], [4, 5, 6, 7]],
+    "CONQUAD9": [[0, 4, 8, 7], [4, 1, 5, 8], [8, 5, 2, 6], [7, 8, 6, 3]],
+    "CONTRI6": [[0, 3, 5], [3, 4, 5], [3, 1, 4], [5, 4, 2]],
+}
+
+
+def get_sub_cells(el) -> list[list[int]]:
+    """Return the linear sub-cell decomposition (local node indices) of a contact facet."""
+    el_type = el.elType.upper()
+    if el_type not in SUB_CELL_MAP:
+        raise NotImplementedError(
+            f"No linear sub-cell decomposition defined for element type '{el_type}'."
+        )
+    return SUB_CELL_MAP[el_type]
+
+
+def facet_normal(coords: np.ndarray) -> np.ndarray:
+    """Unnormalized area-weighted normal of a flat linear facet (3 or 4 corner nodes)."""
+    if len(coords) == 3:
+        return 0.5 * np.cross(coords[1] - coords[0], coords[2] - coords[0])
+    return 0.5 * np.cross(coords[2] - coords[0], coords[3] - coords[1])
+
+
+# 7-point symmetric Gauss rule (degree 5) on the reference triangle.
+# Farah (2018), App. A.1.1: 7 points per integration cell are recommended,
+# since the nonlinear projection between the auxiliary plane and the curved
+# element surfaces raises the polynomial degree of the integrand.
+_TRI_A = (6.0 - np.sqrt(15.0)) / 21.0
+_TRI_B = (6.0 + np.sqrt(15.0)) / 21.0
+TRI_GAUSS_PTS = np.array([
+    [1.0 / 3.0, 1.0 / 3.0],
+    [_TRI_A, _TRI_A],
+    [_TRI_A, 1.0 - 2.0 * _TRI_A],
+    [1.0 - 2.0 * _TRI_A, _TRI_A],
+    [_TRI_B, _TRI_B],
+    [_TRI_B, 1.0 - 2.0 * _TRI_B],
+    [1.0 - 2.0 * _TRI_B, _TRI_B],
+])
+TRI_GAUSS_W = np.array([
+    9.0 / 80.0,
+    (155.0 - np.sqrt(15.0)) / 2400.0,
+    (155.0 - np.sqrt(15.0)) / 2400.0,
+    (155.0 - np.sqrt(15.0)) / 2400.0,
+    (155.0 + np.sqrt(15.0)) / 2400.0,
+    (155.0 + np.sqrt(15.0)) / 2400.0,
+    (155.0 + np.sqrt(15.0)) / 2400.0,
+])
+
+
 class BVHNode:
     """A node in the Bounding Volume Hierarchy (BVH) tree for contact detection."""
     def __init__(self, aabb_min, aabb_max, left=None, right=None, facets=None):
@@ -234,6 +294,9 @@ class Constraint(ConstraintBase):
         self.slave_node_to_idx = {node: i for i, node in enumerate(self.non_mortar_nodes)}
         self.master_node_to_idx = {node: i for i, node in enumerate(self.mortar_nodes)}
 
+        # Undeformed coordinates of all constraint nodes (slaves first, then masters)
+        self._X = np.array([node.coordinates for node in self._nodes])
+
         # Precompute undeformed normals
         self.undeformed_normals = self.compute_normals()
 
@@ -266,14 +329,13 @@ class Constraint(ConstraintBase):
         """
         dim = self.model.domainSize
         normals = np.zeros((self.nNonMortarNodes, dim))
-        
-        # Build node lookup map for fast index retrieval
-        node_to_idx = {node: i for i, node in enumerate(self.non_mortar_nodes)}
+
+        node_to_idx = self.slave_node_to_idx
 
         # Iterate over all non-mortar facets
         for el, faceID in self.non_mortar_facets:
             facet_nodes = el.nodes
-            
+
             # Retrieve coordinates
             coords = []
             for node in facet_nodes:
@@ -281,7 +343,7 @@ class Constraint(ConstraintBase):
                 if U_np is not None:
                     # Retrieve displacement from local solution slice
                     # Nodes are stored in constraint order: non_mortar_nodes + mortar_nodes
-                    node_idx = self._nodes.index(node)
+                    node_idx = self.node_to_global_idx[node]
                     u = U_np[self.sizeField * node_idx : self.sizeField * node_idx + dim]
                     coords.append(X + u)
                 else:
@@ -332,7 +394,7 @@ class Constraint(ConstraintBase):
             for node in el.nodes:
                 X = node.coordinates
                 if U_np is not None:
-                    node_idx = self._nodes.index(node)
+                    node_idx = self.node_to_global_idx[node]
                     u = U_np[self.sizeField * node_idx : self.sizeField * node_idx + dim]
                     coords.append(X + u)
                 else:
@@ -347,36 +409,45 @@ class Constraint(ConstraintBase):
 
     def compute_mortar_coupling_matrices(self, U_np: np.ndarray = None) -> tuple[np.ndarray, np.ndarray]:
         """Compute the global mortar coupling matrices D (slave-slave) and C (slave-master).
-        
-        This method performs the core Mortar integration:
-        1. For each Slave (non-mortar) boundary facet:
-           - Finds overlapping Master (mortar) boundary facets.
-           - Projects Master facets onto the local Slave plane.
-           - Clips the polygons using Sutherland-Hodgman in 2D.
-           - Triangulates the overlap into integration sub-cells.
-           - Performs numerical integration using a 3-point Gauss rule on each sub-triangle.
-           - Evaluates the dual Slave shape functions \bar{M} and standard Master shape functions N.
-           - Assembles the local integration contributions into the global D and C matrices.
+
+        Segment-based mortar integration (Puso & Laursen 2004; Puso, Laursen &
+        Solberg 2008; Farah 2018, Alg. 3.1 and App. A.1.4; analogous to MOOSE's
+        AutomaticMortarGeneration):
+
+        1. Every facet is decomposed into LINEAR sub-cells (SUB_CELL_MAP). For
+           linear facets this is the facet itself; quadratic facets (CONQUAD8/9,
+           CONTRI6) are subdivided using their mid-side nodes, so the clipping
+           geometry is a piecewise-linear approximation of the curved surface.
+        2. For each slave sub-cell an auxiliary plane is built from the sub-cell
+           center and its normal. Slave and master sub-cell corners are projected
+           onto this plane (along its normal) and clipped with Sutherland-Hodgman.
+        3. The overlap polygon is fan-triangulated into integration cells; a
+           7-point Gauss rule (degree 5) is applied on each cell.
+        4. Each Gauss point is mapped back to the natural space of the FULL
+           (possibly quadratic) parent slave and master elements via the inverse
+           Newton map, so the true shape functions are evaluated - the curvature
+           enters the integrand, only the integration domain is linearized.
+        5. Local contributions are accumulated per element pair and scattered
+           into the global D and C with fancy indexing.
         """
         dim = self.model.domainSize
+        if dim != 3:
+            raise NotImplementedError("Mortar coupling matrix integration is only implemented for 3D.")
+
         n_slave = self.nNonMortarNodes
         n_master = self.nMortarNodes
-        
-        # Initialize global matrices D (n_slave x n_slave) and C (n_slave x n_master)
+
         D = np.zeros((n_slave, n_slave))
         C = np.zeros((n_slave, n_master))
-        
+
         # Precompute the local dual transformation matrices A_e for all slave elements
         dual_mats = self.compute_local_dual_matrices(U_np)
-        
-        # Import geometry helper functions directly
+
         from edelweissfe.constraints.mortar_geom_utils import (
-            project_point_to_plane,
             get_tangent_basis,
-            to_plane_coords,
             sutherland_hodgman_clip,
+            to_plane_coords,
             triangulate_polygon,
-            to_3d_coords
         )
 
         # Precompute current deformed coordinates for all nodes
@@ -390,136 +461,111 @@ class Constraint(ConstraintBase):
             else:
                 current_coords[node] = X
 
-        # Build AABB bounding boxes for all master elements to construct the BVH tree
+        # Build AABB bounding boxes for all master facets to construct the BVH tree
         facets_with_bounds = []
         for m_el, m_faceID in self.mortar_facets:
-            m_nodes = m_el.nodes
-            m_coords = np.array([current_coords[n] for n in m_nodes])
+            m_coords = np.array([current_coords[n] for n in m_el.nodes])
             centroid = np.mean(m_coords, axis=0)
-            
-            # Extract min and max coordinates with a safety margin (e.g. 15% of size)
+
             aabb_min = np.min(m_coords, axis=0)
             aabb_max = np.max(m_coords, axis=0)
             margin = max(0.15 * np.max(aabb_max - aabb_min), 0.1)
             aabb_min -= margin
             aabb_max += margin
-            
+
             facets_with_bounds.append(((m_el, m_faceID), centroid, aabb_min, aabb_max))
-            
+
         bvh_root = build_bvh(facets_with_bounds)
-        
+
         # Loop over each Slave facet
         for s_el, s_faceID in self.non_mortar_facets:
             s_nodes = s_el.nodes
-            s_num = s_el.elNumber
-            _, _, A_e = dual_mats[s_num]
-            
-            # Get physical coordinates of the Slave nodes
-            s_coords = np.array([current_coords[nd] for nd in s_nodes])
-            
-            # Setup the auxiliary local projection plane for this Slave facet
-            p0 = np.mean(s_coords, axis=0)
-            if dim == 3:
-                if len(s_nodes) in (3, 6):
-                    v1 = s_coords[1] - s_coords[0]
-                    v2 = s_coords[2] - s_coords[0]
-                else:
-                    v1 = s_coords[2] - s_coords[0]
-                    v2 = s_coords[3] - s_coords[1]
-                normal = np.cross(v1, v2)
-                normal /= np.linalg.norm(normal)
-            else: # dim == 2
-                t = s_coords[-1] - s_coords[0]
-                normal = np.array([t[1], -t[0]])
-                normal /= np.linalg.norm(normal)
-                
-            t1, t2 = get_tangent_basis(normal)
-            s_2d = to_plane_coords(s_coords, p0, t1, t2)
+            _, _, A_e = dual_mats[s_el.elNumber]
 
-            # Query the BVH tree using the slave facet AABB to find nearby Master candidates
+            s_coords = np.array([current_coords[nd] for nd in s_nodes])
+            s_idx = np.array([self.slave_node_to_idx[nd] for nd in s_nodes])
+
+            # Query the BVH tree once per slave facet to find nearby Master candidates
             s_aabb_min = np.min(s_coords, axis=0)
             s_aabb_max = np.max(s_coords, axis=0)
             s_margin = max(0.15 * np.max(s_aabb_max - s_aabb_min), 0.1)
-            s_aabb_min -= s_margin
-            s_aabb_max += s_margin
 
             candidates = []
-            query_bvh(bvh_root, s_aabb_min, s_aabb_max, candidates)
-            
-            # Loop over candidate Master facets (accelerated search)
-            for m_el, m_faceID in candidates:
-                m_nodes = m_el.nodes
-                
-                # Get physical coordinates of the Master nodes
-                m_coords = np.array([current_coords[nd] for nd in m_nodes])
-                
-                # Project Master facet nodes onto the Slave projection plane
-                proj_m_coords = np.array([project_point_to_plane(p, p0, normal) for p in m_coords])
-                m_2d = to_plane_coords(proj_m_coords, p0, t1, t2)
-                
-                # Clip the Master facet with the Slave facet to find overlap
-                overlap_2d = sutherland_hodgman_clip(m_2d, s_2d)
-                if len(overlap_2d) < 3:
-                    continue # No overlap or degenerate intersection polygon
-                    
-                # Triangulate the overlap polygon into sub-triangles
-                sub_triangles = triangulate_polygon(overlap_2d)
-                
-                # Integrate over each sub-triangle using a 3-point symmetric Gauss rule
-                # Local coordinates and weights on standard reference triangle: [0, 1]x[0, 1]
-                gauss_pts = [
-                    np.array([1.0 / 6.0, 1.0 / 6.0]),
-                    np.array([2.0 / 3.0, 1.0 / 6.0]),
-                    np.array([1.0 / 6.0, 2.0 / 3.0])
-                ]
-                gauss_w = [1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0]
-                
-                for tri in sub_triangles:
-                    # Vertices of the sub-triangle in local 2D plane coordinates
-                    v0, v1, v2 = tri[0], tri[1], tri[2]
-                    
-                    # Compute the area/Jacobian of the sub-triangle mapping
-                    area_jac = abs((v1[0] - v0[0]) * (v2[1] - v0[1]) - (v2[0] - v0[0]) * (v1[1] - v0[1]))
-                    
-                    for gp, w in zip(gauss_pts, gauss_w):
-                        # Interpolate the Gauss point inside the sub-triangle
-                        L1, L2 = gp[0], gp[1]
-                        L0 = 1.0 - L1 - L2
-                        x_gp_2d = L0 * v0 + L1 * v1 + L2 * v2
-                        
-                        # Map the local 2D Gauss point back to 3D physical coordinates
-                        x_gp_3d = to_3d_coords([x_gp_2d], p0, t1, t2)[0]
-                        
-                        # --- Map to Slave natural space (xi_s, eta_s) ---
-                        local_s = map_2d_to_natural(s_el, s_2d, x_gp_2d)
-                        
-                        # --- Map to Master natural space (xi_m, eta_m) ---
-                        local_m = map_2d_to_natural(m_el, m_2d, x_gp_2d)
-                        
-                        # Evaluate standard shape functions N at mapped locations
-                        N_s = s_el.getShapeFunctions(local_s)
-                        N_m = m_el.getShapeFunctions(local_m)
-                        
-                        # Evaluate dual shape functions: M_bar = A_e * N_s
-                        M_bar = A_e @ N_s
-                        
-                        # Differential area element on the sub-triangle
-                        dGamma = area_jac * w
-                        
-                        # Assemble into global coupling matrices D and C
-                        for i, s_nd in enumerate(s_nodes):
-                            global_s_idx = self.slave_node_to_idx[s_nd]
-                            
-                            # Add to D matrix (Slave shape functions)
-                            for j, s_nd_inner in enumerate(s_nodes):
-                                global_s_inner_idx = self.slave_node_to_idx[s_nd_inner]
-                                D[global_s_idx, global_s_inner_idx] += M_bar[i] * N_s[j] * dGamma
-                                
-                            # Add to C matrix (Master shape functions)
-                            for j, m_nd in enumerate(m_nodes):
-                                global_m_idx = self.master_node_to_idx[m_nd]
-                                C[global_s_idx, global_m_idx] += M_bar[i] * N_m[j] * dGamma
-                                
+            query_bvh(bvh_root, s_aabb_min - s_margin, s_aabb_max + s_margin, candidates)
+            if not candidates:
+                continue
+
+            # Loop over the linear sub-cells of the slave facet
+            for s_sub in get_sub_cells(s_el):
+                sc_coords = s_coords[s_sub]
+
+                # Auxiliary plane from the sub-cell center and normal
+                n_vec = facet_normal(sc_coords)
+                n_norm = np.linalg.norm(n_vec)
+                if n_norm < 1e-14:
+                    continue  # degenerate sub-cell
+                normal = n_vec / n_norm
+                p0 = np.mean(sc_coords, axis=0)
+                t1, t2 = get_tangent_basis(normal)
+
+                # Clip polygon of the slave sub-cell and projection of ALL parent
+                # nodes (needed for the inverse map onto the full parent element)
+                s_sub_2d = to_plane_coords(sc_coords, p0, t1, t2)
+                s_full_2d = to_plane_coords(s_coords, p0, t1, t2)
+
+                for m_el, m_faceID in candidates:
+                    m_nodes = m_el.nodes
+                    m_coords = np.array([current_coords[nd] for nd in m_nodes])
+                    m_full_2d = to_plane_coords(m_coords, p0, t1, t2)
+
+                    D_loc = None  # lazy allocation, most candidate pairs do not overlap
+                    C_loc = None
+
+                    # Loop over the linear sub-cells of the master facet
+                    for m_sub in get_sub_cells(m_el):
+                        m_sub_2d = m_full_2d[m_sub]
+
+                        # Clip the projected master sub-cell with the slave sub-cell
+                        overlap_2d = sutherland_hodgman_clip(m_sub_2d, s_sub_2d)
+                        if len(overlap_2d) < 3:
+                            continue
+
+                        for tri in triangulate_polygon(overlap_2d):
+                            v0, v1, v2 = tri[0], tri[1], tri[2]
+                            area_jac = abs(
+                                (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v2[0] - v0[0]) * (v1[1] - v0[1])
+                            )
+                            if area_jac < 1e-14:
+                                continue
+
+                            if D_loc is None:
+                                D_loc = np.zeros((len(s_nodes), len(s_nodes)))
+                                C_loc = np.zeros((len(s_nodes), len(m_nodes)))
+
+                            for gp, w in zip(TRI_GAUSS_PTS, TRI_GAUSS_W):
+                                L1, L2 = gp[0], gp[1]
+                                x_gp_2d = (1.0 - L1 - L2) * v0 + L1 * v1 + L2 * v2
+
+                                # Inverse map onto the FULL parent elements
+                                local_s = map_2d_to_natural(s_el, s_full_2d, x_gp_2d)
+                                local_m = map_2d_to_natural(m_el, m_full_2d, x_gp_2d)
+
+                                N_s = s_el.getShapeFunctions(local_s)
+                                N_m = m_el.getShapeFunctions(local_m)
+
+                                # Dual shape functions: M_bar = A_e * N_s
+                                M_bar = A_e @ N_s
+
+                                dGamma = area_jac * w
+                                D_loc += np.outer(M_bar, N_s) * dGamma
+                                C_loc += np.outer(M_bar, N_m) * dGamma
+
+                    # Scatter the accumulated pair contribution into the global matrices
+                    if D_loc is not None:
+                        m_idx = np.array([self.master_node_to_idx[nd] for nd in m_nodes])
+                        D[np.ix_(s_idx, s_idx)] += D_loc
+                        C[np.ix_(s_idx, m_idx)] += C_loc
+
         return D, C
 
     def applyConstraint(
@@ -534,15 +580,25 @@ class Constraint(ConstraintBase):
             return
 
         dim = self.model.domainSize
+        sf = self.sizeField
+        nNodes = len(self._nodes)
+        nSlave = self.nNonMortarNodes
 
-        # Detect new increment to track iterations and reset current_iteration
+        # Detect new increment to track iterations and reset current_iteration.
+        # Normals and coupling matrices are frozen within each increment
+        # (staggered geometry update), so the assembled stiffness is the exact
+        # Jacobian of the residual equations within the increment.
         if timeStep.number != self.last_timestep_number or not hasattr(self, "current_normals"):
             self.last_timestep_number = timeStep.number
             self.current_iteration = 0
             self.current_normals = self.compute_normals(U_np)
             D_full, C_full = self.compute_mortar_coupling_matrices(U_np)
+            # Row-sum lumping of D enforces the partition of unity
+            # (sum_K D_IK = sum_J C_IJ) and thus translational invariance
             self.current_D = np.diag(np.sum(D_full, axis=1))
             self.current_C = C_full
+            # Precompute the sparsity pattern of C once per increment
+            self.current_C_nz = [np.flatnonzero(np.abs(C_full[I]) > 1e-14) for I in range(nSlave)]
         else:
             self.current_iteration += 1
 
@@ -550,29 +606,27 @@ class Constraint(ConstraintBase):
         D = self.current_D
         C = self.current_C
 
-        # Compute current coordinates of all nodes in deformed configuration
-        current_coords = {}
-        for node in self._nodes:
-            X = node.coordinates
-            node_idx = self.node_to_global_idx[node]
-            u = U_np[self.sizeField * node_idx : self.sizeField * node_idx + dim]
-            current_coords[node] = X + u
+        # Current coordinates of all constraint nodes in the deformed configuration
+        disp = U_np[: sf * nNodes].reshape(nNodes, sf)[:, :dim]
+        coords = self._X + disp
+        x_slave = coords[:nSlave]
+        x_master = coords[nSlave:]
 
-        # Loop over non-mortar nodes to update active set, residues, and stiffness
-        for I, node_s in enumerate(self.non_mortar_nodes):
-            idx_LM_I = self.sizeField * len(self._nodes) + I
+        idx_LM_0 = sf * nNodes
+
+        # Loop over non-mortar nodes to update active set, residues, and stiffness.
+        # Slave node I has global node index I, master node J has index nSlave + J.
+        for I in range(nSlave):
+            idx_LM_I = idx_LM_0 + I
             lambda_I = U_np[idx_LM_I]
-            node_s_idx = self.node_to_global_idx[node_s]
+            n_I = normals[I]
+            nz = self.current_C_nz[I]
 
             # Compute weak gap for node I:
             # g_I_weak = -D_I * (x_I . n_I) + sum_J C_IJ * (x_J . n_I)
-            x_I = current_coords[node_s]
-            n_I = normals[I]
-            g_I_weak = -D[I, I] * np.dot(x_I, n_I)
-            for J, node_m in enumerate(self.mortar_nodes):
-                if C[I, J] != 0:
-                    x_J = current_coords[node_m]
-                    g_I_weak += C[I, J] * np.dot(x_J, n_I)
+            g_I_weak = -D[I, I] * np.dot(x_slave[I], n_I)
+            if len(nz):
+                g_I_weak += C[I, nz] @ (x_master[nz] @ n_I)
 
             if self.use_active_set:
                 # To prevent active set oscillations/cycling, freeze the active set after 5 iterations
@@ -592,30 +646,21 @@ class Constraint(ConstraintBase):
                 # 1. Multiplier residual equation (weak gap)
                 PExt[idx_LM_I] -= g_I_weak
 
-                # 2. Slave force contribution
-                PExt[self.sizeField * node_s_idx : self.sizeField * node_s_idx + dim] += lambda_I * D[I, I] * n_I
+                # 2. Slave force contribution and stiffness coupling terms
+                s_dofs = slice(sf * I, sf * I + dim)
+                PExt[s_dofs] += lambda_I * D[I, I] * n_I
+                K[s_dofs, idx_LM_I] -= D[I, I] * n_I
+                K[idx_LM_I, s_dofs] -= D[I, I] * n_I
 
-                # 3. Master forces contributions
-                for J, node_m in enumerate(self.mortar_nodes):
-                    if C[I, J] != 0:
-                        node_m_idx = self.node_to_global_idx[node_m]
-                        PExt[self.sizeField * node_m_idx : self.sizeField * node_m_idx + dim] -= lambda_I * C[I, J] * n_I
-
-                # 4. Stiffness matrix entries (symmetric coupling terms)
-                # K[u_I, lambda_I] and K[lambda_I, u_I]
-                K[self.sizeField * node_s_idx : self.sizeField * node_s_idx + dim, idx_LM_I] -= D[I, I] * n_I
-                K[idx_LM_I, self.sizeField * node_s_idx : self.sizeField * node_s_idx + dim] -= D[I, I] * n_I
-
-                # K[u_J, lambda_I] and K[lambda_I, u_J]
-                for J, node_m in enumerate(self.mortar_nodes):
-                    if C[I, J] != 0:
-                        node_m_idx = self.node_to_global_idx[node_m]
-                        K[self.sizeField * node_m_idx : self.sizeField * node_m_idx + dim, idx_LM_I] += C[I, J] * n_I
-                        K[idx_LM_I, self.sizeField * node_m_idx : self.sizeField * node_m_idx + dim] += C[I, J] * n_I
+                # 3. Master force contributions and stiffness coupling terms
+                for J in nz:
+                    m_global = nSlave + J
+                    m_dofs = slice(sf * m_global, sf * m_global + dim)
+                    C_IJ_n = C[I, J] * n_I
+                    PExt[m_dofs] -= lambda_I * C_IJ_n
+                    K[m_dofs, idx_LM_I] += C_IJ_n
+                    K[idx_LM_I, m_dofs] += C_IJ_n
             else:
                 # Inactive node: lambda_I = 0
-                # 1. Multiplier residual equation
                 PExt[idx_LM_I] -= lambda_I
-
-                # 2. Stiffness matrix diagonal entry
                 K[idx_LM_I, idx_LM_I] += 1.0

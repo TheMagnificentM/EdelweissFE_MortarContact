@@ -427,32 +427,83 @@ class ContactElement(BaseElement):
             J = np.cross(t1, t2)
             return float(np.linalg.norm(J))
 
+    def getBasisTransformation(self) -> np.ndarray:
+        """Return the basis transformation matrix T_e for the construction of dual
+        shape functions on second-order elements.
+
+        For quadratic elements the weighted integrals int(N_a) dGamma of the corner
+        node shape functions are negative or zero (e.g. exactly -1/12 * A for the
+        corner nodes of an undistorted CONQUAD8), so the dual weights D_II would
+        lose their meaning as positive area weights. Following Popp, Wohlmuth,
+        Gee & Wall (2012) and Farah (2018), Sec. 6.2.3.2, shape function
+        contributions of the mid-side nodes are shifted to their adjacent corner
+        nodes with the factor alpha = 1/3:
+
+            N_tilde_corner = N_corner + alpha * (N_adjacent mid-side nodes)
+            N_tilde_mid    = (1 - 2*alpha) * N_mid
+
+        This guarantees strictly positive integrals int(N_tilde_a) dGamma while
+        preserving the partition of unity. For linear element types the identity
+        matrix is returned.
+        """
+        n = self._nNodes
+        T_e = np.eye(n)
+        alpha = 1.0 / 3.0
+
+        el_type = self._elType.upper()
+        if el_type in ("CONQUAD8", "CONQUAD9"):
+            mid_to_corners = {4: (0, 1), 5: (1, 2), 6: (2, 3), 7: (3, 0)}
+        elif el_type == "CONTRI6":
+            mid_to_corners = {3: (0, 1), 4: (1, 2), 5: (2, 0)}
+        elif el_type == "CONLINE3":
+            mid_to_corners = {2: (0, 1)}
+        else:
+            return T_e
+
+        for mid, (c1, c2) in mid_to_corners.items():
+            T_e[mid, mid] = 1.0 - 2.0 * alpha
+            T_e[c1, mid] = alpha
+            T_e[c2, mid] = alpha
+        return T_e
+
     def computeLocalMassMatrices(self, coords: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Compute the local standard mass matrix M_e, the diagonal D_e, and dual transformation A_e = D_e * inv(M_e).
-        
+        """Compute the transformed local mass matrix M_e, the diagonal D_e, and the dual
+        coefficient matrix A_e, such that the dual shape functions are Phi = A_e * N.
+
+        The biorthogonality is enforced with respect to the transformed basis
+        N_tilde = T_e * N (identity transformation for linear elements):
+
+            int(Phi_a * N_tilde_b) dGamma = delta_ab * int(N_tilde_a) dGamma
+
+        with M_e[a,b] = int(N_tilde_a * N_tilde_b) dGamma and
+        D_e[a,a] = int(N_tilde_a) dGamma > 0, so that
+        A_e = D_e * inv(M_e) * T_e maps STANDARD shape function values N to the
+        dual shape function values Phi (Popp et al. 2012; Farah 2018, Sec. 6.2.3).
+
         coords: numpy array of shape (nNodes, dim) containing the current coordinates of the element's nodes.
         """
         n = self._nNodes
         M_e = np.zeros((n, n))
         D_e = np.zeros((n, n))
-        
+
+        T_e = self.getBasisTransformation()
         points, weights = self.getQuadraturePoints()
-        
+
         for local_coords, w in zip(points, weights):
-            N = self.getShapeFunctions(local_coords)
+            N_t = T_e @ self.getShapeFunctions(local_coords)
             jac = self.getJacobianAndAreaWeight(local_coords, coords)
             dGamma = jac * w
-            
-            M_e += np.outer(N, N) * dGamma
+
+            M_e += np.outer(N_t, N_t) * dGamma
             for i in range(n):
-                D_e[i, i] += N[i] * dGamma
-                
+                D_e[i, i] += N_t[i] * dGamma
+
         try:
             inv_M_e = np.linalg.inv(M_e)
         except np.linalg.LinAlgError:
             inv_M_e = np.linalg.pinv(M_e)
-            
-        A_e = D_e @ inv_M_e
+
+        A_e = D_e @ inv_M_e @ T_e
         return M_e, D_e, A_e
 
     def getResultArray(self, name: str, U: np.ndarray) -> np.ndarray:
