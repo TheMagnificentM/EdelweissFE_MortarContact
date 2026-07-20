@@ -131,6 +131,23 @@ def run_quad_test(el_type, points_func):
     check("sum(D) = Überlappungsfläche", np.sum(D), 0.7, tol=1e-10)
     check("max|rowsum(D)-rowsum(C)|", np.max(np.abs(np.sum(D, axis=1) - np.sum(C, axis=1))), 0.0, tol=1e-12)
 
+    # Gelumpte Gewichte bei PARTIELLER Überdeckung: durch die segment-
+    # quadraturbasierten dualen Koeffizienten (konsistente Randbehandlung,
+    # Cichosz & Bischoff 2011 / MOOSE reinitDual) sind sie robust positiv,
+    # solange die transformierte Basis punktweise nicht-negativ ist (CONQUAD4,
+    # CONQUAD8). Die Lagrange-Mittelknotenfunktionen des CONQUAD9 wechseln
+    # punktweise das Vorzeichen, daher sind dort winzige negative Gewichte an
+    # überdeckungsfernen Knoten möglich (vom sgn_D-Guard im Active-Set
+    # abgefangen). Toleriert werden 5% des größten Gewichts.
+    lumped = np.sum(D, axis=1)
+    bound = -0.05 * np.max(lumped)
+    if el_type in ("CONQUAD4", "CONQUAD8"):
+        bound = -1e-12
+    if np.any(lumped < bound):
+        print(f"  [FAIL] Gelumpte Gewichte bei Teilüberdeckung zu negativ: {lumped}")
+        sys.exit(1)
+    print(f"  [OK]   Gelumpte Gewichte bei Teilüberdeckung im zulässigen Bereich (min = {np.min(lumped):.6f})")
+
     print(f"  [PASS] {el_type} erfolgreich verifiziert!")
 
 

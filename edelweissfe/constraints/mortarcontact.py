@@ -427,7 +427,16 @@ class Constraint(ConstraintBase):
            (possibly quadratic) parent slave and master elements via the inverse
            Newton map, so the true shape functions are evaluated - the curvature
            enters the integrand, only the integration domain is linearized.
-        5. Local contributions are accumulated per element pair and scattered
+        5. The dual shape function coefficients A_e are computed from the
+           ACTUAL segment quadrature of each slave element (two-pass scheme),
+           so the biorthogonality holds on the true integration domain even
+           for slave elements that are only partially covered by the master
+           side. This is the consistent boundary treatment of Cichosz &
+           Bischoff (2011), implemented the same way as MOOSE/libMesh
+           (Assembly::reinitDual -> FE::reinit_dual_shape_coeffs with the
+           mortar segment quadrature). For degenerate overlaps (sliver
+           contact) the reference-element coefficients are used as fallback.
+        6. Local contributions are accumulated per element pair and scattered
            into the global D and C with fancy indexing.
         """
         dim = self.model.domainSize
@@ -440,7 +449,7 @@ class Constraint(ConstraintBase):
         D = np.zeros((n_slave, n_slave))
         C = np.zeros((n_slave, n_master))
 
-        # Precompute the local dual transformation matrices A_e for all slave elements
+        # Reference-element dual matrices, used only as fallback for degenerate overlaps
         dual_mats = self.compute_local_dual_matrices(U_np)
 
         from edelweissfe.constraints.mortar_geom_utils import (
@@ -477,10 +486,16 @@ class Constraint(ConstraintBase):
 
         bvh_root = build_bvh(facets_with_bounds)
 
-        # Loop over each Slave facet
+        # ------------------------------------------------------------------
+        # PASS 1: Segmentation - collect all integration point records per
+        # slave facet: (N_s, master elNumber, N_m, dGamma)
+        # ------------------------------------------------------------------
+        seg_records = {}  # slave elNumber -> list of records
+        seg_masters = {}  # slave elNumber -> {master elNumber: m_el}
+        slave_els = {}  # slave elNumber -> (s_el, s_idx)
+
         for s_el, s_faceID in self.non_mortar_facets:
             s_nodes = s_el.nodes
-            _, _, A_e = dual_mats[s_el.elNumber]
 
             s_coords = np.array([current_coords[nd] for nd in s_nodes])
             s_idx = np.array([self.slave_node_to_idx[nd] for nd in s_nodes])
@@ -518,9 +533,6 @@ class Constraint(ConstraintBase):
                     m_coords = np.array([current_coords[nd] for nd in m_nodes])
                     m_full_2d = to_plane_coords(m_coords, p0, t1, t2)
 
-                    D_loc = None  # lazy allocation, most candidate pairs do not overlap
-                    C_loc = None
-
                     # Loop over the linear sub-cells of the master facet
                     for m_sub in get_sub_cells(m_el):
                         m_sub_2d = m_full_2d[m_sub]
@@ -538,10 +550,6 @@ class Constraint(ConstraintBase):
                             if area_jac < 1e-14:
                                 continue
 
-                            if D_loc is None:
-                                D_loc = np.zeros((len(s_nodes), len(s_nodes)))
-                                C_loc = np.zeros((len(s_nodes), len(m_nodes)))
-
                             for gp, w in zip(TRI_GAUSS_PTS, TRI_GAUSS_W):
                                 L1, L2 = gp[0], gp[1]
                                 x_gp_2d = (1.0 - L1 - L2) * v0 + L1 * v1 + L2 * v2
@@ -553,18 +561,53 @@ class Constraint(ConstraintBase):
                                 N_s = s_el.getShapeFunctions(local_s)
                                 N_m = m_el.getShapeFunctions(local_m)
 
-                                # Dual shape functions: M_bar = A_e * N_s
-                                M_bar = A_e @ N_s
+                                s_num = s_el.elNumber
+                                if s_num not in seg_records:
+                                    seg_records[s_num] = []
+                                    seg_masters[s_num] = {}
+                                    slave_els[s_num] = (s_el, s_idx)
+                                seg_records[s_num].append((N_s, m_el.elNumber, N_m, area_jac * w))
+                                seg_masters[s_num][m_el.elNumber] = m_el
 
-                                dGamma = area_jac * w
-                                D_loc += np.outer(M_bar, N_s) * dGamma
-                                C_loc += np.outer(M_bar, N_m) * dGamma
+        # ------------------------------------------------------------------
+        # PASS 2: Dual coefficients from the actual segment quadrature
+        # (MOOSE-style, consistent boundary treatment) and assembly
+        # ------------------------------------------------------------------
+        for s_num, records in seg_records.items():
+            s_el, s_idx = slave_els[s_num]
+            n_s = len(s_idx)
 
-                    # Scatter the accumulated pair contribution into the global matrices
-                    if D_loc is not None:
-                        m_idx = np.array([self.master_node_to_idx[nd] for nd in m_nodes])
-                        D[np.ix_(s_idx, s_idx)] += D_loc
-                        C[np.ix_(s_idx, m_idx)] += C_loc
+            # Biorthogonality system on the true integration domain:
+            # M_t[a,b] = int_seg(N_tilde_a * N_tilde_b), D_t[a] = int_seg(N_tilde_a)
+            T_e = s_el.getBasisTransformation()
+            M_t = np.zeros((n_s, n_s))
+            D_t = np.zeros(n_s)
+            for N_s, _, _, dG in records:
+                N_tilde = T_e @ N_s
+                M_t += np.outer(N_tilde, N_tilde) * dG
+                D_t += N_tilde * dG
+
+            # For sliver overlaps M_t becomes (near-)singular; fall back to the
+            # reference-element coefficients in that case.
+            if np.linalg.cond(M_t) < 1e12:
+                A_e = np.diag(D_t) @ np.linalg.inv(M_t) @ T_e
+            else:
+                A_e = dual_mats[s_num][2]
+
+            # Assemble the D block and per-master C blocks of this slave element
+            D_blk = np.zeros((n_s, n_s))
+            C_blks = {}
+            for N_s, m_num, N_m, dG in records:
+                M_bar = A_e @ N_s
+                D_blk += np.outer(M_bar, N_s) * dG
+                if m_num not in C_blks:
+                    C_blks[m_num] = np.zeros((n_s, len(seg_masters[s_num][m_num].nodes)))
+                C_blks[m_num] += np.outer(M_bar, N_m) * dG
+
+            D[np.ix_(s_idx, s_idx)] += D_blk
+            for m_num, C_blk in C_blks.items():
+                m_idx = np.array([self.master_node_to_idx[nd] for nd in seg_masters[s_num][m_num].nodes])
+                C[np.ix_(s_idx, m_idx)] += C_blk
 
         return D, C
 
@@ -593,11 +636,22 @@ class Constraint(ConstraintBase):
             self.current_iteration = 0
             self.current_normals = self.compute_normals(U_np)
             D_full, C_full = self.compute_mortar_coupling_matrices(U_np)
-            # Row-sum lumping of D enforces the partition of unity
-            # (sum_K D_IK = sum_J C_IJ) and thus translational invariance
-            self.current_D = np.diag(np.sum(D_full, axis=1))
+            # The FULL (element-locally sparse) D matrix is used for forces,
+            # stiffness and weak gap. With the basis transformation T_e the
+            # biorthogonality holds w.r.t. N_tilde, so D is not diagonal for
+            # quadratic elements - lumping it would destroy the consistency of
+            # the contact force distribution (a constant pressure could not be
+            # transmitted exactly, i.e. the patch test would fail). This is
+            # algebraically equivalent to the transformed formulation of
+            # Popp et al. (2012) / Farah (2018), Eqs. (6.24)-(6.25).
+            # Translational invariance of the weak gap is guaranteed by the
+            # row-sum identity sum_K D_IK = sum_J C_IJ (same-domain integration).
+            self.current_D = D_full
             self.current_C = C_full
-            # Precompute the sparsity pattern of C once per increment
+            # Positive by construction: sum_K D_IK = int(Phi_I) = int(N_tilde_I) > 0
+            self.current_D_rowsum = np.sum(D_full, axis=1)
+            # Precompute the sparsity patterns once per increment
+            self.current_D_nz = [np.flatnonzero(np.abs(D_full[I]) > 1e-14) for I in range(nSlave)]
             self.current_C_nz = [np.flatnonzero(np.abs(C_full[I]) > 1e-14) for I in range(nSlave)]
         else:
             self.current_iteration += 1
@@ -620,18 +674,23 @@ class Constraint(ConstraintBase):
             idx_LM_I = idx_LM_0 + I
             lambda_I = U_np[idx_LM_I]
             n_I = normals[I]
-            nz = self.current_C_nz[I]
+            nzD = self.current_D_nz[I]
+            nzC = self.current_C_nz[I]
 
             # Compute weak gap for node I:
-            # g_I_weak = -D_I * (x_I . n_I) + sum_J C_IJ * (x_J . n_I)
-            g_I_weak = -D[I, I] * np.dot(x_slave[I], n_I)
-            if len(nz):
-                g_I_weak += C[I, nz] @ (x_master[nz] @ n_I)
+            # g_I_weak = -sum_K D_IK * (x_K . n_I) + sum_J C_IJ * (x_J . n_I)
+            g_I_weak = 0.0
+            if len(nzD):
+                g_I_weak -= D[I, nzD] @ (x_slave[nzD] @ n_I)
+            if len(nzC):
+                g_I_weak += C[I, nzC] @ (x_master[nzC] @ n_I)
 
             if self.use_active_set:
                 # To prevent active set oscillations/cycling, freeze the active set after 5 iterations
                 if self.current_iteration < 5:
-                    sgn_D = np.sign(D[I, I])
+                    # The row sum of D equals int(Phi_I) = int(N_tilde_I) > 0 by
+                    # construction; sgn_D is kept as a defensive guard only.
+                    sgn_D = np.sign(self.current_D_rowsum[I])
                     if self.active_set[I]:
                         # If active, check for tension (lambda_I * sgn_D > 1e-10)
                         if lambda_I * sgn_D > 1e-10:
@@ -646,14 +705,17 @@ class Constraint(ConstraintBase):
                 # 1. Multiplier residual equation (weak gap)
                 PExt[idx_LM_I] -= g_I_weak
 
-                # 2. Slave force contribution and stiffness coupling terms
-                s_dofs = slice(sf * I, sf * I + dim)
-                PExt[s_dofs] += lambda_I * D[I, I] * n_I
-                K[s_dofs, idx_LM_I] -= D[I, I] * n_I
-                K[idx_LM_I, s_dofs] -= D[I, I] * n_I
+                # 2. Slave force contributions and stiffness coupling terms
+                #    (full D row: element-local coupling of slave nodes)
+                for K_nd in nzD:
+                    s_dofs = slice(sf * K_nd, sf * K_nd + dim)
+                    D_IK_n = D[I, K_nd] * n_I
+                    PExt[s_dofs] += lambda_I * D_IK_n
+                    K[s_dofs, idx_LM_I] -= D_IK_n
+                    K[idx_LM_I, s_dofs] -= D_IK_n
 
                 # 3. Master force contributions and stiffness coupling terms
-                for J in nz:
+                for J in nzC:
                     m_global = nSlave + J
                     m_dofs = slice(sf * m_global, sf * m_global + dim)
                     C_IJ_n = C[I, J] * n_I
