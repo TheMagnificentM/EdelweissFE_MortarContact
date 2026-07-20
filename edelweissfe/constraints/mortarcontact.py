@@ -111,6 +111,8 @@ def map_2d_to_natural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
 # through the shape function evaluation at the mapped Gauss points, never
 # through the clipping geometry itself.
 SUB_CELL_MAP = {
+    "CONLINE2": [[0, 1]],
+    "CONLINE3": [[0, 2], [2, 1]],
     "CONQUAD4": [[0, 1, 2, 3]],
     "CONTRI3": [[0, 1, 2]],
     "CONQUAD8": [[0, 4, 7], [4, 1, 5], [5, 2, 6], [7, 6, 3], [4, 5, 6, 7]],
@@ -134,6 +136,15 @@ def facet_normal(coords: np.ndarray) -> np.ndarray:
     if len(coords) == 3:
         return 0.5 * np.cross(coords[1] - coords[0], coords[2] - coords[0])
     return 0.5 * np.cross(coords[2] - coords[0], coords[3] - coords[1])
+
+
+# 3-point Gauss-Legendre rule (degree 5) on [-1, 1] for 1D line segments
+LINE_GAUSS_PTS = np.array([
+    [-np.sqrt(0.6)],
+    [0.0],
+    [np.sqrt(0.6)],
+])
+LINE_GAUSS_W = np.array([5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0])
 
 
 # 7-point symmetric Gauss rule (degree 5) on the reference triangle.
@@ -251,7 +262,7 @@ class Constraint(ConstraintBase):
             for el in elements:
                 if not el.elType.upper().startswith("CON"):
                     raise ValueError(
-                        f"MortarContact3D only supports explicit contact elements starting with 'CON'. "
+                        f"MortarContact only supports explicit contact elements starting with 'CON'. "
                         f"Got element type '{el.elType}'."
                     )
                 self.non_mortar_facets.append((el, faceID))
@@ -261,7 +272,7 @@ class Constraint(ConstraintBase):
             for el in elements:
                 if not el.elType.upper().startswith("CON"):
                     raise ValueError(
-                        f"MortarContact3D only supports explicit contact elements starting with 'CON'. "
+                        f"MortarContact only supports explicit contact elements starting with 'CON'. "
                         f"Got element type '{el.elType}'."
                     )
                 self.mortar_facets.append((el, faceID))
@@ -342,7 +353,6 @@ class Constraint(ConstraintBase):
                 X = node.coordinates
                 if U_np is not None:
                     # Retrieve displacement from local solution slice
-                    # Nodes are stored in constraint order: non_mortar_nodes + mortar_nodes
                     node_idx = self.node_to_global_idx[node]
                     u = U_np[self.sizeField * node_idx : self.sizeField * node_idx + dim]
                     coords.append(X + u)
@@ -409,39 +419,11 @@ class Constraint(ConstraintBase):
 
     def compute_mortar_coupling_matrices(self, U_np: np.ndarray = None) -> tuple[np.ndarray, np.ndarray]:
         """Compute the global mortar coupling matrices D (slave-slave) and C (slave-master).
-
-        Segment-based mortar integration (Puso & Laursen 2004; Puso, Laursen &
-        Solberg 2008; Farah 2018, Alg. 3.1 and App. A.1.4; analogous to MOOSE's
-        AutomaticMortarGeneration):
-
-        1. Every facet is decomposed into LINEAR sub-cells (SUB_CELL_MAP). For
-           linear facets this is the facet itself; quadratic facets (CONQUAD8/9,
-           CONTRI6) are subdivided using their mid-side nodes, so the clipping
-           geometry is a piecewise-linear approximation of the curved surface.
-        2. For each slave sub-cell an auxiliary plane is built from the sub-cell
-           center and its normal. Slave and master sub-cell corners are projected
-           onto this plane (along its normal) and clipped with Sutherland-Hodgman.
-        3. The overlap polygon is fan-triangulated into integration cells; a
-           7-point Gauss rule (degree 5) is applied on each cell.
-        4. Each Gauss point is mapped back to the natural space of the FULL
-           (possibly quadratic) parent slave and master elements via the inverse
-           Newton map, so the true shape functions are evaluated - the curvature
-           enters the integrand, only the integration domain is linearized.
-        5. The dual shape function coefficients A_e are computed from the
-           ACTUAL segment quadrature of each slave element (two-pass scheme),
-           so the biorthogonality holds on the true integration domain even
-           for slave elements that are only partially covered by the master
-           side. This is the consistent boundary treatment of Cichosz &
-           Bischoff (2011), implemented the same way as MOOSE/libMesh
-           (Assembly::reinitDual -> FE::reinit_dual_shape_coeffs with the
-           mortar segment quadrature). For degenerate overlaps (sliver
-           contact) the reference-element coefficients are used as fallback.
-        6. Local contributions are accumulated per element pair and scattered
-           into the global D and C with fancy indexing.
+        Supports both 2D and 3D contact elements.
         """
         dim = self.model.domainSize
-        if dim != 3:
-            raise NotImplementedError("Mortar coupling matrix integration is only implemented for 3D.")
+        if dim not in (2, 3):
+            raise NotImplementedError("Mortar coupling matrix integration is only implemented for 2D and 3D.")
 
         n_slave = self.nNonMortarNodes
         n_master = self.nMortarNodes
@@ -453,6 +435,7 @@ class Constraint(ConstraintBase):
         dual_mats = self.compute_local_dual_matrices(U_np)
 
         from edelweissfe.constraints.mortar_geom_utils import (
+            clip_1d_segments,
             get_tangent_basis,
             sutherland_hodgman_clip,
             to_plane_coords,
@@ -514,49 +497,77 @@ class Constraint(ConstraintBase):
             for s_sub in get_sub_cells(s_el):
                 sc_coords = s_coords[s_sub]
 
-                # Auxiliary plane from the sub-cell center and normal
-                n_vec = facet_normal(sc_coords)
-                n_norm = np.linalg.norm(n_vec)
-                if n_norm < 1e-14:
-                    continue  # degenerate sub-cell
-                normal = n_vec / n_norm
-                p0 = np.mean(sc_coords, axis=0)
-                t1, t2 = get_tangent_basis(normal)
+                if dim == 3:
+                    # 3D surface Mortar integration (Auxiliary plane projection & Sutherland-Hodgman clipping)
+                    n_vec = facet_normal(sc_coords)
+                    n_norm = np.linalg.norm(n_vec)
+                    if n_norm < 1e-14:
+                        continue  # degenerate sub-cell
+                    normal = n_vec / n_norm
+                    p0 = np.mean(sc_coords, axis=0)
+                    t1, t2 = get_tangent_basis(normal)
 
-                # Clip polygon of the slave sub-cell and projection of ALL parent
-                # nodes (needed for the inverse map onto the full parent element)
-                s_sub_2d = to_plane_coords(sc_coords, p0, t1, t2)
-                s_full_2d = to_plane_coords(s_coords, p0, t1, t2)
+                    s_sub_2d = to_plane_coords(sc_coords, p0, t1, t2)
+                    s_full_2d = to_plane_coords(s_coords, p0, t1, t2)
 
-                for m_el, m_faceID in candidates:
-                    m_nodes = m_el.nodes
-                    m_coords = np.array([current_coords[nd] for nd in m_nodes])
-                    m_full_2d = to_plane_coords(m_coords, p0, t1, t2)
+                    for m_el, m_faceID in candidates:
+                        m_nodes = m_el.nodes
+                        m_coords = np.array([current_coords[nd] for nd in m_nodes])
+                        m_full_2d = to_plane_coords(m_coords, p0, t1, t2)
 
-                    # Loop over the linear sub-cells of the master facet
-                    for m_sub in get_sub_cells(m_el):
-                        m_sub_2d = m_full_2d[m_sub]
+                        for m_sub in get_sub_cells(m_el):
+                            m_sub_2d = m_full_2d[m_sub]
 
-                        # Clip the projected master sub-cell with the slave sub-cell
-                        overlap_2d = sutherland_hodgman_clip(m_sub_2d, s_sub_2d)
-                        if len(overlap_2d) < 3:
-                            continue
-
-                        for tri in triangulate_polygon(overlap_2d):
-                            v0, v1, v2 = tri[0], tri[1], tri[2]
-                            area_jac = abs(
-                                (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v2[0] - v0[0]) * (v1[1] - v0[1])
-                            )
-                            if area_jac < 1e-14:
+                            overlap_2d = sutherland_hodgman_clip(m_sub_2d, s_sub_2d)
+                            if len(overlap_2d) < 3:
                                 continue
 
-                            for gp, w in zip(TRI_GAUSS_PTS, TRI_GAUSS_W):
-                                L1, L2 = gp[0], gp[1]
-                                x_gp_2d = (1.0 - L1 - L2) * v0 + L1 * v1 + L2 * v2
+                            for tri in triangulate_polygon(overlap_2d):
+                                v0, v1, v2 = tri[0], tri[1], tri[2]
+                                area_jac = abs(
+                                    (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v2[0] - v0[0]) * (v1[1] - v0[1])
+                                )
+                                if area_jac < 1e-14:
+                                    continue
 
-                                # Inverse map onto the FULL parent elements
-                                local_s = map_2d_to_natural(s_el, s_full_2d, x_gp_2d)
-                                local_m = map_2d_to_natural(m_el, m_full_2d, x_gp_2d)
+                                for gp, w in zip(TRI_GAUSS_PTS, TRI_GAUSS_W):
+                                    L1, L2 = gp[0], gp[1]
+                                    x_gp_2d = (1.0 - L1 - L2) * v0 + L1 * v1 + L2 * v2
+
+                                    local_s = map_2d_to_natural(s_el, s_full_2d, x_gp_2d)
+                                    local_m = map_2d_to_natural(m_el, m_full_2d, x_gp_2d)
+
+                                    N_s = s_el.getShapeFunctions(local_s)
+                                    N_m = m_el.getShapeFunctions(local_m)
+
+                                    s_num = s_el.elNumber
+                                    if s_num not in seg_records:
+                                        seg_records[s_num] = []
+                                        seg_masters[s_num] = {}
+                                        slave_els[s_num] = (s_el, s_idx)
+                                    seg_records[s_num].append((N_s, m_el.elNumber, N_m, area_jac * w))
+                                    seg_masters[s_num][m_el.elNumber] = m_el
+
+                else:
+                    # 2D line segment Mortar integration
+                    for m_el, m_faceID in candidates:
+                        m_nodes = m_el.nodes
+                        m_coords = np.array([current_coords[nd] for nd in m_nodes])
+                        for m_sub in get_sub_cells(m_el):
+                            mc_coords = m_coords[m_sub]
+                            s_start, s_end, L_slave, t_vec, n_vec = clip_1d_segments(sc_coords, mc_coords)
+                            if s_end - s_start < 1e-12:
+                                continue
+
+                            half_len = 0.5 * (s_end - s_start)
+                            mid_s = 0.5 * (s_start + s_end)
+                            for gp_1d, w_1d in zip(LINE_GAUSS_PTS, LINE_GAUSS_W):
+                                s_gp = mid_s + half_len * gp_1d[0]
+                                x_gp = sc_coords[0] + s_gp * t_vec
+                                dG = half_len * w_1d
+
+                                local_s = map_2d_to_natural(s_el, s_coords, x_gp)
+                                local_m = map_2d_to_natural(m_el, m_coords, x_gp)
 
                                 N_s = s_el.getShapeFunctions(local_s)
                                 N_m = m_el.getShapeFunctions(local_m)
@@ -566,7 +577,7 @@ class Constraint(ConstraintBase):
                                     seg_records[s_num] = []
                                     seg_masters[s_num] = {}
                                     slave_els[s_num] = (s_el, s_idx)
-                                seg_records[s_num].append((N_s, m_el.elNumber, N_m, area_jac * w))
+                                seg_records[s_num].append((N_s, m_el.elNumber, N_m, dG))
                                 seg_masters[s_num][m_el.elNumber] = m_el
 
         # ------------------------------------------------------------------
