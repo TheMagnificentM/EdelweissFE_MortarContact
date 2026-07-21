@@ -39,6 +39,25 @@ from edelweissfe.utils.misc import (
 
 """
 A mortar contact constraint with Lagrange multipliers and dual basis functions.
+
+Only the saddle-point formulation (explicit multiplier DOFs) is implemented.
+A "dual condensation" variant (eliminating the multipliers via lambda_I =
+-g_weak,I / D_II, evaluated fresh from the current gap each iteration) was
+implemented and removed again: it is not the algebraic elimination described
+in Farah (2018), Sec. 3.5.3, Eqs. (3.62)-(3.65)/Popp et al. (2012). The
+correct elimination is a Schur complement of the *already assembled* slave
+displacement row (which includes the surrounding bulk material stiffness,
+not just this constraint's own D/C/n data) and replaces that row with the
+linearized constraint, moving its force contribution to the master row via
+P = D^-1 M. The tried shortcut instead applies lambda_I as if it were a
+penalty force with penalty stiffness 1/D_II (~O(1) here vs. e.g. ~4e4 MPa
+concrete stiffness), which under-transmits contact force by ~25-30x on a
+real (POT_Dejori) problem while still passing an isolated single-state unit
+test (which only checks that a *prescribed* lambda produces matching forces,
+not that the solver's own iteration converges to the correct one). Redoing
+this correctly requires the constraint interface to replace rows rather
+than only additively contribute to K/PExt - a bigger architectural change,
+not attempted here.
 """
 
 module = Module(
@@ -55,7 +74,6 @@ if keyword in inputLanguage:
 module.addRequiredArg("nonMortarSurface", "The non-mortar (slave) surface name.", str)
 module.addRequiredArg("mortarSurface", "The mortar (master) surface name.", str)
 module.addOptionalArg("field", "The field this constraint acts on (e.g. displacement).", str, "displacement")
-module.addOptionalArg("use_condensation", "Whether to condense Lagrange multipliers out of the global system.", bool, False)
 
 documentation = [module]
 
@@ -246,8 +264,6 @@ class Constraint(ConstraintBase):
         self.field = kwargs["field"]
         self.sizeField = getFieldSize(self.field, model.domainSize)
 
-        self.use_condensation = kwargs.get("use_condensation", kwargs.get("usecondensation", False))
-
         non_mortar_surf_name = kwargs["nonMortarSurface"]
         mortar_surf_name = kwargs["mortarSurface"]
 
@@ -297,12 +313,8 @@ class Constraint(ConstraintBase):
         self.nNonMortarNodes = len(self.non_mortar_nodes)
         self.nMortarNodes = len(self.mortar_nodes)
 
-        if self.use_condensation:
-            self.nMultipliers = 0
-            self._nDof = self.sizeField * len(self._nodes)
-        else:
-            self.nMultipliers = self.nNonMortarNodes
-            self._nDof = self.sizeField * len(self._nodes) + self.nMultipliers
+        self.nMultipliers = self.nNonMortarNodes
+        self._nDof = self.sizeField * len(self._nodes) + self.nMultipliers
 
         self.recovered_lambdas = np.zeros(self.nNonMortarNodes)
         self._fieldsOnNodes = [[self.field]] * len(self._nodes)
@@ -685,120 +697,56 @@ class Constraint(ConstraintBase):
         x_slave = coords[:nSlave]
         x_master = coords[nSlave:]
 
-        if self.use_condensation:
-            # ------------------------------------------------------------------
-            # DUAL CONDENSATION MODE (Popp et al. 2012, Eqs. 4.16-4.21; Farah 2018)
-            # Multipliers lambda_I are algebraically eliminated prior to assembly.
-            # ------------------------------------------------------------------
-            for I in range(nSlave):
-                n_I = normals[I]
-                nzD = self.current_D_nz[I]
-                nzC = self.current_C_nz[I]
+        # ----------------------------------------------------------------------
+        # SADDLE-POINT MODE: Lagrange multipliers lambda_I are explicit unknowns
+        # in U_np, solved for jointly with the displacements. This is the only
+        # currently supported/validated formulation; see note below on why a
+        # condensed (multiplier-free) variant was removed.
+        # ----------------------------------------------------------------------
+        idx_LM_0 = sf * nNodes
 
-                g_I_weak = 0.0
-                if len(nzD):
-                    g_I_weak -= D[I, nzD] @ (x_slave[nzD] @ n_I)
-                if len(nzC):
-                    g_I_weak += C[I, nzC] @ (x_master[nzC] @ n_I)
+        for I in range(nSlave):
+            idx_LM_I = idx_LM_0 + I
+            lambda_I = U_np[idx_LM_I]
+            n_I = normals[I]
+            nzD = self.current_D_nz[I]
+            nzC = self.current_C_nz[I]
 
-                D_II = self.current_D_rowsum[I]
-                inv_D = 1.0 / D_II if abs(D_II) > 1e-14 else 0.0
+            g_I_weak = 0.0
+            if len(nzD):
+                g_I_weak -= D[I, nzD] @ (x_slave[nzD] @ n_I)
+            if len(nzC):
+                g_I_weak += C[I, nzC] @ (x_master[nzC] @ n_I)
 
-                lambda_I = - g_I_weak * inv_D if g_I_weak < 0.0 else 0.0
+            if self.use_active_set:
+                if self.current_iteration < 5:
+                    sgn_D = np.sign(self.current_D_rowsum[I])
+                    if self.active_set[I]:
+                        if lambda_I * sgn_D > 1e-10:
+                            self.active_set[I] = False
+                    else:
+                        if g_I_weak * sgn_D < -1e-10:
+                            self.active_set[I] = True
 
-                if self.use_active_set:
-                    if self.current_iteration < 5:
-                        if self.active_set[I]:
-                            if lambda_I <= 1e-10:
-                                self.active_set[I] = False
-                                lambda_I = 0.0
-                        else:
-                            if g_I_weak < -1e-10:
-                                self.active_set[I] = True
+            self.recovered_lambdas[I] = lambda_I if self.active_set[I] else 0.0
 
-                self.recovered_lambdas[I] = lambda_I if self.active_set[I] else 0.0
+            if self.active_set[I]:
+                PExt[idx_LM_I] -= g_I_weak
 
-                if self.active_set[I]:
-                    N_mat = np.outer(n_I, n_I)
+                for K_nd in nzD:
+                    s_dofs = slice(sf * K_nd, sf * K_nd + dim)
+                    D_IK_n = D[I, K_nd] * n_I
+                    PExt[s_dofs] += lambda_I * D_IK_n
+                    K[s_dofs, idx_LM_I] -= D_IK_n
+                    K[idx_LM_I, s_dofs] -= D_IK_n
 
-                    # 1. Slave nodal forces and condensed stiffness blocks
-                    for K_nd in nzD:
-                        s_dofs_K = slice(sf * K_nd, sf * K_nd + dim)
-                        PExt[s_dofs_K] += lambda_I * D[I, K_nd] * n_I
-
-                        for K_prime in nzD:
-                            s_dofs_Kp = slice(sf * K_prime, sf * K_prime + dim)
-                            stiff_SS = (D[I, K_nd] * D[I, K_prime] * inv_D) * N_mat
-                            K[s_dofs_K, s_dofs_Kp] += stiff_SS
-
-                    # 2. Master nodal forces and condensed stiffness blocks
-                    for J in nzC:
-                        m_global_J = nSlave + J
-                        m_dofs_J = slice(sf * m_global_J, sf * m_global_J + dim)
-                        PExt[m_dofs_J] -= lambda_I * C[I, J] * n_I
-
-                        for J_prime in nzC:
-                            m_global_Jp = nSlave + J_prime
-                            m_dofs_Jp = slice(sf * m_global_Jp, sf * m_global_Jp + dim)
-                            stiff_MM = (C[I, J] * C[I, J_prime] * inv_D) * N_mat
-                            K[m_dofs_J, m_dofs_Jp] += stiff_MM
-
-                    # 3. Off-diagonal Slave-Master coupling stiffness blocks
-                    for K_nd in nzD:
-                        s_dofs_K = slice(sf * K_nd, sf * K_nd + dim)
-                        for J in nzC:
-                            m_global_J = nSlave + J
-                            m_dofs_J = slice(sf * m_global_J, sf * m_global_J + dim)
-                            stiff_SM = (D[I, K_nd] * C[I, J] * inv_D) * N_mat
-                            K[s_dofs_K, m_dofs_J] -= stiff_SM
-                            K[m_dofs_J, s_dofs_K] -= stiff_SM
-
-        else:
-            # ------------------------------------------------------------------
-            # SADDLE-POINT MODE (Un-condensed multipliers in solution vector U_np)
-            # ------------------------------------------------------------------
-            idx_LM_0 = sf * nNodes
-
-            for I in range(nSlave):
-                idx_LM_I = idx_LM_0 + I
-                lambda_I = U_np[idx_LM_I]
-                n_I = normals[I]
-                nzD = self.current_D_nz[I]
-                nzC = self.current_C_nz[I]
-
-                g_I_weak = 0.0
-                if len(nzD):
-                    g_I_weak -= D[I, nzD] @ (x_slave[nzD] @ n_I)
-                if len(nzC):
-                    g_I_weak += C[I, nzC] @ (x_master[nzC] @ n_I)
-
-                if self.use_active_set:
-                    if self.current_iteration < 5:
-                        sgn_D = np.sign(self.current_D_rowsum[I])
-                        if self.active_set[I]:
-                            if lambda_I * sgn_D > 1e-10:
-                                self.active_set[I] = False
-                        else:
-                            if g_I_weak * sgn_D < -1e-10:
-                                self.active_set[I] = True
-
-                if self.active_set[I]:
-                    PExt[idx_LM_I] -= g_I_weak
-
-                    for K_nd in nzD:
-                        s_dofs = slice(sf * K_nd, sf * K_nd + dim)
-                        D_IK_n = D[I, K_nd] * n_I
-                        PExt[s_dofs] += lambda_I * D_IK_n
-                        K[s_dofs, idx_LM_I] -= D_IK_n
-                        K[idx_LM_I, s_dofs] -= D_IK_n
-
-                    for J in nzC:
-                        m_global = nSlave + J
-                        m_dofs = slice(sf * m_global, sf * m_global + dim)
-                        C_IJ_n = C[I, J] * n_I
-                        PExt[m_dofs] -= lambda_I * C_IJ_n
-                        K[m_dofs, idx_LM_I] += C_IJ_n
-                        K[idx_LM_I, m_dofs] += C_IJ_n
-                else:
-                    PExt[idx_LM_I] -= lambda_I
-                    K[idx_LM_I, idx_LM_I] += 1.0
+                for J in nzC:
+                    m_global = nSlave + J
+                    m_dofs = slice(sf * m_global, sf * m_global + dim)
+                    C_IJ_n = C[I, J] * n_I
+                    PExt[m_dofs] -= lambda_I * C_IJ_n
+                    K[m_dofs, idx_LM_I] += C_IJ_n
+                    K[idx_LM_I, m_dofs] += C_IJ_n
+            else:
+                PExt[idx_LM_I] -= lambda_I
+                K[idx_LM_I, idx_LM_I] += 1.0

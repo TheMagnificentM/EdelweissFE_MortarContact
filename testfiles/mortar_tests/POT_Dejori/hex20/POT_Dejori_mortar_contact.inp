@@ -67,12 +67,12 @@
 
 *job, name=POT_Dejori_MortarContact, domain=3d
 *solver, solver=NISTParallel, name=theSolver
-*updateConfiguration, configuration=fluxResidualTolerance
-scalar variables=1e-3
-*updateConfiguration, configuration=fluxResidualToleranceAlternative
-scalar variables=1e-3
-*updateConfiguration, configuration=fieldCorrectionTolerance
-scalar variables=1e5
+** *updateConfiguration, configuration=fluxResidualTolerance
+** scalar variables=1e-3
+** *updateConfiguration, configuration=fluxResidualToleranceAlternative
+** scalar variables=1e-3
+** *updateConfiguration, configuration=fieldCorrectionTolerance
+** scalar variables=1e5
 
 
 ** ------------------------------------------------------------------------------
