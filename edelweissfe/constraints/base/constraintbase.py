@@ -118,6 +118,26 @@ class ConstraintBase(ABC, VIJEntityBase):
 
         self.scalarVariables = scalarVariables
 
+    def getCondensationOperators(self) -> dict | None:
+        """Optionally expose operators for a solver-level static condensation
+        of this constraint's scalar variables (e.g. dual-mortar Lagrange
+        multipliers).
+
+        Constraints that support having their scalar variables condensed out
+        of the assembled system return the operators the solver needs; all
+        others return ``None`` (the default), in which case the constraint is
+        left untouched in the (saddle-point) system. This keeps the condensation
+        strictly opt-in: a solver only transforms the system when at least one
+        constraint returns a non-``None`` value here.
+
+        Returns
+        -------
+        dict | None
+            ``None`` by default.
+        """
+
+        return None
+
     @abstractmethod
     def applyConstraint(
         self,

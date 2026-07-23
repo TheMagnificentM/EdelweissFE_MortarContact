@@ -74,6 +74,16 @@ if keyword in inputLanguage:
 module.addRequiredArg("nonMortarSurface", "The non-mortar (slave) surface name.", str)
 module.addRequiredArg("mortarSurface", "The mortar (master) surface name.", str)
 module.addOptionalArg("field", "The field this constraint acts on (e.g. displacement).", str, "displacement")
+module.addOptionalArg(
+    "condensation",
+    "Statically condense (eliminate) the Lagrange multipliers from the assembled "
+    "saddle-point system, yielding a displacement-dominated, better-conditioned "
+    "system (Gitterle et al. 2010, Eqs. 85/86; Farah 2018, Sec. 3.5.3). The nodal "
+    "multiplier z_I in R^dim is eliminated projection-free (valid across edges/kinks) "
+    "and recovered afterwards. Frictionless only for now. Default: saddle-point.",
+    bool,
+    False,
+)
 
 documentation = [module]
 
@@ -313,10 +323,41 @@ class Constraint(ConstraintBase):
         self.nNonMortarNodes = len(self.non_mortar_nodes)
         self.nMortarNodes = len(self.mortar_nodes)
 
-        self.nMultipliers = self.nNonMortarNodes
+        # Vectorial nodal Lagrange multiplier z_I in R^dim per slave node (global
+        # components of the discrete contact traction), following Gitterle, Popp,
+        # Gee & Wall (2010) and Popp, Wohlmuth, Gee & Wall (2012). The frictionless
+        # case constrains the normal component (weighted gap, Signorini) and sets
+        # the tangential traction to zero; friction later only replaces the
+        # tangential constraint rows (Gitterle Eq. (86), rows St/Sl) by the
+        # Coulomb stick/slip law. Using the full vector (instead of a scalar
+        # normal multiplier) makes the later static condensation a projection-free
+        # vectorial elimination (Gitterle Eq. (85)) that stays valid across
+        # edges/kinks, and is the exact structure the frictional extension needs.
+        self.dim = self.model.domainSize
+        self.nMultipliers = self.dim * self.nNonMortarNodes
         self._nDof = self.sizeField * len(self._nodes) + self.nMultipliers
 
+        # Recovered nodal normal pressure z_I . n_I (for output/verification)
         self.recovered_lambdas = np.zeros(self.nNonMortarNodes)
+        # Recovered full nodal traction vectors z_I (global components)
+        self.recovered_tractions = np.zeros((self.nNonMortarNodes, self.dim))
+
+        # Opt-in static condensation of the multipliers (solver-level).
+        self.use_condensation = bool(kwargs.get("condensation", False))
+        # Coulomb friction is not implemented yet; kept for the friction-ready
+        # interface (the tangential constraint rows become the stick/slip rows).
+        self.friction_coefficient = float(
+            kwargs.get("friction_coefficient", kwargs.get("frictioncoefficient", 0.0))
+        )
+        if self.use_condensation and self.friction_coefficient > 0.0:
+            # Condensation of the tangential (friction) multipliers (Gitterle
+            # Eq. 86, rows St/Sl) is not implemented yet. Fail loudly rather than
+            # silently producing a frictionless result.
+            raise NotImplementedError(
+                "Dual condensation with Coulomb friction (mu > 0) is not implemented yet. "
+                "Use condensation only for frictionless contact, or disable condensation "
+                "to keep the saddle-point formulation."
+            )
         self._fieldsOnNodes = [[self.field]] * len(self._nodes)
         self.active = True
 
@@ -409,6 +450,22 @@ class Constraint(ConstraintBase):
                 normals[i] = np.zeros(dim)
 
         return normals
+
+    def _local_frame(self, n_I: np.ndarray) -> list[np.ndarray]:
+        """Return the (dim-1) orthonormal tangent vectors spanning the plane
+        orthogonal to the unit normal ``n_I``.
+
+        In 2D there is a single in-plane tangent ``[n_y, -n_x]``; in 3D the two
+        tangents are taken from :func:`get_tangent_basis`. These span the local
+        frame in which the tangential contact constraints are expressed
+        (frictionless: zero tangential traction; friction: Coulomb stick/slip).
+        """
+        from edelweissfe.constraints.mortar_geom_utils import get_tangent_basis
+
+        if len(n_I) == 2:
+            return [np.array([n_I[1], -n_I[0]])]
+        t1, t2 = get_tangent_basis(n_I)
+        return [t1, t2]
 
     def compute_local_dual_matrices(self, U_np: np.ndarray = None) -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """Compute the local standard mass matrices M_e, diagonal matrices D_e, and transformation matrices A_e for all non-mortar facets.
@@ -665,6 +722,16 @@ class Constraint(ConstraintBase):
         if timeStep.number != self.last_timestep_number or not hasattr(self, "current_normals"):
             self.last_timestep_number = timeStep.number
             self.current_iteration = 0
+            # Active set (Signorini) is updated EVERY Newton iteration and the
+            # outer active-set loop is converged once the set no longer changes -
+            # the convergence criterion of the primal-dual active set strategy
+            # (Hüeber & Wohlmuth 2005) / semismooth Newton mortar contact
+            # (Popp et al. 2012, Gitterle et al. 2010). There is deliberately NO
+            # fixed iteration-count cutoff (that would be an ad-hoc heuristic and
+            # could freeze a not-yet-settled set). A safeguard cap only guards
+            # against pathological non-settling (e.g. chattering).
+            self.active_set_frozen = False
+            self.active_set_stable_count = 0
             self.current_normals = self.compute_normals(U_np)
             D_full, C_full = self.compute_mortar_coupling_matrices(U_np)
             # The FULL (element-locally sparse) D matrix is used for forces,
@@ -698,55 +765,201 @@ class Constraint(ConstraintBase):
         x_master = coords[nSlave:]
 
         # ----------------------------------------------------------------------
-        # SADDLE-POINT MODE: Lagrange multipliers lambda_I are explicit unknowns
-        # in U_np, solved for jointly with the displacements. This is the only
-        # currently supported/validated formulation; see note below on why a
-        # condensed (multiplier-free) variant was removed.
+        # SADDLE-POINT MODE (vectorial, friction-ready): the nodal multiplier
+        # z_I in R^dim (global components of the discrete contact traction) is an
+        # explicit unknown, solved for jointly with the displacements. The slave
+        # and master equilibrium rows carry the weighted contact traction
+        # (+D z on the slave, -C z = -(M z) on the master). The dim constraint
+        # rows per active node enforce, in the local frame (n_I, t_1[, t_2]):
+        #   - normal:      weighted normal gap g_n,I = 0   (Signorini, active set)
+        #   - tangential:  t_a . z_I = 0   (a = 1..dim-1)  (frictionless -> zero
+        #                  tangential traction; the mu->0 limit of the Coulomb
+        #                  stick/slip rows, which friction later replaces here).
+        # This is algebraically equivalent to the scalar normal formulation
+        # (once t_a.z_I = 0 holds, z_I = lambda_I n_I and D z / C z reduce to the
+        # scalar lambda_I D n_I / lambda_I C n_I), but keeps the full traction
+        # vector so the later condensation (Gitterle Eq. (85)) is a
+        # projection-free vectorial elimination valid across edges/kinks.
+        #
+        # DOF layout of node I's dim scalar variables (local indices
+        # z0 = sf*nNodes + dim*I, .. z0+dim-1): row z0 carries the normal-gap
+        # equation, rows z0+1..z0+dim-1 the tangential-traction equations.
         # ----------------------------------------------------------------------
         idx_LM_0 = sf * nNodes
+        Id = np.eye(dim)
+
+        # Snapshot the active set to detect whether this iteration changed it
+        # (stability-based freezing, see the increment-reset block above).
+        active_set_before = self.active_set.copy()
 
         for I in range(nSlave):
-            idx_LM_I = idx_LM_0 + I
-            lambda_I = U_np[idx_LM_I]
+            z0 = idx_LM_0 + dim * I
+            z_slice = slice(z0, z0 + dim)
+            z_I = np.array(U_np[z_slice], dtype=float)
             n_I = normals[I]
             nzD = self.current_D_nz[I]
             nzC = self.current_C_nz[I]
 
+            # Weighted normal gap g_n,I (translation-invariant via the row-sum
+            # identity sum_K D_IK = sum_J C_IJ).
             g_I_weak = 0.0
             if len(nzD):
                 g_I_weak -= D[I, nzD] @ (x_slave[nzD] @ n_I)
             if len(nzC):
                 g_I_weak += C[I, nzC] @ (x_master[nzC] @ n_I)
 
-            if self.use_active_set:
-                if self.current_iteration < 5:
-                    sgn_D = np.sign(self.current_D_rowsum[I])
-                    if self.active_set[I]:
-                        if lambda_I * sgn_D > 1e-10:
-                            self.active_set[I] = False
-                    else:
-                        if g_I_weak * sgn_D < -1e-10:
-                            self.active_set[I] = True
+            lambda_I = float(z_I @ n_I)  # normal pressure component z_I . n_I
+
+            if self.use_active_set and not self.active_set_frozen:
+                sgn_D = np.sign(self.current_D_rowsum[I])
+                if self.active_set[I]:
+                    if lambda_I * sgn_D > 1e-10:
+                        self.active_set[I] = False
+                else:
+                    if g_I_weak * sgn_D < -1e-10:
+                        self.active_set[I] = True
 
             self.recovered_lambdas[I] = lambda_I if self.active_set[I] else 0.0
+            self.recovered_tractions[I] = z_I if self.active_set[I] else 0.0
 
             if self.active_set[I]:
-                PExt[idx_LM_I] -= g_I_weak
-
+                # --- Equilibrium coupling: weighted contact traction forces ---
                 for K_nd in nzD:
                     s_dofs = slice(sf * K_nd, sf * K_nd + dim)
-                    D_IK_n = D[I, K_nd] * n_I
-                    PExt[s_dofs] += lambda_I * D_IK_n
-                    K[s_dofs, idx_LM_I] -= D_IK_n
-                    K[idx_LM_I, s_dofs] -= D_IK_n
-
+                    PExt[s_dofs] += D[I, K_nd] * z_I
+                    K[s_dofs, z_slice] -= D[I, K_nd] * Id
                 for J in nzC:
                     m_global = nSlave + J
                     m_dofs = slice(sf * m_global, sf * m_global + dim)
-                    C_IJ_n = C[I, J] * n_I
-                    PExt[m_dofs] -= lambda_I * C_IJ_n
-                    K[m_dofs, idx_LM_I] += C_IJ_n
-                    K[idx_LM_I, m_dofs] += C_IJ_n
+                    PExt[m_dofs] -= C[I, J] * z_I
+                    K[m_dofs, z_slice] += C[I, J] * Id
+
+                # --- Constraint row z0: weighted normal gap g_n,I = 0 ---
+                PExt[z0] -= g_I_weak
+                for K_nd in nzD:
+                    s_dofs = slice(sf * K_nd, sf * K_nd + dim)
+                    K[z0, s_dofs] -= D[I, K_nd] * n_I
+                for J in nzC:
+                    m_global = nSlave + J
+                    m_dofs = slice(sf * m_global, sf * m_global + dim)
+                    K[z0, m_dofs] += C[I, J] * n_I
+
+                # --- Constraint rows z0+1..z0+dim-1: tangential traction = 0 ---
+                for a, t_a in enumerate(self._local_frame(n_I)):
+                    r_t = z0 + 1 + a
+                    PExt[r_t] -= float(t_a @ z_I)
+                    K[r_t, z_slice] += t_a
             else:
-                PExt[idx_LM_I] -= lambda_I
-                K[idx_LM_I, idx_LM_I] += 1.0
+                # Inactive: z_I = 0 (all components -> normal and tangential)
+                for c in range(dim):
+                    PExt[z0 + c] -= z_I[c]
+                    K[z0 + c, z0 + c] += 1.0
+
+        # Stability-based freezing of the active set: once the set is unchanged
+        # for two consecutive iterations (and past a small warm-up), freeze it so
+        # the Newton iteration converges on a fixed set. A safeguard cap prevents
+        # an unbounded outer loop should the set fail to settle (e.g. oscillate).
+        if self.use_active_set and not self.active_set_frozen:
+            if np.array_equal(self.active_set, active_set_before):
+                self.active_set_stable_count += 1
+            else:
+                self.active_set_stable_count = 0
+            if (self.active_set_stable_count >= 2 and self.current_iteration >= 2) or (
+                self.current_iteration >= 20
+            ):
+                self.active_set_frozen = True
+
+    def _build_condensation_transform(self) -> list[list[tuple[int, float]]]:
+        r"""Global basis-transformation rows ``T[I, :]`` per slave node, as a
+        sparse ``[(K, T_IK), ..]`` list referencing slave node local indices.
+
+        For linear facets ``T`` is the identity (every row is ``[(I, 1.0)]``), so
+        the elimination reduces to a per-node scalar division by ``D_II``. For
+        quadratic facets (CONQUAD8/9, CONTRI6, CONLINE3) the alpha = 1/3 basis
+        transformation of Popp, Wohlmuth, Gee & Wall (2012) (see
+        :func:`ContactElement.getBasisTransformation`) renders the *transformed*
+        mortar matrix ``D_tilde = D_phys T^T`` diagonal; the elimination of
+        ``z_I`` then uses the ``T``-weighted combination of the slave equilibrium
+        rows of node ``I`` and its adjacent mid-side/corner nodes.
+
+        The global ``T`` is assembled **topologically** (set, not accumulated):
+        every element carries the identical local ``T_e``, so setting
+        ``T[a, b] = T_e[a, b]`` avoids the double-counting on shared edges that
+        additive accumulation would produce (which would give ``2*alpha`` and
+        destroy the diagonality of ``D_tilde``; cf. Cichosz & Bischoff 2011).
+        """
+        nSlave = self.nNonMortarNodes
+        rows = [dict() for _ in range(nSlave)]
+        for I in range(nSlave):
+            rows[I][I] = 1.0  # identity default (corners / linear nodes)
+        for el, faceID in self.non_mortar_facets:
+            T_e = el.getBasisTransformation()
+            loc2glob = [self.slave_node_to_idx[nd] for nd in el.nodes]
+            n = el.nNodes
+            for a in range(n):
+                for b in range(n):
+                    v = T_e[a, b]
+                    if abs(v) > 1e-14:
+                        rows[loc2glob[a]][loc2glob[b]] = float(v)  # set, not +=
+        return [sorted(r.items()) for r in rows]
+
+    def getCondensationOperators(self) -> dict | None:
+        """Operators for the solver-level static condensation of this
+        constraint's vectorial Lagrange multipliers (Gitterle et al. 2010,
+        Eqs. 85/86).
+
+        Returns ``None`` unless ``condensation=True`` was requested. When on, the
+        constraint keeps assembling the full (vectorial) saddle-point system so
+        the solver can slice the bulk stiffness, coupling and residual out of the
+        assembled matrix; this method exposes, per **active** slave node, the
+        metadata the solver cannot recover from the matrix alone: the node's dim
+        scalar multiplier variables ``z_I`` (global components of the contact
+        traction), the slave ``Node``, the frozen unit normal ``n_I``, the
+        diagonal *transformed* mortar entry ``D_tilde_II`` (== ``current_D_rowsum[I]``,
+        since ``sum_K D_phys[I,K] = int(Phi_I) = D_tilde_II`` by the partition of
+        unity), the transformation row ``T[I,:]`` (identity for linear facets),
+        and the active flag.
+
+        Because the multiplier is a full vector (not a scalar normal component),
+        the elimination the solver performs is projection-free (no dependence on
+        a single well-defined normal), hence valid across edges/kinks and the
+        exact structure the frictional extension needs.
+
+        Must be called *after* :func:`applyConstraint` in the same iteration.
+
+        Returns
+        -------
+        dict | None
+            ``{"field": <name>, "dim": <int>, "multipliers": [ {..}, .. ]}`` with
+            one entry per slave node holding ``scalarVariables`` (list of dim
+            ``ScalarVariable``), ``slaveNode``, ``localIndex`` (I), ``normal``,
+            ``D_diag``, ``transform`` (``[(K, T_IK), ..]``) and ``active``.
+            ``None`` if condensation is off or before the first assembly.
+        """
+        if not self.use_condensation:
+            return None
+        if self.friction_coefficient > 0.0:
+            raise NotImplementedError("Dual condensation with friction is not implemented yet.")
+        if not hasattr(self, "current_normals"):
+            # applyConstraint has not run yet this analysis; nothing to condense.
+            return None
+
+        dim = self.dim
+        transform = self._build_condensation_transform()
+        multipliers = []
+        for I in range(self.nNonMortarNodes):
+            multipliers.append(
+                {
+                    "scalarVariables": [self.scalarVariables[dim * I + c] for c in range(dim)],
+                    "slaveNode": self.non_mortar_nodes[I],
+                    "localIndex": I,
+                    "normal": self.current_normals[I],
+                    # local tangent frame, in the SAME order as the tangential
+                    # constraint rows assembled in applyConstraint (z-dof 1..dim-1)
+                    "tangents": self._local_frame(self.current_normals[I]),
+                    "D_diag": float(self.current_D_rowsum[I]),
+                    "transform": transform[I],
+                    "active": bool(self.active_set[I]),
+                }
+            )
+        return {"field": self.field, "dim": dim, "multipliers": multipliers}

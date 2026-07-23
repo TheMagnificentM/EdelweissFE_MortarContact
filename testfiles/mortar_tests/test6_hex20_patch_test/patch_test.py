@@ -166,7 +166,11 @@ def run_variant(name, elA, nxA, nzA, conA, elB, nxB, nzB, conB, distort=False,
         sys.exit(1)
 
     # --- Kontrolle 2: konstanter Kontaktdruck (Multiplikatoren) ---
-    lambdas = np.array([v.value for v in model.scalarVariables.values()]).flatten()
+    # Der Multiplikator ist jetzt vektoriell (z_I in R^dim, globale Komponenten
+    # der Kontakttraktion). Physikalisch maßgeblich ist die Normalkomponente
+    # lambda_I = z_I . n_I, die der Constraint als recovered_lambdas bereitstellt
+    # (die Tangentialkomponenten sind reibungsfrei = 0).
+    lambdas = np.asarray(model.constraints["contact"].recovered_lambdas).flatten()
     if len(lambdas) == 0:
         print("  [FAIL] Keine Kontakt-Multiplikatoren im Modell gefunden!")
         sys.exit(1)

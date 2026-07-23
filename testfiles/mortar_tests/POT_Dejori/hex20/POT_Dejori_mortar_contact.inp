@@ -153,41 +153,20 @@ penalty=400
 ** Das ist die korrekte Orientierung fuer Mortar-Kontakt.
 ** ------------------------------------------------------------------------------
 **
-** --- Links: Schaft seitlich (vertikal) ---
-*constraint, type=mortarcontact, name=contact_l_stud_vert
-nonMortarSurface=con_conc_l_stud_vert
-mortarSurface=con_stl_l_stud_vert
+** --- left ---
+*constraint, type=mortarcontact, name=contact_l
+nonMortarSurface=con_conc_l
+mortarSurface=con_stl_l
 field=displacement
+condensation=True
 **
-** --- Links: Kopf unten (horizontal) ---
-*constraint, type=mortarcontact, name=contact_l_head_horiz
-nonMortarSurface=con_conc_l_head_horiz
-mortarSurface=con_stl_l_head_horiz
+** --- right ---
+*constraint, type=mortarcontact, name=contact_r
+nonMortarSurface=con_conc_r
+mortarSurface=con_stl_r
 field=displacement
+condensation=True
 **
-** --- Links: Kopf seitlich (vertikal) ---
-*constraint, type=mortarcontact, name=contact_l_head_vert
-nonMortarSurface=con_conc_l_head_vert
-mortarSurface=con_stl_l_head_vert
-field=displacement
-**
-** --- Rechts: Schaft seitlich (vertikal) ---
-*constraint, type=mortarcontact, name=contact_r_stud_vert
-nonMortarSurface=con_conc_r_stud_vert
-mortarSurface=con_stl_r_stud_vert
-field=displacement
-**
-** --- Rechts: Kopf unten (horizontal) ---
-*constraint, type=mortarcontact, name=contact_r_head_horiz
-nonMortarSurface=con_conc_r_head_horiz
-mortarSurface=con_stl_r_head_horiz
-field=displacement
-**
-** --- Rechts: Kopf seitlich (vertikal) ---
-*constraint, type=mortarcontact, name=contact_r_head_vert
-nonMortarSurface=con_conc_r_head_vert
-mortarSurface=con_stl_r_head_vert
-field=displacement
 **
 ** ------------------------------------------------------------------------------
 ** LASTSCHRITT

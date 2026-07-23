@@ -248,6 +248,129 @@ class NonlinearSolverBase(ABC):
         KCsr = self.csrGenerator.updateCSR(K)
         return KCsr
 
+    @performancetiming.timeit("condense constraints")
+    def condenseConstraints(
+        self,
+        Kcsr: csr_matrix,
+        R: ndarray,
+        model: FEModel,
+        dirichlets: list = None,
+    ) -> tuple[csr_matrix, ndarray]:
+        """Statically condense the vectorial Lagrange multipliers of any
+        condensable constraints out of the assembled system, right before the
+        linear solve.
+
+        Strictly opt-in: only constraints whose
+        :func:`~edelweissfe.constraints.base.constraintbase.ConstraintBase.getCondensationOperators`
+        returns a non-``None`` value participate. If none do, the assembled
+        ``(Kcsr, R)`` are returned unchanged, so the solver path for models
+        without (condensable) contact is byte-for-byte the previous one.
+
+        The transform is the projection-free vectorial dual-mortar condensation
+        of Gitterle et al. (2010), Eqs. (85)/(86); see
+        :mod:`edelweissfe.solvers.base.mortarcondensation`.
+        """
+
+        dm = self.theDofManager
+
+        # Dirichlet DOF indices are gathered only so the condensation can keep
+        # their right-hand side untouched (Dirichlet BCs take precedence). NOTE:
+        # the standard dual condensation eliminates ALL active multipliers
+        # uniformly (Gitterle et al. 2010; Popp et al. 2012) - there is no
+        # per-node special-casing. The one modelling requirement is that contact
+        # SURFACE displacement DOFs must not carry a Dirichlet BC in the contact
+        # normal direction (apply such BCs on non-contact boundaries), see the
+        # note in :mod:`edelweissfe.solvers.base.mortarcondensation`.
+        dirichletIndices = None
+        if dirichlets:
+            idxLists = [self.findDirichletIndices(d) for d in dirichlets]
+            if idxLists:
+                dirichletIndices = np.unique(
+                    np.concatenate([np.asarray(i, dtype=int) for i in idxLists])
+                )
+
+        operators = []
+        allZ = []  # ALL contact multiplier DOFs (for pure-bulk column stripping)
+        for constraint in model.constraints.values():
+            ops = constraint.getCondensationOperators()
+            if not ops:
+                continue
+            field = ops["field"]
+            mult = ops["multipliers"]
+            for m in mult:
+                allZ.extend(int(dm.idcsOfScalarVariablesInDofVector[sv]) for sv in m["scalarVariables"])
+
+            # Resolve every slave node's global displacement DOFs first, so the
+            # per-multiplier transform (referencing OTHER slave nodes by local
+            # index) can be resolved to global DOFs. For linear facets the
+            # transform is just [(I, 1.0)].
+            resolved = []
+            for m in mult:
+                normal = np.asarray(m["normal"], dtype=float)
+                d = len(normal)
+                slaveDofs = np.asarray(
+                    dm.idcsOfFieldVariablesInDofVector[m["slaveNode"].fields[field]][:d], dtype=int
+                )
+                resolved.append(slaveDofs)
+
+            # Condense every ACTIVE multiplier; inactive nodes carry no contact
+            # force and keep their trivial (z = 0) saddle rows.
+            for m in mult:
+                if not m["active"]:
+                    continue
+                I = m["localIndex"]
+                zIdx = np.asarray(
+                    [int(dm.idcsOfScalarVariablesInDofVector[sv]) for sv in m["scalarVariables"]],
+                    dtype=int,
+                )
+                transform = [(resolved[K], float(coeff)) for (K, coeff) in m["transform"]]
+                operators.append(
+                    {
+                        "z_idx": zIdx,
+                        "slave_dofs": resolved[I],
+                        "normal": np.asarray(m["normal"], dtype=float),
+                        "tangents": [np.asarray(t, dtype=float) for t in m["tangents"]],
+                        "D_diag": float(m["D_diag"]),
+                        "transform": transform,
+                    }
+                )
+
+        if not operators:
+            return Kcsr, R
+
+        # Diagnostic: identify which multiplier row carries the largest residual
+        # (active/inactive, normal-gap vs tangential component).
+        import os as _os
+
+        if _os.environ.get("EDELWEISS_CONDENSE_DEBUG"):
+            worst = (0.0, None)
+            for constraint in model.constraints.values():
+                ops = constraint.getCondensationOperators()
+                if not ops:
+                    continue
+                for m in ops["multipliers"]:
+                    zIdx = [int(dm.idcsOfScalarVariablesInDofVector[sv]) for sv in m["scalarVariables"]]
+                    rvals = np.abs(np.asarray(R)[zIdx])
+                    cmax = int(np.argmax(rvals))
+                    if rvals[cmax] > worst[0]:
+                        worst = (
+                            float(rvals[cmax]),
+                            "node {} comp {} ({}) active={} D_diag={:.3e}".format(
+                                m["localIndex"], cmax,
+                                "normal-gap" if cmax == 0 else "tangential",
+                                m["active"], m["D_diag"],
+                            ),
+                        )
+            print("[condense-resid] max|R[z]|={:.3e} at {}".format(worst[0], worst[1]), flush=True)
+
+        # deferred import: only needed on the opt-in condensation path
+        from edelweissfe.solvers.base.mortarcondensation import (
+            condenseMortarMultipliers,
+        )
+
+        stripZ = np.asarray(allZ, dtype=int) if allZ else None
+        return condenseMortarMultipliers(Kcsr, R, operators, dirichletIndices, stripZ)
+
     def computeSpatialAveragedFluxes(self, F: DofVector) -> dict[str, float]:
         """Compute the spatial averaged flux for every field
         Is usually called by checkConvergence().

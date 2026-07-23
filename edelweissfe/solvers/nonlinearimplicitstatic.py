@@ -421,9 +421,46 @@ class NIST(NonlinearSolverBase):
                     raise ReachedMaxIterations("Reached max. iterations in current increment, cutting back")
 
             K_ = self.assembleStiffnessCSR(K)
+            # Opt-in static condensation of condensable constraints' Lagrange
+            # multipliers (dual-mortar contact). No-op (returns the same objects)
+            # when no constraint is condensable, so the non-contact path is
+            # unchanged. R_solve is used only for the linear solve; the DofVector
+            # R is kept intact for the convergence check / next iteration (it is
+            # the true saddle-point residual).
+            import os as _os
+
+            _debug_cond = _os.environ.get("EDELWEISS_CONDENSE_DEBUG")
+            K_saddle = K_ if _debug_cond else None
+            K_, R_solve = self.condenseConstraints(K_, R, model, dirichlets)
             K_ = self.applyDirichletK(K_, dirichlets)
 
-            ddU = self.linearSolve(K_, R)
+            ddU = self.linearSolve(K_, R_solve)
+
+            if _debug_cond and K_saddle is not K_:
+                # Diagnostic: does the condensed step solve the ORIGINAL
+                # saddle-point Newton system on the free (non-Dirichlet) DOFs?
+                free = np.ones(len(R), dtype=bool)
+                for d in dirichlets:
+                    free[self.findDirichletIndices(d)] = False
+                lmMask = np.zeros(len(R), dtype=bool)
+                for c in model.constraints.values():
+                    for v in getattr(c, "scalarVariables", []):
+                        lmMask[self.theDofManager.idcsOfScalarVariablesInDofVector[v]] = True
+                Rarr = np.asarray(R)
+                res = (K_saddle @ ddU) - Rarr
+                freeDisp = free & ~lmMask
+                rel = np.linalg.norm(res[free]) / max(np.linalg.norm(Rarr[free]), 1e-30)
+                relDisp = np.linalg.norm(res[freeDisp]) / max(np.linalg.norm(Rarr[freeDisp]), 1e-30)
+                relZ = np.linalg.norm(res[lmMask]) / max(np.linalg.norm(Rarr[lmMask]), 1e-30)
+                resC = (K_ @ ddU) - np.asarray(R_solve)
+                relC = np.linalg.norm(resC[free]) / max(np.linalg.norm(np.asarray(R_solve)[free]), 1e-30)
+                print(
+                    "[condense-debug] inc {:} it {:}: saddle_free={:.2e} disp={:.2e} z={:.2e} | condensed_solve={:.2e}".format(
+                        timeStep.number, iterationCounter, rel, relDisp, relZ, relC
+                    ),
+                    flush=True,
+                )
+
             dU += ddU
             iterationCounter += 1
 
