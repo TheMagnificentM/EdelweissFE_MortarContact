@@ -54,12 +54,8 @@ UNSUPPORTED_SECTIONS = [
 
 # Definiere die Kontaktoberflächen (Slave, Master)
 CONTACT_SURFACES = [
-    ("CONT_SURF_CONC_L_STUD_VERT",   "CONT_SURF_STL_L_STUD_VERT"),
-    ("CONT_SURF_CONC_L_HEAD_HORIZ",  "CONT_SURF_STL_L_HEAD_HORIZ"),
-    ("CONT_SURF_CONC_L_HEAD_VERT",   "CONT_SURF_STL_L_HEAD_VERT"),
-    ("CONT_SURF_CONC_R_STUD_VERT",   "CONT_SURF_STL_R_STUD_VERT"),
-    ("CONT_SURF_CONC_R_HEAD_HORIZ",  "CONT_SURF_STL_R_HEAD_HORIZ"),
-    ("CONT_SURF_CONC_R_HEAD_VERT",   "CONT_SURF_STL_R_HEAD_VERT"),
+    ("CONT_SURF_CONC_L", "CONT_SURF_STL_L"),
+    ("CONT_SURF_CONC_R", "CONT_SURF_STL_R"),
 ]
 
 # ===========================================================================
@@ -322,6 +318,67 @@ def prepare_mesh(input_path, output_path):
 
     # Pass 2: Analysieren des Meshs für die Erzeugung der Kontaktelemente
     nodes, elements, el_type, elsets, surfaces = parse_mesh_file(raw_lines)
+
+    # Identifiziere alle Knoten der Kontaktoberflächen
+    contact_node_ids = set()
+    for slave_name, master_name in CONTACT_SURFACES:
+        for surf_upper in [slave_name, master_name]:
+            if surf_upper in surfaces:
+                for el_id, face_idx in surfaces[surf_upper]:
+                    nodes_elem = elements[el_id]
+                    el_t = el_type[el_id].upper()
+                    if el_t in ("C3D20", "C3D20R"):
+                        face_idcs = C3D20R_FACE_NODE_IDX[face_idx]
+                    elif el_t in ("C3D8", "C3D8R"):
+                        face_idcs = C3D8_FACE_NODE_IDX[face_idx]
+                    else:
+                        continue
+                    for idx in face_idcs:
+                        contact_node_ids.add(nodes_elem[idx])
+
+    print(f"  -> Total contact surface nodes identified: {len(contact_node_ids)}")
+
+    # Filter Kontakt-Knoten aus der Z_SYMM Dirichlet-Randbedingung heraus
+    EXCLUDE_CONTACT_NSETS = ["Z_SYMM"]
+    filtered_raw_lines = []
+    filtering_nset = False
+    removed_count = 0
+
+    for line in raw_lines:
+        stripped = line.strip()
+        upper = stripped.upper()
+        if upper.startswith("*NSET"):
+            m = re.search(r"NSET\s*=\s*([^\s,]+)", stripped, re.IGNORECASE)
+            nset_name = m.group(1).upper() if m else ""
+            filtering_nset = nset_name in EXCLUDE_CONTACT_NSETS
+            filtered_raw_lines.append(line)
+            continue
+        elif upper.startswith("*") and not upper.startswith("**"):
+            filtering_nset = False
+            filtered_raw_lines.append(line)
+            continue
+
+        if filtering_nset and stripped and not stripped.startswith("*"):
+            parts = [p.strip() for p in stripped.split(",") if p.strip()]
+            valid_parts = []
+            for p in parts:
+                try:
+                    nid = int(p)
+                    if nid in contact_node_ids:
+                        removed_count += 1
+                    else:
+                        valid_parts.append(p)
+                except ValueError:
+                    valid_parts.append(p)
+            if valid_parts:
+                filtered_raw_lines.append("  " + ", ".join(valid_parts) + "\n")
+        else:
+            filtered_raw_lines.append(line)
+
+    if removed_count > 0:
+        print(f"  -> {removed_count} Kontakt-Knoten erfolgreich aus Z_SYMM Dirichlet-Randbedingung entfernt.")
+
+    raw_lines = filtered_raw_lines
 
     # Pass 3: Kontaktelemente generieren
     next_el_id = max(elements.keys()) + 1 if elements else 1
