@@ -7,8 +7,9 @@ Diese Datei bereitet das Cubit-Mesh (Mesh_POTDejori.inp) für EdelweissFE vor:
 1. Sie schneidet den Header ab und startet erst beim Bereich N O D E S.
 2. Sie entfernt nicht unterstützte Abaqus-Sektionen (Properties, Materials, Steps, Assemblies).
 3. Sie behält alle Knoten (*NODE), Volumenelemente (*ELEMENT), Knotengruppen (*NSET) und Elementgruppen (*ELSET) bei.
-4. Sie generiert am Ende der Datei einen neuen Bereich, in dem
-   für die Sidesets explizite CONQUAD8-Kontaktelemente erzeugt werden.
+4. Sie ersetzt bei Bedarf Elementtypen für bestimmte ELSETs (Konfiguration ganz oben).
+5. Sie generiert am Ende der Datei einen neuen Bereich, in dem
+   für die Sidesets explizite Kontaktelemente (CONQUAD4 oder CONQUAD8) erzeugt werden.
 """
 
 import os
@@ -22,6 +23,16 @@ import sys
 # Dateinamen (werden unten im Skript relativ zum Ausführungsort verwendet)
 INPUT_FILENAME = "Mesh_POTDejori.inp"
 OUTPUT_FILENAME = "Mesh_POTDejori_edelweissfe.inp"
+
+# Elementtyp-Ersetzung für bestimmte Elementgruppen (ELSET)
+# Hier kann man eintragen, welcher Elementtyp für welche Gruppe genutzt werden soll.
+# Beispiel für Hex8: {"CONCRETE": "GC3D8R", "STEEL_SUPPORTS": "C3D8R", "STEEL_ANCHOR": "C3D8R"}
+# Beispiel für Hex20: {"CONCRETE": "GC3D20R", "STEEL_SUPPORTS": "C3D20R", "STEEL_ANCHOR": "C3D20R"}
+ELSET_TYPE_REPLACEMENT = {
+    "CONCRETE": "GC3D20R",
+    "STEEL_SUPPORTS": "C3D20R",
+    "STEEL_ANCHOR": "C3D20R",
+}
 
 # Start-Zeile: Alles VOR dieser Zeile wird komplett verworfen!
 START_KEYWORD = "********************************** N O D E S **********************************"
@@ -43,28 +54,52 @@ UNSUPPORTED_SECTIONS = [
 
 # Definiere die Kontaktoberflächen (Slave, Master)
 CONTACT_SURFACES = [
-    ("CONT_SURF_CONC_L_STUD_VERT",   "CONT_SURF_STL_L_STUD_VERT"),
-    ("CONT_SURF_CONC_L_HEAD_HORIZ",  "CONT_SURF_STL_L_HEAD_HORIZ"),
-    ("CONT_SURF_CONC_L_HEAD_VERT",   "CONT_SURF_STL_L_HEAD_VERT"),
-    ("CONT_SURF_CONC_R_STUD_VERT",   "CONT_SURF_STL_R_STUD_VERT"),
-    ("CONT_SURF_CONC_R_HEAD_HORIZ",  "CONT_SURF_STL_R_HEAD_HORIZ"),
-    ("CONT_SURF_CONC_R_HEAD_VERT",   "CONT_SURF_STL_R_HEAD_VERT"),
+    ("CONT_SURF_CONC_L", "CONT_SURF_STL_L"),
+    ("CONT_SURF_CONC_R", "CONT_SURF_STL_R"),
 ]
 
-# C3D20R-Flächen zu lokalen Knotennummern (0-basierte Indizes der 20 Knoten)
-# Nach der Abaqus-Konvention für C3D20R-Elemente (Rechte-Hand-Regel nach außen)
-C3D20R_FACE_NODE_IDX = {
-    1: [3, 2, 1, 0,  10,  9,  8, 11],   # S1: Unten (bottom)
-    2: [4, 5, 6, 7,  12, 13, 14, 15],   # S2: Oben (top)
-    3: [0, 1, 5, 4,   8, 17, 12, 16],   # S3: Vorne (front)
-    4: [1, 2, 6, 5,   9, 18, 13, 17],   # S4: Rechts (right)
-    5: [2, 3, 7, 6,  10, 19, 14, 18],   # S5: Hinten (back)
-    6: [3, 0, 4, 7,  11, 16, 15, 19],   # S6: Links (left)
+# ===========================================================================
+# FACE NODES INDEX MAPPINGS
+# ===========================================================================
+
+# C3D8/C3D8R (Linearer Hexaeder) - 4-Knoten Vierecke als Facetten
+C3D8_FACE_NODE_IDX = {
+    1: [3, 2, 1, 0],   # S1
+    2: [4, 5, 6, 7],   # S2
+    3: [0, 1, 5, 4],   # S3
+    4: [1, 2, 6, 5],   # S4
+    5: [2, 3, 7, 6],   # S5
+    6: [3, 0, 4, 7],   # S6
 }
 
+# C3D20/C3D20R (Quadratischer Hexaeder) - 8-Knoten Vierecke als Facetten
+C3D20R_FACE_NODE_IDX = {
+    1: [3, 2, 1, 0,  10,  9,  8, 11],   # S1
+    2: [4, 5, 6, 7,  12, 13, 14, 15],   # S2
+    3: [0, 1, 5, 4,   8, 17, 12, 16],   # S3
+    4: [1, 2, 6, 5,   9, 18, 13, 17],   # S4
+    5: [2, 3, 7, 6,  10, 19, 14, 18],   # S5
+    6: [3, 0, 4, 7,  11, 16, 15, 19],   # S6
+}
+
+# CPE4/CPS4 (Linearer Viereck-Flächenelement) - 2-Knoten Segmente als Ränder (2D)
+CPE4_FACE_NODE_IDX = {
+    1: [0, 1],
+    2: [1, 2],
+    3: [2, 3],
+    4: [3, 0],
+}
+
+# CPE8/CPS8 (Quadratischer Viereck-Flächenelement) - 3-Knoten Segmente als Ränder (2D)
+CPE8_FACE_NODE_IDX = {
+    1: [0, 1, 4],
+    2: [1, 2, 5],
+    3: [2, 3, 6],
+    4: [3, 0, 7],
+}
 
 # ===========================================================================
-# SKRIPT-LOGIK (Ab hier muss im Normalfall nichts mehr geändert werden)
+# SKRIPT-LOGIK
 # ===========================================================================
 
 def parse_mesh_file(lines):
@@ -180,25 +215,49 @@ def parse_mesh_file(lines):
     return nodes, elements, el_type, elsets, surfaces
 
 
-def generate_conquad8_elements(surf_faces, elements, el_type, next_el_id):
+def generate_contact_elements(surf_faces, elements, el_type, next_el_id):
     """
-    Erzeugt die expliziten 8-Knoten-Kontaktelemente (CONQUAD8) für eine Surface.
-    Die Orientierung der Normalen wird mathematisch über die C3D20R_FACE_NODE_IDX
-    zuverlässig nach außen gerichtet.
+    Erzeugt die expliziten Kontaktelemente (CONQUAD4, CONQUAD8, etc.) für eine Surface.
+    Erkennt automatisch den Elementtyp des Volumenelements und wählt das passende
+    Kontaktelement und die Facetten-Knoten-Mappen.
     """
     con_el_lines = []
     new_el_ids   = []
+    detected_type = None
 
     for (eid, face_id) in surf_faces:
         etype = el_type.get(eid, "").upper()
-        if "20" not in etype:
+        
+        # Bestimme Facetten-Mappe und Kontaktelement-Typ
+        if "20" in etype:
+            face_map = C3D20R_FACE_NODE_IDX
+            detected_type = "CONQUAD8"
+        elif "8" in etype:
+            # Achtung: 2D 8-Knoten Elemente haben "8" im Namen, sind aber 2D (z.B. CPE8)
+            if "CPE" in etype or "CPS" in etype:
+                face_map = CPE8_FACE_NODE_IDX
+                detected_type = "CONSEG3"
+            else: # Standard Hex8 3D
+                face_map = C3D8_FACE_NODE_IDX
+                detected_type = "CONQUAD4"
+        elif "4" in etype:
+            if "CPE" in etype or "CPS" in etype:
+                face_map = CPE4_FACE_NODE_IDX
+                detected_type = "CONSEG2"
+            else:
+                # Standard Tet4 oder CPE4/CPS4
+                print(f"WARNUNG: Unerwarteter linearer Elementtyp '{etype}' bei Element {eid}.")
+                continue
+        else:
+            # Fallback
+            print(f"WARNUNG: Elementtyp '{etype}' bei Element {eid} wird nicht unterstützt.")
             continue
-        if face_id not in C3D20R_FACE_NODE_IDX:
+
+        if face_id not in face_map:
             continue
 
         parent_nodes = elements[eid]
-        # Holen der 8 Knoten-IDs in der mathematisch korrekten, nach außen zeigenden Reihenfolge
-        idx          = C3D20R_FACE_NODE_IDX[face_id]
+        idx          = face_map[face_id]
         face_nodes   = [parent_nodes[i] for i in idx]
 
         node_str = ", ".join(str(n) for n in face_nodes)
@@ -206,13 +265,13 @@ def generate_conquad8_elements(surf_faces, elements, el_type, next_el_id):
         new_el_ids.append(next_el_id)
         next_el_id += 1
 
-    return con_el_lines, new_el_ids, next_el_id
+    return con_el_lines, new_el_ids, next_el_id, detected_type
 
 
 def prepare_mesh(input_path, output_path):
     print(f"Bereite Mesh vor: {input_path} -> {output_path}")
 
-    # Pass 1: Rohdaten bereinigen
+    # Pass 1: Rohdaten bereinigen und Elementtypen ersetzen
     raw_lines = []
     started = False
 
@@ -236,6 +295,17 @@ def prepare_mesh(input_path, output_path):
             if any(upper.startswith(kw) for kw in UNSUPPORTED_SECTIONS):
                 continue
             
+            # Elementtyp-Ersetzung durchführen
+            if upper.startswith("*ELEMENT") and "TYPE=" in upper:
+                m_elset = re.search(r"ELSET\s*=\s*([^\s,]+)", stripped, re.IGNORECASE)
+                if m_elset:
+                    elset_name = m_elset.group(1).upper()
+                    if elset_name in ELSET_TYPE_REPLACEMENT:
+                        new_type = ELSET_TYPE_REPLACEMENT[elset_name]
+                        line = re.sub(r"TYPE\s*=\s*[^\s,]+", f"TYPE={new_type}", line, flags=re.IGNORECASE)
+                        upper = line.strip().upper()
+                        stripped = line.strip()
+            
             # Surface-Zeilen anpassen
             if upper.startswith("*SURFACE") and "TYPE=" not in upper:
                 line = line.rstrip() + ", TYPE=ELEMENT\n"
@@ -249,7 +319,7 @@ def prepare_mesh(input_path, output_path):
     # Pass 2: Analysieren des Meshs für die Erzeugung der Kontaktelemente
     nodes, elements, el_type, elsets, surfaces = parse_mesh_file(raw_lines)
 
-    # Pass 3: Kontaktelemente (CONQUAD8) generieren
+    # Pass 3: Kontaktelemente generieren
     next_el_id = max(elements.keys()) + 1 if elements else 1
     contact_blocks = []
 
@@ -268,14 +338,14 @@ def prepare_mesh(input_path, output_path):
             con_name    = "con_" + simplified_name
             elset_name  = "elset_" + con_name
 
-            con_el_lines, new_el_ids, next_el_id = generate_conquad8_elements(
+            con_el_lines, new_el_ids, next_el_id, contact_type = generate_contact_elements(
                 surf_faces, elements, el_type, next_el_id
             )
 
-            if new_el_ids:
-                print(f"  -> {len(new_el_ids)} CONQUAD8-Elemente für '{con_name}' generiert.")
+            if new_el_ids and contact_type:
+                print(f"  -> {len(new_el_ids)} {contact_type}-Elemente für '{con_name}' generiert.")
                 contact_blocks.append("**\n")
-                contact_blocks.append(f"*ELEMENT, TYPE=CONQUAD8, ELSET={elset_name}, provider=edelweiss\n")
+                contact_blocks.append(f"*ELEMENT, TYPE={contact_type}, ELSET={elset_name}, provider=edelweiss\n")
                 contact_blocks.extend(con_el_lines)
                 contact_blocks.append(f"*SURFACE, NAME={con_name}, TYPE=ELEMENT\n")
                 contact_blocks.append(f"  {elset_name}, S1\n")

@@ -60,6 +60,13 @@ than only additively contribute to K/PExt - a bigger architectural change,
 not attempted here.
 """
 
+# Feature-edge angle (degrees) above which two adjacent facet normals meeting at a
+# slave node are considered to belong to distinct smooth faces (a sharp C0 crease)
+# rather than to one curved surface. Chosen well above the per-facet angle of any
+# realistically resolved curved interface, but below the 90 deg creases that appear
+# when several geometric faces are merged into a single contact surface.
+SHARP_EDGE_ANGLE_DEG = 60.0
+
 module = Module(
     "mortarcontact",
     "A mortar contact constraint with Lagrange multipliers and dual basis functions.",
@@ -363,6 +370,13 @@ class Constraint(ConstraintBase):
 
         node_to_idx = self.slave_node_to_idx
 
+        # Collect the (area-weighted) facet normal vectors contributing to each
+        # slave node SEPARATELY instead of accumulating them directly. This lets
+        # us detect a sharp C0 crease inside a single contact surface (e.g. the
+        # 90 deg edge between the vertical shaft and the horizontal head of a
+        # headed stud) and treat it correctly - see _combine_facet_normals.
+        node_facet_normals = [[] for _ in range(self.nNonMortarNodes)]
+
         # Iterate over all non-mortar facets
         for el, faceID in self.non_mortar_facets:
             facet_nodes = el.nodes
@@ -378,9 +392,9 @@ class Constraint(ConstraintBase):
                     coords.append(X + u)
                 else:
                     coords.append(X)
-            
+
             coords = np.array(coords)
-            
+
             if dim == 3:
                 # Differentiate between triangular and quadrilateral contact elements
                 if len(facet_nodes) in (3, 6):
@@ -394,21 +408,78 @@ class Constraint(ConstraintBase):
             else: # dim == 2
                 t = coords[-1] - coords[0]
                 n_facet = np.array([t[1], -t[0]])
-            
-            # Add to the normals of all nodes on this facet
+
+            # Store the area-weighted facet normal for each node on this facet
             for node in facet_nodes:
                 if node in node_to_idx:
-                    normals[node_to_idx[node]] += n_facet
+                    node_facet_normals[node_to_idx[node]].append(n_facet)
 
-        # Normalize the normal vectors
+        # Combine the per-node facet normals into a single unit nodal normal,
+        # collapsing the normal at sharp edges onto the dominant smooth face.
         for i in range(self.nNonMortarNodes):
-            norm = np.linalg.norm(normals[i])
-            if norm > 1e-14:
-                normals[i] /= norm
-            else:
-                normals[i] = np.zeros(dim)
+            normals[i] = self._combine_facet_normals(node_facet_normals[i], dim)
 
         return normals
+
+    def _combine_facet_normals(self, facet_normals: list, dim: int) -> np.ndarray:
+        """Combine the area-weighted facet normals meeting at one slave node into a
+        single unit nodal normal, with correct treatment of sharp C0 edges.
+
+        A single averaged nodal normal is only physically meaningful on a
+        C1-smooth mortar interface (Popp, Wohlmuth, Gee & Wall 2012; Farah 2018).
+        Where facets of clearly different orientation meet at a node - a sharp
+        crease such as the 90 deg edge between the shaft and the head of a headed
+        stud, which arises when several geometric faces are merged into one
+        contact surface - the area-weighted average points in a physically
+        meaningless in-between direction (~45 deg for a 90 deg edge) and injects a
+        spurious traction component that can fail the bulk material return mapping.
+
+        The facet normals are therefore grouped by orientation (greedy angular
+        clustering with a feature-edge threshold). On a smooth node all facets
+        fall into a single cluster and the result is identical to the plain
+        area-weighted average. On a crease node only the dominant (largest total
+        contact area) cluster is kept, i.e. the geometric normal of the face that
+        actually carries contact there. This mirrors the geometric-normal
+        treatment of sharp mortar features in MOOSE (idaholab/moose PR #33283) and
+        keeps a merged multi-face contact surface working as well as separate
+        per-face surfaces.
+        """
+        if not facet_normals:
+            return np.zeros(dim)
+
+        fns = np.array(facet_normals, dtype=float)  # magnitude = facet area weight
+        areas = np.linalg.norm(fns, axis=1)
+        keep = areas > 1e-14
+        if not np.any(keep):
+            return np.zeros(dim)
+        fns = fns[keep]
+        areas = areas[keep]
+        units = fns / areas[:, None]
+
+        cos_sharp = np.cos(np.deg2rad(SHARP_EDGE_ANGLE_DEG))
+        clusters = []  # each: [representative_unit_normal, [member indices]]
+        for k in range(len(units)):
+            placed = False
+            for cl in clusters:
+                if float(np.dot(units[k], cl[0])) >= cos_sharp:
+                    cl[1].append(k)
+                    v = np.sum(fns[cl[1]], axis=0)
+                    nv = np.linalg.norm(v)
+                    if nv > 1e-14:
+                        cl[0] = v / nv
+                    placed = True
+                    break
+            if not placed:
+                clusters.append([units[k].copy(), [k]])
+
+        if len(clusters) == 1:
+            v = np.sum(fns, axis=0)
+        else:
+            dominant = max(clusters, key=lambda cl: float(np.sum(areas[cl[1]])))
+            v = np.sum(fns[dominant[1]], axis=0)
+
+        nv = np.linalg.norm(v)
+        return v / nv if nv > 1e-14 else np.zeros(dim)
 
     def compute_local_dual_matrices(self, U_np: np.ndarray = None) -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """Compute the local standard mass matrices M_e, diagonal matrices D_e, and transformation matrices A_e for all non-mortar facets.

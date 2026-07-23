@@ -1,5 +1,5 @@
 *HEADING
-cubit(ssFE/testfiles/mortar_tests/POT_Dejori/Mesh_POTDejori.inp): 07/14/2026: 08
+cubit(estfiles/mortar_tests/POT_Dejori/hex20/Mesh_POTDejori.inp): 07/23/2026: 12
 version: 2025.8
 **
 ********************************** P A R T S **********************************
@@ -94665,82 +94665,54 @@ bc_left_surface_S6, S6
 *SURFACE, NAME=bc_right_surface
 bc_right_surface_S3, S3
 bc_right_surface_S6, S6
-*ELSET, ELSET=cont_surf_stl_l_stud_vert_S3
+*ELSET, ELSET=cont_surf_stl_l_S3
     9301,    9302,    9303,    9304,    9305,    9306,    9307,    9308,    9309,    9310,
     9311,    9312,    9313,    9314,    9315,    9316,    9317,    9318,    9319,    9320,
     9321,    9322,    9323,    9324
-*SURFACE, NAME=cont_surf_stl_l_stud_vert
-cont_surf_stl_l_stud_vert_S3, S3
-*ELSET, ELSET=cont_surf_conc_l_stud_vert_S3
-    4754,    4763,    4775,    4782,    4882,    4891,    4903,    4910,    5010,    5019,
-    5031,    5038
-*ELSET, ELSET=cont_surf_conc_l_stud_vert_S6
-    4753,    4766,    4778,    4781,    4881,    4894,    4906,    4909,    5009,    5022,
-    5034,    5037
-*SURFACE, NAME=cont_surf_conc_l_stud_vert
-cont_surf_conc_l_stud_vert_S3, S3
-cont_surf_conc_l_stud_vert_S6, S6
-*ELSET, ELSET=cont_surf_stl_l_head_horiz_S6
+*ELSET, ELSET=cont_surf_stl_l_S5
+    9325,    9326,    9327,    9328,    9329,    9330,    9331,    9332
+*ELSET, ELSET=cont_surf_stl_l_S6
     9332,    9340,    9348,    9356,    9364,    9372,    9380,    9388,    9396,    9404,
     9412,    9420,    9428,    9436
-*SURFACE, NAME=cont_surf_stl_l_head_horiz
-cont_surf_stl_l_head_horiz_S6, S6
-*ELSET, ELSET=cont_surf_conc_l_head_horiz_S3
-    5026,    5035,    5047,    5054,    5090,    5099,    5111,    5118
-*ELSET, ELSET=cont_surf_conc_l_head_horiz_S6
-    5025,    5038,    5050,    5053,    5089,    5102,    5114,    5117
-*SURFACE, NAME=cont_surf_conc_l_head_horiz
-cont_surf_conc_l_head_horiz_S3, S3
-cont_surf_conc_l_head_horiz_S6, S6
-*ELSET, ELSET=cont_surf_stl_l_head_vert_S5
-    9325,    9326,    9327,    9328,    9329,    9330,    9331,    9332
-*SURFACE, NAME=cont_surf_stl_l_head_vert
-cont_surf_stl_l_head_vert_S5, S5
-*ELSET, ELSET=cont_surf_conc_l_head_vert_S3
-    3527,    3534,    3570,    3579
-*ELSET, ELSET=cont_surf_conc_l_head_vert_S6
-    3530,    3533,    3569,    3582
-*SURFACE, NAME=cont_surf_conc_l_head_vert
-cont_surf_conc_l_head_vert_S3, S3
-cont_surf_conc_l_head_vert_S6, S6
-*ELSET, ELSET=cont_surf_stl_r_stud_vert_S5
+*SURFACE, NAME=cont_surf_stl_l
+cont_surf_stl_l_S3, S3
+cont_surf_stl_l_S5, S5
+cont_surf_stl_l_S6, S6
+*ELSET, ELSET=cont_surf_conc_l_S3
+    3527,    3534,    3570,    3579,    4754,    4763,    4775,    4782,    4882,    4891,
+    4903,    4910,    5010,    5019,    5026,    5031,    5035,    5038,    5047,    5054,
+    5090,    5099,    5111,    5118
+*ELSET, ELSET=cont_surf_conc_l_S6
+    3530,    3533,    3569,    3582,    4753,    4766,    4778,    4781,    4881,    4894,
+    4906,    4909,    5009,    5022,    5025,    5034,    5037,    5038,    5050,    5053,
+    5089,    5102,    5114,    5117
+*SURFACE, NAME=cont_surf_conc_l
+cont_surf_conc_l_S3, S3
+cont_surf_conc_l_S6, S6
+*ELSET, ELSET=cont_surf_stl_r_S3
+    9573,    9574,    9575,    9576,    9577,    9578,    9579,    9580
+*ELSET, ELSET=cont_surf_stl_r_S5
     9229,    9230,    9231,    9232,    9233,    9234,    9235,    9236,    9237,    9238,
     9239,    9240,    9241,    9242,    9243,    9244,    9245,    9246,    9247,    9248,
     9249,    9250,    9251,    9252
-*SURFACE, NAME=cont_surf_stl_r_stud_vert
-cont_surf_stl_r_stud_vert_S5, S5
-*ELSET, ELSET=cont_surf_conc_r_stud_vert_S3
-    7314,    7323,    7335,    7342,    7442,    7451,    7463,    7470,    7570,    7579,
-    7591,    7598
-*ELSET, ELSET=cont_surf_conc_r_stud_vert_S6
-    7313,    7326,    7338,    7341,    7441,    7454,    7466,    7469,    7569,    7582,
-    7594,    7597
-*SURFACE, NAME=cont_surf_conc_r_stud_vert
-cont_surf_conc_r_stud_vert_S3, S3
-cont_surf_conc_r_stud_vert_S6, S6
-*ELSET, ELSET=cont_surf_stl_r_head_horiz_S6
+*ELSET, ELSET=cont_surf_stl_r_S6
     9476,    9484,    9492,    9500,    9508,    9516,    9524,    9532,    9540,    9548,
     9556,    9564,    9572,    9580
-*SURFACE, NAME=cont_surf_stl_r_head_horiz
-cont_surf_stl_r_head_horiz_S6, S6
-*ELSET, ELSET=cont_surf_conc_r_head_horiz_S3
-    7298,    7307,    7319,    7326,    7362,    7371,    7383,    7390
-*ELSET, ELSET=cont_surf_conc_r_head_horiz_S6
-    7297,    7310,    7322,    7325,    7361,    7374,    7386,    7389
-*SURFACE, NAME=cont_surf_conc_r_head_horiz
-cont_surf_conc_r_head_horiz_S3, S3
-cont_surf_conc_r_head_horiz_S6, S6
-*ELSET, ELSET=cont_surf_stl_r_head_vert_S3
-    9573,    9574,    9575,    9576,    9577,    9578,    9579,    9580
-*SURFACE, NAME=cont_surf_stl_r_head_vert
-cont_surf_stl_r_head_vert_S3, S3
-*ELSET, ELSET=cont_surf_conc_r_head_vert_S3
-    6855,    6862,    6898,    6907
-*ELSET, ELSET=cont_surf_conc_r_head_vert_S6
-    6858,    6861,    6897,    6910
-*SURFACE, NAME=cont_surf_conc_r_head_vert
-cont_surf_conc_r_head_vert_S3, S3
-cont_surf_conc_r_head_vert_S6, S6
+*SURFACE, NAME=cont_surf_stl_r
+cont_surf_stl_r_S3, S3
+cont_surf_stl_r_S5, S5
+cont_surf_stl_r_S6, S6
+*ELSET, ELSET=cont_surf_conc_r_S3
+    6855,    6862,    6898,    6907,    7298,    7307,    7314,    7319,    7323,    7326,
+    7335,    7342,    7362,    7371,    7383,    7390,    7442,    7451,    7463,    7470,
+    7570,    7579,    7591,    7598
+*ELSET, ELSET=cont_surf_conc_r_S6
+    6858,    6861,    6897,    6910,    7297,    7310,    7313,    7322,    7325,    7326,
+    7338,    7341,    7361,    7374,    7386,    7389,    7441,    7454,    7466,    7469,
+    7569,    7582,    7594,    7597
+*SURFACE, NAME=cont_surf_conc_r
+cont_surf_conc_r_S3, S3
+cont_surf_conc_r_S6, S6
 **
 ********************************** P R O P E R T I E S ************************
 *SOLID SECTION, ELSET=concrete, MATERIAL=Default-Steel
