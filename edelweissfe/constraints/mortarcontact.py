@@ -354,6 +354,35 @@ class Constraint(ConstraintBase):
         self.recovered_lambdas = np.zeros(self.nNonMortarNodes)
         self.recovered_tractions_t = np.zeros((self.nNonMortarNodes, self.nTangentialComponents))
         self.stick_set = np.zeros(self.nNonMortarNodes, dtype=bool)
+
+        # Single-owner treatment of shared slave nodes (only relevant with
+        # friction). When several decomposed contact surfaces meet at an edge
+        # they share slave nodes. Each mortar constraint is an independent
+        # object, so a shared node would receive contact constraints from EVERY
+        # surface it belongs to. Without friction this is fine (a shared node
+        # then carries only the normal weak-gap constraint of each surface, i.e.
+        # < dim constraints on its dim displacement DOFs). WITH friction the
+        # owner surface additionally enforces the (dim-1) tangential stick/slip
+        # constraints, which together with its normal constraint already tie the
+        # node completely (dim constraints = full basis); any further contact
+        # constraint from another surface is then redundant and makes the
+        # saddle-point system singular (the extra normal multiplier is
+        # indeterminate; the tangential multipliers blow up). Therefore, once
+        # friction is active, each shared slave node is owned ENTIRELY by exactly
+        # one surface (the first in input order): the owner enforces its full
+        # normal + tangential contact, every other surface skips that node
+        # completely (drives its normal lambda and tangential z_t to zero) - its
+        # contact is fully represented by the owner. Ownership is recorded in a
+        # model-level registry shared across all mortarcontact constraints.
+        self._owns_node = np.ones(self.nNonMortarNodes, dtype=bool)
+        if self.friction_coefficient > 0.0:
+            owners = getattr(model, "_mortarFrictionOwners", None)
+            if owners is None:
+                owners = {}
+                model._mortarFrictionOwners = owners
+            for I, node in enumerate(self.non_mortar_nodes):
+                if owners.setdefault(node, self._name) != self._name:
+                    self._owns_node[I] = False
         self._fieldsOnNodes = [[self.field]] * len(self._nodes)
         self.active = True
 
@@ -817,6 +846,24 @@ class Constraint(ConstraintBase):
             nzD = self.current_D_nz[I]
             nzC = self.current_C_nz[I]
 
+            # Shared slave node owned entirely by another surface (single-owner,
+            # friction only): skip its contact here - drive its normal lambda and
+            # its tangential z_t to zero. Its contact is enforced by the owner.
+            if not self._owns_node[I]:
+                self.active_set[I] = False
+                self.recovered_lambdas[I] = 0.0
+                PExt[idx_LM_I] -= lambda_I
+                K[idx_LM_I, idx_LM_I] += 1.0
+                if mu > 0.0:
+                    idx_TAU_I0 = idx_TAU_0 + I * ntc
+                    self.recovered_tractions_t[I] = 0.0
+                    self.stick_set[I] = False
+                    for c in range(ntc):
+                        idx_TAU_Ic = idx_TAU_I0 + c
+                        PExt[idx_TAU_Ic] -= U_np[idx_TAU_Ic]
+                        K[idx_TAU_Ic, idx_TAU_Ic] += 1.0
+                continue
+
             g_I_weak = 0.0
             if len(nzD):
                 g_I_weak -= D[I, nzD] @ (x_slave[nzD] @ n_I)
@@ -1016,6 +1063,7 @@ class Constraint(ConstraintBase):
                     # (b = mu*p_n = 0): no friction. Enforce z_t = 0, which also
                     # avoids the degenerate stick row (it scales with b).
                     self.recovered_tractions_t[I] = 0.0
+                    self.stick_set[I] = False
                     for c in range(ntc):
                         idx_TAU_Ic = idx_TAU_I0 + c
                         PExt[idx_TAU_Ic] -= z_t[c]
