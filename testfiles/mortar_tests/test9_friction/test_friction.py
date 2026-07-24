@@ -58,7 +58,7 @@ def _quad8(shift_x=0.0, z=0.0):
     ]
 
 
-def _build(dim, el_type, slave_pts, master_pts, mu):
+def _build(dim, el_type, slave_pts, master_pts, mu, cn=1.0e6):
     model = FEModel(dimension=dim)
     slave_nodes = _make_nodes(model, 1, slave_pts)
     master_nodes = _make_nodes(model, 100, master_pts)
@@ -76,7 +76,7 @@ def _build(dim, el_type, slave_pts, master_pts, mu):
 
     return MortarContact(
         "c_friction", model, nonMortarSurface="slave", mortarSurface="master",
-        field="displacement", friction_coefficient=str(mu),
+        field="displacement", friction_coefficient=str(mu), friction_cn=str(cn),
     )
 
 
@@ -144,7 +144,10 @@ def test_2d_stick():
 def test_2d_slip():
     print("\n=== 2D Coulomb friction: slip + Coulomb limit ===")
     mu = 0.3
-    mc = _build(2, "CONLINE2", _line2(), _line2(), mu)
+    # cn=0 here so the friction bound is exactly b = mu*p_n (no augmentation),
+    # giving the clean Coulomb limit |z_t| = mu|lambda_n| at the root. The
+    # augmented-bound tangent (cn>0) is verified by the stick tests below.
+    mc = _build(2, "CONLINE2", _line2(), _line2(), mu, cn=0.0)
     nNodes = len(mc.nodes); dim = 2
     nDof = dim * nNodes + mc.nMultipliers + mc.nTangentialMultipliers
     idx_LM0 = dim * nNodes
@@ -212,7 +215,7 @@ def test_3d_stick():
 def test_3d_slip():
     print("\n=== 3D Coulomb friction (CONQUAD8): slip (non-axis-aligned) ===")
     mu = 0.25
-    mc = _build(3, "CONQUAD8", _quad8(), _quad8(), mu)
+    mc = _build(3, "CONQUAD8", _quad8(), _quad8(), mu, cn=0.0)  # cn=0: clean Coulomb limit
     nNodes = len(mc.nodes); dim = 3
     nDof = dim * nNodes + mc.nMultipliers + mc.nTangentialMultipliers
     idx_LM0 = dim * nNodes

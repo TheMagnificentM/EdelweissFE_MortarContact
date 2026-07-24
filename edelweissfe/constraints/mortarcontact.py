@@ -82,6 +82,18 @@ module.addOptionalArg(
     0.0,
 )
 module.addOptionalArg(
+    "friction_cn",
+    "Semi-smooth-Newton complementarity parameter c_n (> 0) for the augmented "
+    "normal pressure entering the Coulomb friction bound b = mu*max(0, p_n + c_n*g). "
+    "Large c_n (default 1e6, normalized by the nodal mortar weight D_II) keeps b "
+    "well scaled during the Newton iterations so the stuck-node tangential "
+    "multiplier is well determined (MOOSE ComputeFrictionalForceLMMechanicalContact; "
+    "Alart-Curnier augmented Lagrangian). Purely algorithmic - no effect on the "
+    "converged solution (g -> 0 at convergence).",
+    float,
+    1.0e6,
+)
+module.addOptionalArg(
     "friction_ct",
     "Semi-smooth-Newton complementarity parameter c_t (> 0) for the tangential "
     "(friction) active set. It does NOT change the converged solution, only the "
@@ -286,6 +298,7 @@ class Constraint(ConstraintBase):
             kwargs.get("friction_coefficient", kwargs.get("frictioncoefficient", 0.0))
         )
         self.c_t = float(kwargs.get("friction_ct", kwargs.get("frictionct", 1.0)))
+        self.c_n = float(kwargs.get("friction_cn", kwargs.get("frictioncn", 1.0e6)))
 
         non_mortar_surf_name = kwargs["nonMortarSurface"]
         mortar_surf_name = kwargs["mortarSurface"]
@@ -937,8 +950,23 @@ class Constraint(ConstraintBase):
                 z_t = np.array([U_np[idx_TAU_I0 + c] for c in range(ntc)])
 
                 sgn_D = np.sign(self.current_D_rowsum[I])
+                D_II = self.current_D_rowsum[I]
+                inv_D = 1.0 / D_II if abs(D_II) > 1e-30 else 0.0
                 p_n = -lambda_I * sgn_D  # physical normal pressure
-                b = mu * p_n  # Coulomb friction bound
+
+                # Augmented normal pressure in the Coulomb bound (Alart-Curnier /
+                # MOOSE ComputeFrictionalForceLMMechanicalContact):
+                #   b = mu * max(0, p_n + c_n * penetration),
+                # with the penetration given by the (D_II-normalized) weighted gap:
+                # g_sep = g_weak*sgn_D is the separation gap (>0 open, <0 penetrating),
+                # so -c_n*inv_D*g_sep = c_n*penetration. The large c_n keeps b well
+                # scaled during the Newton iterations (crucial: with b = mu*p_n only,
+                # p_n is tiny early and the stuck-node row -b*c_t*u_t is so weakly
+                # scaled that its multiplier z_t is left ~0). At convergence g -> 0 so
+                # b -> mu*p_n; c_n is purely algorithmic (no effect on the solution).
+                g_sep = g_I_weak * sgn_D
+                p_aug = p_n - self.c_n * inv_D * g_sep
+                b = mu * max(0.0, p_aug)
 
                 # A node with a degenerate (zero) nodal normal has no valid
                 # tangent frame (t_I == 0); skip friction for it (enforce z_t = 0)
@@ -946,31 +974,24 @@ class Constraint(ConstraintBase):
                 has_tangent = np.dot(t_I[0], t_I[0]) > 0.5
 
                 if self.active_set[I] and b > 0.0 and has_tangent:
-                    db_dlam = -mu * sgn_D  # d(b)/d(lambda_I)
+                    # b = mu*p_aug here (p_aug > 0). Derivatives of b:
+                    #   d(b)/d(lambda_I) = -mu*sgn_D
+                    #   d(b)/d(u): via g_sep = sgn_D*g_weak, d(g_weak)/d(d_s_K) = -D[I,K] n,
+                    #     d(g_weak)/d(d_m_J) = C[I,J] n  =>
+                    #     d(b)/d(d_s_K) =  db_disp_fac * D[I,K] * n_I  (dim-vector)
+                    #     d(b)/d(d_m_J) = -db_disp_fac * C[I,J] * n_I
+                    db_dlam = -mu * sgn_D
+                    db_disp_fac = mu * self.c_n * inv_D * sgn_D  # scalar
 
-                    # Weighted tangential slip increment (Gitterle Eq. (47)),
-                    # D, C and the tangent basis frozen within the increment.
-                    # t_I already lies in the tangent plane, so t_I @ (.) is the
-                    # tangential projection (no separate P = I - n(x)n needed).
+                    # Weighted tangential slip increment (Gitterle Eq. 47), normalized
+                    # by D_II so it is the physical relative slip and c_t ~ E is
+                    # dimensionally meaningful (Gitterle p. 565, Farah 2018 Sec. 3.5.2).
+                    # D, C, n and the tangent basis are frozen within the increment.
                     w_vec = np.zeros(dim)
                     if len(nzD):
                         w_vec += D[I, nzD] @ du_slave[nzD]
                     if len(nzC):
                         w_vec -= C[I, nzC] @ du_master[nzC]
-                    # Normalise by the nodal mortar weight D_II (row-sum, = int Phi_I
-                    # dGamma) so that u_t is the PHYSICAL relative tangential slip
-                    # (displacement units, u_t = u_tilde / D_II), independent of the
-                    # element size. This makes the complementarity parameter c_t
-                    # dimensionally a stress/length and directly of the order of the
-                    # softer body's Young's modulus, as recommended by Gitterle et al.
-                    # (2010, p. 565: "choose c_t such that the scales of u_tilde and
-                    # z_t are balanced ... reflect the material parameters") and Farah
-                    # (2018, Sec. 3.5.2). c_t is a purely algorithmic parameter: it does
-                    # not change the converged solution (at slip z_t stays parallel to
-                    # u_t for any c_t), only the Newton convergence. D_II is frozen, so
-                    # this is just a constant scaling of the slip term and its tangent.
-                    D_II = self.current_D_rowsum[I]
-                    inv_D = 1.0 / D_II if abs(D_II) > 1e-30 else 0.0
                     u_t = inv_D * (t_I @ w_vec)  # (ntc,) physical slip increment
 
                     z_tr = z_t + self.c_t * u_t  # trial tangential traction
@@ -1027,13 +1048,16 @@ class Constraint(ConstraintBase):
                             #   coeff = z_t[c] dir_spatial - b t_c
                             #   +c_t inv_D D[I,K] coeff (slave),  -c_t inv_D C[I,J] coeff (master)
                             coeff_vec = z_t[c] * dir_spatial - b * t_I[c]  # (dim,)
+                            # plus d(C_t)/d(u) through b (augmented pressure): -(db/du) z_tr[c]
                             for K_nd in nzD:
                                 s_dofs = slice(sf * K_nd, sf * K_nd + dim)
                                 K[idx_TAU_Ic, s_dofs] += self.c_t * inv_D * D[I, K_nd] * coeff_vec
+                                K[idx_TAU_Ic, s_dofs] += -z_tr[c] * db_disp_fac * D[I, K_nd] * n_I
                             for J in nzC:
                                 m_global = nSlave + J
                                 m_dofs = slice(sf * m_global, sf * m_global + dim)
                                 K[idx_TAU_Ic, m_dofs] += -self.c_t * inv_D * C[I, J] * coeff_vec
+                                K[idx_TAU_Ic, m_dofs] += z_tr[c] * db_disp_fac * C[I, J] * n_I
                     else:
                         # STICK branch of the unified NCP (max = b), Gitterle Eq. 74:
                         #     C_t = b z_t - b z_tr = -b c_t u_t   ->  u_t = 0.
@@ -1050,13 +1074,16 @@ class Constraint(ConstraintBase):
                             K[idx_TAU_Ic, idx_LM_I] += -db_dlam * self.c_t * u_t[c]
                             # d(C_t[c])/d(u) = -b c_t d(u_t[c])/d(u), u_t normalised by D_II:
                             #   -b c_t inv_D D[I,K] t_c (slave),  +b c_t inv_D C[I,J] t_c (master)
+                            # plus d(C_t)/d(u) through b: (db/du)(z_t - z_tr)[c] = -(db/du) c_t u_t[c]
                             for K_nd in nzD:
                                 s_dofs = slice(sf * K_nd, sf * K_nd + dim)
                                 K[idx_TAU_Ic, s_dofs] += -b * self.c_t * inv_D * D[I, K_nd] * t_I[c]
+                                K[idx_TAU_Ic, s_dofs] += -self.c_t * u_t[c] * db_disp_fac * D[I, K_nd] * n_I
                             for J in nzC:
                                 m_global = nSlave + J
                                 m_dofs = slice(sf * m_global, sf * m_global + dim)
                                 K[idx_TAU_Ic, m_dofs] += b * self.c_t * inv_D * C[I, J] * t_I[c]
+                                K[idx_TAU_Ic, m_dofs] += self.c_t * u_t[c] * db_disp_fac * C[I, J] * n_I
 
                     self.recovered_tractions_t[I] = z_t
                 else:
