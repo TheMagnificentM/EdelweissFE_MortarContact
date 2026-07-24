@@ -976,11 +976,11 @@ class Constraint(ConstraintBase):
                     z_tr = z_t + self.c_t * u_t  # trial tangential traction
                     z_tr_norm = np.linalg.norm(z_tr)
 
-                    # stick / slip classification (Gitterle Eqs. (72)/(73)),
-                    # frozen after the first iterations like the normal set.
-                    slip = (z_tr_norm - b) >= 0.0 and z_tr_norm > 1e-14
-                    if self.current_iteration < 5:
-                        self.stick_set[I] = not slip
+                    # stick / slip branch = generalized derivative of the max in the
+                    # unified NCP (Gitterle Eqs. 72/73). Evaluated fresh every
+                    # iteration (semi-smooth Newton), like MOOSE; NOT frozen.
+                    slip = z_tr_norm > b
+                    self.stick_set[I] = not slip
 
                     # Friction nodal force: same structure as the normal force
                     # lambda*D*n, with the normal n replaced by each tangent
@@ -1000,8 +1000,8 @@ class Constraint(ConstraintBase):
                             PExt[m_dofs] -= z_t[c] * C_IJ_t
                             K[m_dofs, idx_TAU_Ic] += C_IJ_t
 
-                    if not self.stick_set[I]:
-                        # SLIP: un-normalized Coulomb complementarity (Gitterle Eq. 61)
+                    if slip:
+                        # SLIP branch of the unified NCP (max = ||z_tr||), Gitterle Eq. 61:
                         #     C_t = ||z_tr|| z_t - b z_tr   ->  ||z_t|| = b along z_tr.
                         # The un-normalized form is deliberate: its tangent has no bare
                         # 1/||z_tr|| term - every occurrence of dir = z_tr/||z_tr|| is
@@ -1035,27 +1035,28 @@ class Constraint(ConstraintBase):
                                 m_dofs = slice(sf * m_global, sf * m_global + dim)
                                 K[idx_TAU_Ic, m_dofs] += -self.c_t * inv_D * C[I, J] * coeff_vec
                     else:
-                        # STICK (exact): enforce zero tangential slip u_t = 0 as a pure
-                        # constraint, with z_t as its Lagrange multiplier - the tangential
-                        # analog of the normal non-penetration row (g_weak = 0 with lambda).
-                        # This is the exact Coulomb stick condition (Gitterle Eq. 54/74)
-                        # with NO penalty regularization and NO b*c_t prefactor, so it is
-                        # well conditioned (mirrors the proven normal-contact row) and does
-                        # not perturb the converged solution. c_t enters only the stick/slip
-                        # classification, so it is purely algorithmic (Gitterle p. 555/565).
-                        C_t = u_t
+                        # STICK branch of the unified NCP (max = b), Gitterle Eq. 74:
+                        #     C_t = b z_t - b z_tr = -b c_t u_t   ->  u_t = 0.
+                        # This is the same single expression as slip (only max differs),
+                        # exactly as in MOOSE ComputeFrictionalForceLMMechanicalContact.
+                        # z_t has no self-diagonal here (d/dz_t = b - b = 0): a saddle row,
+                        # like the normal LM. b depends on lambda (via p_n), giving the
+                        # d/dlambda coupling below.
+                        C_t = b * z_t - b * z_tr  # (ntc,) == -b c_t u_t
                         for c in range(ntc):
                             idx_TAU_Ic = idx_TAU_I0 + c
                             PExt[idx_TAU_Ic] -= C_t[c]
-                            # d(C_t[c])/d(u) = d(u_t[c])/d(u), u_t normalised by D_II:
-                            #   +inv_D D[I,K] t_c  (slave),  -inv_D C[I,J] t_c  (master)
+                            # d(C_t[c])/d(lambda) = db_dlam (z_t - z_tr)[c] = -db_dlam c_t u_t[c]
+                            K[idx_TAU_Ic, idx_LM_I] += -db_dlam * self.c_t * u_t[c]
+                            # d(C_t[c])/d(u) = -b c_t d(u_t[c])/d(u), u_t normalised by D_II:
+                            #   -b c_t inv_D D[I,K] t_c (slave),  +b c_t inv_D C[I,J] t_c (master)
                             for K_nd in nzD:
                                 s_dofs = slice(sf * K_nd, sf * K_nd + dim)
-                                K[idx_TAU_Ic, s_dofs] += inv_D * D[I, K_nd] * t_I[c]
+                                K[idx_TAU_Ic, s_dofs] += -b * self.c_t * inv_D * D[I, K_nd] * t_I[c]
                             for J in nzC:
                                 m_global = nSlave + J
                                 m_dofs = slice(sf * m_global, sf * m_global + dim)
-                                K[idx_TAU_Ic, m_dofs] += -inv_D * C[I, J] * t_I[c]
+                                K[idx_TAU_Ic, m_dofs] += b * self.c_t * inv_D * C[I, J] * t_I[c]
 
                     self.recovered_tractions_t[I] = z_t
                 else:
