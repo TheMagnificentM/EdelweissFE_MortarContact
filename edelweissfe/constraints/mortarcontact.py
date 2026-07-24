@@ -406,16 +406,26 @@ class Constraint(ConstraintBase):
         if self.nTangentialComponents == 0:
             return basis
 
+        # A slave node whose area-weighted facet normals cancel gets a zero
+        # normal from compute_normals(). Such a node has no well-defined contact
+        # frame; leaving its tangent basis at zero here (and skipping friction
+        # for it in applyConstraint) avoids the 0/0 = NaN that get_tangent_basis
+        # would otherwise produce (harmless without friction, fatal with it - it
+        # propagates NaN tractions into the bulk and breaks the return mapping).
         if dim == 3:
             from edelweissfe.constraints.mortar_geom_utils import get_tangent_basis
 
             for I in range(self.nNonMortarNodes):
+                if np.dot(normals[I], normals[I]) < 1e-24:
+                    continue  # leave basis[I] = 0
                 t1, t2 = get_tangent_basis(normals[I])
                 basis[I, 0] = t1
                 basis[I, 1] = t2
         else:  # dim == 2
             for I in range(self.nNonMortarNodes):
                 n_I = normals[I]
+                if np.dot(n_I, n_I) < 1e-24:
+                    continue  # leave basis[I] = 0
                 basis[I, 0] = np.array([-n_I[1], n_I[0]])
         return basis
 
@@ -853,26 +863,26 @@ class Constraint(ConstraintBase):
             # semi-smooth Newton method with consistent linearization",
             # Int. J. Numer. Methods Eng. 84:543-571.
             #
-            # Tangential nodal complementarity function (Gitterle Eq. (61), in
-            # the un-normalized form to avoid the 1/||z_tr|| blow-up as z_t -> 0):
-            #     C_t = max(b, ||z_tr||) * z_t  -  b * z_tr
-            # with trial traction  z_tr = z_t + c_t * u_t   (Eq. (58)),
-            # weighted tangential slip increment u_t (Eq. (47)), and friction
-            # bound  b = mu * p_n.
-            #   stick (||z_tr|| <= b, Eq. (72)):  C_t = -b*c_t*u_t  ->  u_t = 0  (Eq. (74))
-            #   slip  (||z_tr|| >  b, Eq. (73)):  C_t = ||z_tr||*z_t - b*z_tr    (Eq. (75))
-            #        ->  ||z_t|| = b  along the trial direction.
-            # The nested c_n*g_tilde term of the bound (Eq. (60)) is dropped:
-            # c_n and c_t do not influence the converged solution (Gitterle,
-            # p. 555), the g_tilde term vanishes at convergence (the normal row
-            # drives g_weak -> 0 at active nodes), and active/inactive is decided
-            # separately by the normal active set above. This keeps b (and hence
-            # the tangent) independent of the not-yet-converged weighted gap.
+            # Trial traction  z_tr = z_t + c_t * u_t  (Gitterle Eq. 58), with the
+            # physical (D_II-normalized) slip increment u_t (Eq. 47) and friction
+            # bound  b = mu * p_n. Node classified by ||z_tr|| vs b (Eqs. 72/73):
+            #   stick (||z_tr|| <= b): exact constraint  C_t = u_t = 0  (Eq. 54/74),
+            #        z_t is its Lagrange multiplier (tangential analog of g_weak=0).
+            #   slip  (||z_tr|| >  b): C_t = z_t - b * z_tr/||z_tr||  (Eq. 61 divided
+            #        by ||z_tr||)  ->  ||z_t|| = b along the trial direction.
+            # Both branches are exact Coulomb friction (no penalty regularization);
+            # c_t enters only the classification and the trial direction, so it is a
+            # purely algorithmic parameter with no effect on the converged solution
+            # (Gitterle p. 555/565). The stick row (zero z_t-diagonal, saddle-point)
+            # mirrors the well-conditioned normal row; the slip row has an O(1)
+            # z_t-diagonal. The nested c_n*g_tilde term of the bound (Eq. 60) is
+            # dropped: it vanishes at convergence (normal row drives g_weak -> 0) and
+            # active/inactive is decided by the normal active set above.
             # p_n is the PHYSICAL (>= 0) normal pressure; in this code's sign
             # convention p_n = -lambda_I*sgn_D for an active (compressed) node.
             # Frozen geometry (n, t, D, C) => K is the exact Jacobian of this
-            # algebraic residual; verified by the FD tangent check in
-            # test9_friction. Sign convention: K[row, col] = -d(PExt[row])/d(col).
+            # algebraic residual; verified by the FD tangent check in test9_friction.
+            # Sign convention: K[row, col] = -d(PExt[row])/d(col).
             # ----------------------------------------------------------------
             if mu > 0.0:
                 idx_TAU_I0 = idx_TAU_0 + I * ntc
@@ -883,7 +893,12 @@ class Constraint(ConstraintBase):
                 p_n = -lambda_I * sgn_D  # physical normal pressure
                 b = mu * p_n  # Coulomb friction bound
 
-                if self.active_set[I] and b > 0.0:
+                # A node with a degenerate (zero) nodal normal has no valid
+                # tangent frame (t_I == 0); skip friction for it (enforce z_t = 0)
+                # to avoid a zero/NaN tangential row.
+                has_tangent = np.dot(t_I[0], t_I[0]) > 0.5
+
+                if self.active_set[I] and b > 0.0 and has_tangent:
                     db_dlam = -mu * sgn_D  # d(b)/d(lambda_I)
 
                     # Weighted tangential slip increment (Gitterle Eq. (47)),
@@ -939,55 +954,51 @@ class Constraint(ConstraintBase):
                             K[m_dofs, idx_TAU_Ic] += C_IJ_t
 
                     if not self.stick_set[I]:
-                        # SLIP: C_t = ||z_tr|| z_t - b z_tr   (Eq. (61)/(75))
-                        dir_c = z_tr / z_tr_norm  # (ntc,)
-                        dir_spatial = dir_c @ t_I  # (dim,)
-                        C_t = z_tr_norm * z_t - b * z_tr  # (ntc,)
+                        # SLIP: z_t lies on the Coulomb cone along the trial direction.
+                        # Normalized complementarity  C_t = z_t - b * z_tr/||z_tr||,
+                        # which is Gitterle Eq. (61) divided by ||z_tr||. In the slip set
+                        # ||z_tr|| > b > 0, so there is no 1/||z_tr|| blow-up, and the
+                        # z_t-diagonal is O(1) (not O(1/c_t)), giving good conditioning.
+                        # At convergence z_t || z_tr, hence z_t || u_t and ||z_t|| = b,
+                        # independent of c_t (c_t is purely algorithmic).
+                        inv_ztr = 1.0 / z_tr_norm
+                        dir_c = z_tr * inv_ztr        # (ntc,) unit trial direction
+                        dir_spatial = dir_c @ t_I     # (dim,)
+                        b_over = b * inv_ztr          # b/||z_tr|| in (0, 1]
+                        C_t = z_t - b * dir_c         # (ntc,)
                         for c in range(ntc):
                             idx_TAU_Ic = idx_TAU_I0 + c
                             PExt[idx_TAU_Ic] -= C_t[c]
-                            # d(C_t[c])/d(z_t[cp]) = dir_c[cp]*z_t[c] + (||z_tr||-b) delta
+                            # d(C_t[c])/d(z_t[cp]) = delta - (b/||z_tr||)(delta - dir_c[c] dir_c[cp])
                             for cp in range(ntc):
                                 idx_TAU_Icp = idx_TAU_I0 + cp
-                                dCt_dzt = dir_c[cp] * z_t[c] + ((z_tr_norm - b) if cp == c else 0.0)
-                                K[idx_TAU_Ic, idx_TAU_Icp] += dCt_dzt
-                            # d(C_t[c])/d(lambda) = -(db/dlam) z_tr[c]
-                            K[idx_TAU_Ic, idx_LM_I] += -db_dlam * z_tr[c]
-                            # d(C_t[c])/d(u) via z_tr = z_t + c_t*u_t:
-                            #   +c_t D[I,K] (z_t[c] dir_spatial - b t_c)   (slave)
-                            #   -c_t C[I,J] (z_t[c] dir_spatial - b t_c)   (master)
-                            coeff_vec = z_t[c] * dir_spatial - b * t_I[c]
+                                dcc = 1.0 if cp == c else 0.0
+                                K[idx_TAU_Ic, idx_TAU_Icp] += dcc - b_over * (dcc - dir_c[c] * dir_c[cp])
+                            # d(C_t[c])/d(lambda) = -(db/dlam) dir_c[c]
+                            K[idx_TAU_Ic, idx_LM_I] += -db_dlam * dir_c[c]
+                            # d(C_t[c])/d(u) = -(b/||z_tr||) c_t (t_c - dir_c[c] dir_spatial)
+                            #                  * inv_D * (D slave / -C master)
+                            coeff_vec = b_over * self.c_t * (t_I[c] - dir_c[c] * dir_spatial)  # (dim,)
                             for K_nd in nzD:
                                 s_dofs = slice(sf * K_nd, sf * K_nd + dim)
-                                K[idx_TAU_Ic, s_dofs] += self.c_t * inv_D * D[I, K_nd] * coeff_vec
+                                K[idx_TAU_Ic, s_dofs] += -inv_D * D[I, K_nd] * coeff_vec
                             for J in nzC:
                                 m_global = nSlave + J
                                 m_dofs = slice(sf * m_global, sf * m_global + dim)
-                                K[idx_TAU_Ic, m_dofs] += -self.c_t * inv_D * C[I, J] * coeff_vec
+                                K[idx_TAU_Ic, m_dofs] += inv_D * C[I, J] * coeff_vec
                     else:
-                        # STICK, penalty-regularized / compliant form:
-                        #     C_t = (1/c_t) z_t + u_t = 0   <=>   z_t = -c_t u_t,
-                        # a tangential elastic response with stiffness c_t (Wriggers
-                        # 2006, Computational Contact Mechanics; the elastic predictor
-                        # of the return-mapping friction algorithm). It recovers the
-                        # exact Coulomb stick condition u_t = 0 in the limit c_t -> inf.
-                        # This is used instead of the algebraically exact Gitterle stick
-                        # C_t = -b*c_t*u_t (Eq. 74): the latter carries a b*c_t (~mu*p_n*E)
-                        # factor in its tangent that dwarfs the O(D) friction-force
-                        # coupling by many orders of magnitude, wrecking the conditioning
-                        # of the saddle-point system (observed divergence at the first
-                        # increment). The compliant form has an O(1/c_t) diagonal and an
-                        # O(D_II^-1 * D) displacement coupling, i.e. no such factor. With
-                        # u_t the physical (D_II-normalized) slip, c_t is the tangential
-                        # penalty ~ E/L of the softer body. c_t does not change the
-                        # converged solution, only convergence (Gitterle p. 555/565).
-                        eps_t = 1.0 / self.c_t
-                        C_t = eps_t * z_t + u_t
+                        # STICK (exact): enforce zero tangential slip u_t = 0 as a pure
+                        # constraint, with z_t as its Lagrange multiplier - the tangential
+                        # analog of the normal non-penetration row (g_weak = 0 with lambda).
+                        # This is the exact Coulomb stick condition (Gitterle Eq. 54/74)
+                        # with NO penalty regularization and NO b*c_t prefactor, so it is
+                        # well conditioned (mirrors the proven normal-contact row) and does
+                        # not perturb the converged solution. c_t enters only the stick/slip
+                        # classification, so it is purely algorithmic (Gitterle p. 555/565).
+                        C_t = u_t
                         for c in range(ntc):
                             idx_TAU_Ic = idx_TAU_I0 + c
                             PExt[idx_TAU_Ic] -= C_t[c]
-                            # d(C_t[c])/d(z_t[c]) = 1/c_t
-                            K[idx_TAU_Ic, idx_TAU_Ic] += eps_t
                             # d(C_t[c])/d(u) = d(u_t[c])/d(u), u_t normalised by D_II:
                             #   +inv_D D[I,K] t_c  (slave),  -inv_D C[I,J] t_c  (master)
                             for K_nd in nzD:
