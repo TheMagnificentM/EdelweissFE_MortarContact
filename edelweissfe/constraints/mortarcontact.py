@@ -954,38 +954,39 @@ class Constraint(ConstraintBase):
                             K[m_dofs, idx_TAU_Ic] += C_IJ_t
 
                     if not self.stick_set[I]:
-                        # SLIP: z_t lies on the Coulomb cone along the trial direction.
-                        # Normalized complementarity  C_t = z_t - b * z_tr/||z_tr||,
-                        # which is Gitterle Eq. (61) divided by ||z_tr||. In the slip set
-                        # ||z_tr|| > b > 0, so there is no 1/||z_tr|| blow-up, and the
-                        # z_t-diagonal is O(1) (not O(1/c_t)), giving good conditioning.
-                        # At convergence z_t || z_tr, hence z_t || u_t and ||z_t|| = b,
-                        # independent of c_t (c_t is purely algorithmic).
-                        inv_ztr = 1.0 / z_tr_norm
-                        dir_c = z_tr * inv_ztr        # (ntc,) unit trial direction
+                        # SLIP: un-normalized Coulomb complementarity (Gitterle Eq. 61)
+                        #     C_t = ||z_tr|| z_t - b z_tr   ->  ||z_t|| = b along z_tr.
+                        # The un-normalized form is deliberate: its tangent has no bare
+                        # 1/||z_tr|| term - every occurrence of dir = z_tr/||z_tr|| is
+                        # multiplied by z_t, which vanishes at the onset of slip
+                        # (z_t = 0, tiny slip). The normalized variant C_t = z_t - b*dir
+                        # instead carries d(dir)/du ~ 1/||z_tr||, which blows the tangent
+                        # up for just-slipping nodes and corrupts the displacement
+                        # solution (breaks the bulk return mapping). See Gitterle p. 554.
+                        dir_c = z_tr / z_tr_norm      # (ntc,) unit trial direction
                         dir_spatial = dir_c @ t_I     # (dim,)
-                        b_over = b * inv_ztr          # b/||z_tr|| in (0, 1]
-                        C_t = z_t - b * dir_c         # (ntc,)
+                        C_t = z_tr_norm * z_t - b * z_tr  # (ntc,)
                         for c in range(ntc):
                             idx_TAU_Ic = idx_TAU_I0 + c
                             PExt[idx_TAU_Ic] -= C_t[c]
-                            # d(C_t[c])/d(z_t[cp]) = delta - (b/||z_tr||)(delta - dir_c[c] dir_c[cp])
+                            # d(C_t[c])/d(z_t[cp]) = dir_c[cp] z_t[c] + (||z_tr|| - b) delta
                             for cp in range(ntc):
                                 idx_TAU_Icp = idx_TAU_I0 + cp
-                                dcc = 1.0 if cp == c else 0.0
-                                K[idx_TAU_Ic, idx_TAU_Icp] += dcc - b_over * (dcc - dir_c[c] * dir_c[cp])
-                            # d(C_t[c])/d(lambda) = -(db/dlam) dir_c[c]
-                            K[idx_TAU_Ic, idx_LM_I] += -db_dlam * dir_c[c]
-                            # d(C_t[c])/d(u) = -(b/||z_tr||) c_t (t_c - dir_c[c] dir_spatial)
-                            #                  * inv_D * (D slave / -C master)
-                            coeff_vec = b_over * self.c_t * (t_I[c] - dir_c[c] * dir_spatial)  # (dim,)
+                                dCt_dzt = dir_c[cp] * z_t[c] + ((z_tr_norm - b) if cp == c else 0.0)
+                                K[idx_TAU_Ic, idx_TAU_Icp] += dCt_dzt
+                            # d(C_t[c])/d(lambda) = -(db/dlam) z_tr[c]
+                            K[idx_TAU_Ic, idx_LM_I] += -db_dlam * z_tr[c]
+                            # d(C_t[c])/d(u) via z_tr = z_t + c_t u_t (u_t normalised by D_II):
+                            #   coeff = z_t[c] dir_spatial - b t_c
+                            #   +c_t inv_D D[I,K] coeff (slave),  -c_t inv_D C[I,J] coeff (master)
+                            coeff_vec = z_t[c] * dir_spatial - b * t_I[c]  # (dim,)
                             for K_nd in nzD:
                                 s_dofs = slice(sf * K_nd, sf * K_nd + dim)
-                                K[idx_TAU_Ic, s_dofs] += -inv_D * D[I, K_nd] * coeff_vec
+                                K[idx_TAU_Ic, s_dofs] += self.c_t * inv_D * D[I, K_nd] * coeff_vec
                             for J in nzC:
                                 m_global = nSlave + J
                                 m_dofs = slice(sf * m_global, sf * m_global + dim)
-                                K[idx_TAU_Ic, m_dofs] += inv_D * C[I, J] * coeff_vec
+                                K[idx_TAU_Ic, m_dofs] += -self.c_t * inv_D * C[I, J] * coeff_vec
                     else:
                         # STICK (exact): enforce zero tangential slip u_t = 0 as a pure
                         # constraint, with z_t as its Lagrange multiplier - the tangential
@@ -1019,3 +1020,18 @@ class Constraint(ConstraintBase):
                         idx_TAU_Ic = idx_TAU_I0 + c
                         PExt[idx_TAU_Ic] -= z_t[c]
                         K[idx_TAU_Ic, idx_TAU_Ic] += 1.0
+
+        import os as _os
+        if mu > 0.0 and _os.environ.get("FRICTION_DEBUG"):
+            import sys as _sys
+            fin = bool(np.isfinite(PExt).all())
+            nstick = int(self.stick_set.sum())
+            nact = int(self.active_set.sum())
+            maxzt = float(np.abs(self.recovered_tractions_t).max()) if self.recovered_tractions_t.size else 0.0
+            maxpe = float(np.abs(PExt[np.isfinite(PExt)]).max()) if fin else float("nan")
+            print(
+                f"[FRIC ts={timeStep.number} it={self.current_iteration}] "
+                f"active={nact} stick={nstick} slip={nact - nstick} "
+                f"max|z_t|={maxzt:.3e} max|PExt|={maxpe:.3e} PExt_finite={fin}",
+                file=_sys.stderr, flush=True,
+            )
