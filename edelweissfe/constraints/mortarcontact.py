@@ -85,8 +85,11 @@ module.addOptionalArg(
     "friction_ct",
     "Semi-smooth-Newton complementarity parameter c_t (> 0) for the tangential "
     "(friction) active set. It does NOT change the converged solution, only the "
-    "convergence behaviour (Gitterle et al. 2010, p. 555). Farah (2018) Sec. 3.5.2 "
-    "recommends it at the order of Young's modulus of the softer contacting body.",
+    "convergence behaviour (Gitterle et al. 2010, p. 555/565). The weighted slip is "
+    "normalised by the nodal mortar weight D_II, so c_t balances the scales of the "
+    "physical slip and the traction and should be chosen at the order of Young's "
+    "modulus of the softer contacting body (Gitterle et al. 2010 p. 565; Farah 2018 "
+    "Sec. 3.5.2).",
     float,
     1.0,
 )
@@ -883,7 +886,7 @@ class Constraint(ConstraintBase):
                 if self.active_set[I] and b > 0.0:
                     db_dlam = -mu * sgn_D  # d(b)/d(lambda_I)
 
-                    # Weighted tangential slip increment u_t (Gitterle Eq. (47)),
+                    # Weighted tangential slip increment (Gitterle Eq. (47)),
                     # D, C and the tangent basis frozen within the increment.
                     # t_I already lies in the tangent plane, so t_I @ (.) is the
                     # tangential projection (no separate P = I - n(x)n needed).
@@ -892,7 +895,21 @@ class Constraint(ConstraintBase):
                         w_vec += D[I, nzD] @ du_slave[nzD]
                     if len(nzC):
                         w_vec -= C[I, nzC] @ du_master[nzC]
-                    u_t = t_I @ w_vec  # (ntc,)
+                    # Normalise by the nodal mortar weight D_II (row-sum, = int Phi_I
+                    # dGamma) so that u_t is the PHYSICAL relative tangential slip
+                    # (displacement units, u_t = u_tilde / D_II), independent of the
+                    # element size. This makes the complementarity parameter c_t
+                    # dimensionally a stress/length and directly of the order of the
+                    # softer body's Young's modulus, as recommended by Gitterle et al.
+                    # (2010, p. 565: "choose c_t such that the scales of u_tilde and
+                    # z_t are balanced ... reflect the material parameters") and Farah
+                    # (2018, Sec. 3.5.2). c_t is a purely algorithmic parameter: it does
+                    # not change the converged solution (at slip z_t stays parallel to
+                    # u_t for any c_t), only the Newton convergence. D_II is frozen, so
+                    # this is just a constant scaling of the slip term and its tangent.
+                    D_II = self.current_D_rowsum[I]
+                    inv_D = 1.0 / D_II if abs(D_II) > 1e-30 else 0.0
+                    u_t = inv_D * (t_I @ w_vec)  # (ntc,) physical slip increment
 
                     z_tr = z_t + self.c_t * u_t  # trial tangential traction
                     z_tr_norm = np.linalg.norm(z_tr)
@@ -942,31 +959,44 @@ class Constraint(ConstraintBase):
                             coeff_vec = z_t[c] * dir_spatial - b * t_I[c]
                             for K_nd in nzD:
                                 s_dofs = slice(sf * K_nd, sf * K_nd + dim)
-                                K[idx_TAU_Ic, s_dofs] += self.c_t * D[I, K_nd] * coeff_vec
+                                K[idx_TAU_Ic, s_dofs] += self.c_t * inv_D * D[I, K_nd] * coeff_vec
                             for J in nzC:
                                 m_global = nSlave + J
                                 m_dofs = slice(sf * m_global, sf * m_global + dim)
-                                K[idx_TAU_Ic, m_dofs] += -self.c_t * C[I, J] * coeff_vec
+                                K[idx_TAU_Ic, m_dofs] += -self.c_t * inv_D * C[I, J] * coeff_vec
                     else:
-                        # STICK: C_t = -b c_t u_t  (Eq. (61)/(74))  ->  u_t = 0.
-                        # z_t is the multiplier enforcing zero tangential slip;
-                        # it appears (via the friction force above) in the
-                        # displacement rows, giving a proper saddle-point row.
-                        C_t = -b * self.c_t * u_t
+                        # STICK, penalty-regularized / compliant form:
+                        #     C_t = (1/c_t) z_t + u_t = 0   <=>   z_t = -c_t u_t,
+                        # a tangential elastic response with stiffness c_t (Wriggers
+                        # 2006, Computational Contact Mechanics; the elastic predictor
+                        # of the return-mapping friction algorithm). It recovers the
+                        # exact Coulomb stick condition u_t = 0 in the limit c_t -> inf.
+                        # This is used instead of the algebraically exact Gitterle stick
+                        # C_t = -b*c_t*u_t (Eq. 74): the latter carries a b*c_t (~mu*p_n*E)
+                        # factor in its tangent that dwarfs the O(D) friction-force
+                        # coupling by many orders of magnitude, wrecking the conditioning
+                        # of the saddle-point system (observed divergence at the first
+                        # increment). The compliant form has an O(1/c_t) diagonal and an
+                        # O(D_II^-1 * D) displacement coupling, i.e. no such factor. With
+                        # u_t the physical (D_II-normalized) slip, c_t is the tangential
+                        # penalty ~ E/L of the softer body. c_t does not change the
+                        # converged solution, only convergence (Gitterle p. 555/565).
+                        eps_t = 1.0 / self.c_t
+                        C_t = eps_t * z_t + u_t
                         for c in range(ntc):
                             idx_TAU_Ic = idx_TAU_I0 + c
                             PExt[idx_TAU_Ic] -= C_t[c]
-                            # d(C_t[c])/d(lambda) = -(db/dlam) c_t u_t[c]
-                            K[idx_TAU_Ic, idx_LM_I] += -db_dlam * self.c_t * u_t[c]
-                            # d(C_t[c])/d(u) = -b c_t d(u_t[c])/d(u):
-                            #   -b c_t D[I,K] t_c  (slave),  +b c_t C[I,J] t_c  (master)
+                            # d(C_t[c])/d(z_t[c]) = 1/c_t
+                            K[idx_TAU_Ic, idx_TAU_Ic] += eps_t
+                            # d(C_t[c])/d(u) = d(u_t[c])/d(u), u_t normalised by D_II:
+                            #   +inv_D D[I,K] t_c  (slave),  -inv_D C[I,J] t_c  (master)
                             for K_nd in nzD:
                                 s_dofs = slice(sf * K_nd, sf * K_nd + dim)
-                                K[idx_TAU_Ic, s_dofs] += -b * self.c_t * D[I, K_nd] * t_I[c]
+                                K[idx_TAU_Ic, s_dofs] += inv_D * D[I, K_nd] * t_I[c]
                             for J in nzC:
                                 m_global = nSlave + J
                                 m_dofs = slice(sf * m_global, sf * m_global + dim)
-                                K[idx_TAU_Ic, m_dofs] += b * self.c_t * C[I, J] * t_I[c]
+                                K[idx_TAU_Ic, m_dofs] += -inv_D * C[I, J] * t_I[c]
 
                     self.recovered_tractions_t[I] = z_t
                 else:
