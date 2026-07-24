@@ -82,6 +82,19 @@ module.addOptionalArg(
     0.0,
 )
 module.addOptionalArg(
+    "friction_ramp",
+    "Ramp the friction coefficient linearly from 0 to its target value over this "
+    "fraction of the step progress (0 < stepProgress <= friction_ramp), then hold it "
+    "at the target. 0.0 (default) disables ramping (constant mu). Ramping avoids the "
+    "sudden activation of many stick constraints at the first contact increment - "
+    "which produces a large displacement correction that can overload the bulk "
+    "material return mapping - by letting contact establish first and friction engage "
+    "gradually. Purely a robustness/continuation device; the converged final state "
+    "(at full mu) is unaffected.",
+    float,
+    0.0,
+)
+module.addOptionalArg(
     "friction_cn",
     "Semi-smooth-Newton complementarity parameter c_n (> 0) for the augmented "
     "normal pressure entering the Coulomb friction bound b = mu*max(0, p_n + c_n*g). "
@@ -299,6 +312,7 @@ class Constraint(ConstraintBase):
         )
         self.c_t = float(kwargs.get("friction_ct", kwargs.get("frictionct", 1.0)))
         self.c_n = float(kwargs.get("friction_cn", kwargs.get("frictioncn", 1.0e6)))
+        self.friction_ramp = float(kwargs.get("friction_ramp", kwargs.get("frictionramp", 0.0)))
 
         non_mortar_surf_name = kwargs["nonMortarSurface"]
         mortar_surf_name = kwargs["mortarSurface"]
@@ -835,6 +849,13 @@ class Constraint(ConstraintBase):
         # nSlave normal multipliers.
         # ----------------------------------------------------------------------
         mu = self.friction_coefficient
+        # Optional friction ramp-up (continuation): scale mu from 0 to its target
+        # over the first `friction_ramp` fraction of the step progress. Frozen within
+        # the increment (timeStep.stepProgress is constant there), so mu is a constant
+        # in the tangent - no effect on the consistent linearization.
+        if self.friction_ramp > 0.0 and mu > 0.0:
+            prog = max(0.0, float(timeStep.stepProgress))
+            mu = mu * min(1.0, prog / self.friction_ramp)
         ntc = self.nTangentialComponents
         idx_TAU_0 = idx_LM_0 + nSlave
 

@@ -159,6 +159,7 @@ nonMortarSurface=con_conc_l_stud_vert
 mortarSurface=con_stl_l_stud_vert
 field=displacement
 friction_coefficient=0.3
+friction_ramp=0.1
 friction_ct=10000.0
 **
 ** --- Links: Kopf unten (horizontal) ---
@@ -167,6 +168,7 @@ nonMortarSurface=con_conc_l_head_horiz
 mortarSurface=con_stl_l_head_horiz
 field=displacement
 friction_coefficient=0.3
+friction_ramp=0.1
 friction_ct=10000.0
 **
 ** --- Links: Kopf seitlich (vertikal) ---
@@ -175,6 +177,7 @@ nonMortarSurface=con_conc_l_head_vert
 mortarSurface=con_stl_l_head_vert
 field=displacement
 friction_coefficient=0.3
+friction_ramp=0.1
 friction_ct=10000.0
 **
 ** --- Rechts: Schaft seitlich (vertikal) ---
@@ -183,6 +186,7 @@ nonMortarSurface=con_conc_r_stud_vert
 mortarSurface=con_stl_r_stud_vert
 field=displacement
 friction_coefficient=0.3
+friction_ramp=0.1
 friction_ct=10000.0
 **
 ** --- Rechts: Kopf unten (horizontal) ---
@@ -191,6 +195,7 @@ nonMortarSurface=con_conc_r_head_horiz
 mortarSurface=con_stl_r_head_horiz
 field=displacement
 friction_coefficient=0.3
+friction_ramp=0.1
 friction_ct=10000.0
 **
 ** --- Rechts: Kopf seitlich (vertikal) ---
@@ -199,6 +204,7 @@ nonMortarSurface=con_conc_r_head_vert
 mortarSurface=con_stl_r_head_vert
 field=displacement
 friction_coefficient=0.3
+friction_ramp=0.1
 friction_ct=10000.0
 **
 ** ------------------------------------------------------------------------------
