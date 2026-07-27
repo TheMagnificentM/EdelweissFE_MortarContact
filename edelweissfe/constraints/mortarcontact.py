@@ -432,15 +432,12 @@ class Constraint(ConstraintBase):
         self.recovered_tractions_t = np.zeros((self.nNonMortarNodes, self.nTangentialComponents))
         self.stick_set = np.zeros(self.nNonMortarNodes, dtype=bool)
 
-        if self.use_condensation and self.friction_coefficient > 0.0:
-            # Condensation of the tangential (friction) multipliers (Gitterle
-            # Eq. 86, rows St/Sl) is a later milestone. Fail loudly rather than
-            # silently producing a frictionless result.
-            raise NotImplementedError(
-                "Dual condensation with Coulomb friction (mu > 0) is not implemented yet. "
-                "Use condensation only for frictionless contact, or disable condensation "
-                "to keep the saddle-point formulation."
-            )
+        # Condensation of the tangential (friction) multipliers (Gitterle Eq. 86,
+        # rows St/Sl) is handled generically in condenseMortarMultipliers: the
+        # assembled friction constraint-row Jacobian (dC_t/dz, dC_t/dd) is folded
+        # by z = W d - wf (Eq. 85) and the folded rows are rotated into the slave
+        # displacement DOFs by the local frame Q = [n_I, t_1, .., t_{dim-1}]. No
+        # extra guard needed.
 
         # Single-owner treatment of shared slave nodes (friction only): when
         # decomposed contact surfaces meet at an edge they share slave nodes;
@@ -1352,25 +1349,31 @@ class Constraint(ConstraintBase):
         """
         if not self.use_condensation:
             return None
-        if self.friction_coefficient > 0.0:
-            raise NotImplementedError("Dual condensation with friction is not implemented yet.")
         if not hasattr(self, "current_normals"):
             # applyConstraint has not run yet this analysis; nothing to condense.
             return None
 
         dim = self.dim
+        friction_on = self.friction_coefficient > 0.0
         transform = self._build_condensation_transform()
         multipliers = []
         for I in range(self.nNonMortarNodes):
+            # Tangent frame MUST be the SAME one the tangential constraint rows
+            # (z-dof 1..dim-1) were assembled with in applyConstraint, so the
+            # condensation's local-frame rotation Q = [n_I, t_1, .., t_{dim-1}]
+            # matches the assembled rows: the frozen, symmetry-restricted
+            # current_tangents when friction is active, else _local_frame.
+            if friction_on:
+                tangents = [self.current_tangents[I][c] for c in range(self.nTangentialComponents)]
+            else:
+                tangents = self._local_frame(self.current_normals[I])
             multipliers.append(
                 {
                     "scalarVariables": [self.scalarVariables[dim * I + c] for c in range(dim)],
                     "slaveNode": self.non_mortar_nodes[I],
                     "localIndex": I,
                     "normal": self.current_normals[I],
-                    # local tangent frame, in the SAME order as the tangential
-                    # constraint rows assembled in applyConstraint (z-dof 1..dim-1)
-                    "tangents": self._local_frame(self.current_normals[I]),
+                    "tangents": tangents,
                     "D_diag": float(self.current_D_rowsum[I]),
                     "transform": transform[I],
                     "active": bool(self.active_set[I]),

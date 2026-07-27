@@ -273,26 +273,36 @@ def condenseMortarMultipliers(
         zIdx = np.asarray(op["z_idx"], dtype=int)
         n_I = np.asarray(op["normal"], dtype=np.float64)
         tangents = [np.asarray(t, dtype=np.float64) for t in op["tangents"]]
-        P = Ident - np.outer(n_I, n_I)  # tangential projector
+        # Local frame Q = [n_I, t_1, .., t_{dim-1}] (one vector per local constraint
+        # row: z-dof 0 = normal gap, z-dof 1.. = tangential). Same frame the rows
+        # were assembled with in applyConstraint (so the rotation is consistent).
+        frame = [n_I] + tangents  # dim vectors of length dim
 
-        Wnode = W[k * dim : (k + 1) * dim, :]  # dim x n, the node's recovery rows
-        wf_node = wf[k * dim : (k + 1) * dim]
+        # Condensed constraint rows = the z-FOLDED constraint rows K1[z_c] (step 2
+        # already folded z = W d - wf into every row, so these carry
+        # dC/dd + (dC/dz) . W), with the z-columns stripped -> pure displacement
+        # rows. For frictionless z_c this is exactly n_I (x) Brow_n + P . W as
+        # before; for friction it is the condensed Coulomb stick/slip row
+        # (Gitterle et al. 2010, Eq. 86, rows St/Sl:  P D^-1 K_S - H, whose RHS is
+        # P D^-1 r_S - C_t == the folded residual R1[z_c] below).
+        CR = (K1[zIdx, :] @ Ddisp).tocsr()  # dim x n, folded constraint rows
 
-        # normal-gap constraint row (multiplier row z0), z-columns stripped
-        Brow_n = (Kcsr[[zIdx[0]], :] @ Ddisp).tocsr()  # 1 x n
-
-        slaveBlock = (csr_matrix(n_I.reshape(dim, 1)) @ Brow_n) + (csr_matrix(P) @ Wnode)
+        # slaveBlock = sum_c frame[c] (x) CR[c]: rotate the dim local constraint
+        # rows into the dim global slave displacement DOFs.
+        slaveBlock = csr_matrix((dim, n), dtype=np.float64)
+        for c in range(dim):
+            slaveBlock = slaveBlock + csr_matrix(frame[c].reshape(dim, 1)) @ CR[[c], :]
         slaveBlock = slaveBlock.tocoo()
         rep_rows.extend(sdofs[slaveBlock.row].tolist())
         rep_cols.extend(slaveBlock.col.tolist())
         rep_vals.extend(slaveBlock.data.tolist())
 
-        # RHS: normal gap residual (normal dir) + condensed tangential constraint
-        #   residual (tangential dir): n R[z0] + sum_a t_a R[z_a] + P wf.
-        tang_res = np.zeros(dim)
-        for a, t_a in enumerate(tangents):
-            tang_res += t_a * R[zIdx[1 + a]]
-        R2[sdofs] = n_I * R[zIdx[0]] + tang_res + P @ wf_node
+        # RHS: rotate the folded constraint residuals R1[z_c] (= R[z_c] +
+        # (B^T wf)[z_c]) into the slave DOFs:  R2[sdofs] = sum_c frame[c] R1[z_c].
+        rhs_node = np.zeros(dim)
+        for c in range(dim):
+            rhs_node = rhs_node + frame[c] * R1[zIdx[c]]
+        R2[sdofs] = rhs_node
 
         # recovery rows z_I - W_I d = -wf_I
         for c in range(dim):
