@@ -30,6 +30,7 @@
 # @author: Matthias Neuner
 
 import json
+import os
 
 import numpy as np
 from scipy.sparse import csr_matrix
@@ -64,6 +65,13 @@ kw.addOptionalArg("defaultMaxGrowingIter", "", int, 10)
 kw.addOptionalArg("extrapolation", "", str, "linear")
 kw.addOptionalArg("linsolver", "", str, "pardiso")
 kw.addOptionalArg("linsolverConfigFile", "", str, "")
+# Opt-in line-search (damped Newton) globalisation; default off -> plain full step.
+# NB option keys must be lowercase: the input parser stores them in a
+# CaseInsensitiveDict (keys lowercased), matched case-sensitively in _updateOptions.
+kw.addOptionalArg("linesearch", "", str, "False")
+kw.addOptionalArg("linesearchmaxtrials", "", int, 5)
+kw.addOptionalArg("linesearcharmijoc", "", float, 1e-4)
+kw.addOptionalArg("linesearchalphamin", "", float, 0.03125)
 
 
 class NIST(NonlinearSolverBase):
@@ -86,6 +94,10 @@ class NIST(NonlinearSolverBase):
         "extrapolation": "linear",
         "linsolver": "pardiso",
         "linsolverConfigFile": "",
+        "linesearch": "False",
+        "linesearchmaxtrials": 5,
+        "linesearcharmijoc": 1e-4,
+        "linesearchalphamin": 0.03125,
     }
 
     def __init__(self, jobInfo, journal, **kwargs):
@@ -158,6 +170,22 @@ class NIST(NonlinearSolverBase):
             self._updateOptions(step.actions["options"]["NISTSolver"].options, self.journal)
         except KeyError:
             pass
+
+        # Line-search settings are read robustly and in isolation here. The generic
+        # options action above is keyed by its (auto-generated) NAME, which need not
+        # equal the solver identifier, so that lookup can silently miss - we therefore
+        # scan every option action and pick up only the (opt-in) line-search keys,
+        # without disturbing the established options path (default: line search off).
+        for optionAction in step.actions.get("options", {}).values():
+            optDict = optionAction.options
+            for key in (
+                "linesearch",
+                "linesearchmaxtrials",
+                "linesearcharmijoc",
+                "linesearchalphamin",
+            ):
+                if key in optDict:
+                    self.options[key] = type(self.SolverSpecificOptions[key])(optDict[key])
 
         extrapolation = self.options["extrapolation"]
         linsolverOptions = self.options["linsolverConfigFile"]
@@ -370,6 +398,14 @@ class NIST(NonlinearSolverBase):
         U_np = self.theDofManager.constructDofVector()
         ddU = None
 
+        # Opt-in line-search (damped Newton) globalisation. Default off -> the Newton
+        # update below is byte-identical to the plain full step `dU += ddU`.
+        lineSearch = str(self.options.get("linesearch", "False")).strip().lower() in ("true", "1", "yes", "on")
+        lsMaxTrials = int(self.options.get("linesearchmaxtrials", 5))
+        lsArmijoC = float(self.options.get("linesearcharmijoc", 1e-4))
+        lsAlphaMin = float(self.options.get("linesearchalphamin", 0.03125))
+        K_lineSearch = self.theDofManager.constructVIJSystemMatrix() if lineSearch else None
+
         dirichlets = stepActions["dirichlet"].values()
         nodeforces = stepActions["nodeforces"].values()
         distributedLoads = stepActions["distributedload"].values()
@@ -424,10 +460,136 @@ class NIST(NonlinearSolverBase):
             K_ = self.applyDirichletK(K_, dirichlets)
 
             ddU = self.linearSolve(K_, R)
-            dU += ddU
+
+            if lineSearch and iterationCounter >= 1:
+                # Damped Newton step. Iteration 0 (which applies the Dirichlet
+                # increment / predictor) always takes the full step; from iteration 1
+                # on, backtrack alpha in (0, 1] so the natural merit 1/2||R||^2
+                # decreases (Armijo). R is the current Dirichlet-masked residual.
+                alpha = self._backtrackingLineSearch(
+                    R,
+                    ddU,
+                    U_n,
+                    dU,
+                    model,
+                    stepActions,
+                    timeStep,
+                    K_lineSearch,
+                    lsMaxTrials,
+                    lsArmijoC,
+                    lsAlphaMin,
+                )
+            else:
+                alpha = 1.0
+
+            dU += alpha * ddU
             iterationCounter += 1
 
         return U_np, dU, P, iterationCounter, incrementResidualHistory
+
+    @performancetiming.timeit("line search residual")
+    def _residualForLineSearch(
+        self,
+        U_n: DofVector,
+        dU_trial: DofVector,
+        model: FEModel,
+        stepActions: list,
+        timeStep: TimeStep,
+        K_scratch: VIJSystemMatrix,
+    ) -> DofVector:
+        """Assemble the Dirichlet-masked residual R(U_n + dU_trial) for the line
+        search, WITHOUT advancing any constraint's per-iteration state
+        (``assembleConstraints(..., residualOnly=True)``). Mirrors the residual
+        assembly at the top of :func:`solveIncrement`. Only used when line search is
+        enabled; ``K_scratch`` is a throwaway system matrix (the tangent is not needed
+        for the merit, only the residual).
+        """
+
+        elements = model.elements
+        constraints = model.constraints
+        nodeforces = stepActions["nodeforces"].values()
+        distributedLoads = stepActions["distributedload"].values()
+        bodyForces = stepActions["bodyforce"].values()
+        dirichlets = stepActions["dirichlet"].values()
+
+        R = self.theDofManager.constructDofVector()
+        P = self.theDofManager.constructDofVector()
+        F = self.theDofManager.constructDofVector()
+        PExt = self.theDofManager.constructDofVector()
+        U_np = self.theDofManager.constructDofVector()
+
+        U_np[:] = U_n
+        U_np += dU_trial
+
+        P[:] = K_scratch[:] = F[:] = PExt[:] = 0.0
+
+        P, K_scratch, F = self.computeElements(elements, U_np, dU_trial, P, K_scratch, F, timeStep)
+        PExt, K_scratch = self.assembleLoads(
+            nodeforces, distributedLoads, bodyForces, U_np, PExt, K_scratch, timeStep
+        )
+        PExt, K_scratch = self.assembleConstraints(
+            constraints, U_np, dU_trial, PExt, K_scratch, timeStep, residualOnly=True
+        )
+
+        R[:] = -P
+        R += PExt
+
+        # Same Dirichlet masking as the convergence check in solveIncrement.
+        for dirichlet in dirichlets:
+            R[self.findDirichletIndices(dirichlet)] = 0.0
+
+        return R
+
+    def _backtrackingLineSearch(
+        self,
+        R: DofVector,
+        ddU: DofVector,
+        U_n: DofVector,
+        dU: DofVector,
+        model: FEModel,
+        stepActions: list,
+        timeStep: TimeStep,
+        K_scratch: VIJSystemMatrix,
+        maxTrials: int,
+        c: float,
+        alphaMin: float,
+    ) -> float:
+        """Armijo backtracking on the natural merit m(alpha) = 1/2 ||R(dU + alpha*ddU)||^2.
+
+        The Newton direction ddU = K^{-1} R is a descent direction for m, so a
+        sufficiently small alpha always reduces it. alpha is halved starting from 1
+        until the Armijo condition m <= (1 - c*alpha) m0 holds or alphaMin is reached;
+        if no trial satisfies it, alphaMin is returned (the step is only ever
+        shortened, so it can never make the iterate worse than the full step, and the
+        outer diverging-solution/cutback logic remains the safety net).
+
+        Literature: Deuflhard, *Newton Methods for Nonlinear Problems* (2004), damped
+        Newton; De Luca, Facchinei & Kanzow (1996) for the semismooth-NCP merit.
+        """
+
+        m0 = 0.5 * float(R @ R)
+        alpha = 1.0
+
+        while True:
+            R_trial = self._residualForLineSearch(U_n, dU + alpha * ddU, model, stepActions, timeStep, K_scratch)
+            m = 0.5 * float(R_trial @ R_trial)
+
+            if m <= (1.0 - c * alpha) * m0:
+                break
+            if alpha <= alphaMin or maxTrials <= 0:
+                alpha = max(alpha, alphaMin)
+                break
+
+            maxTrials -= 1
+            alpha = max(0.5 * alpha, alphaMin)
+
+        if os.environ.get("FRICTION_DEBUG"):
+            self.journal.message(
+                "line search: alpha={:.4e}, merit {:.3e} -> {:.3e}".format(alpha, m0, m),
+                self.identification,
+            )
+
+        return alpha
 
     @performancetiming.timeit("distributed loads")
     def computeDistributedLoads(
@@ -588,6 +750,7 @@ class NIST(NonlinearSolverBase):
         PExt: DofVector,
         K: VIJSystemMatrix,
         timeStep: TimeStep,
+        residualOnly: bool = False,
     ) -> tuple[DofVector, VIJSystemMatrix]:
         """Loop over all elements, and evaluate them.
         Is is called by solveStep() in each iteration.
@@ -617,6 +780,12 @@ class NIST(NonlinearSolverBase):
         """
 
         for constraint in constraints.values():
+            # residualOnly: snapshot the constraint's mutable state and restore it
+            # after assembly, so a line-search trial evaluation of the residual does
+            # NOT advance any per-iteration bookkeeping (e.g. the mortar contact
+            # active-set / anti-cycling freeze). Default off -> byte-identical path.
+            snapshot = constraint.snapshotState() if residualOnly else None
+
             Kc = K[constraint]
             Pc = np.zeros(constraint.nDof)
 
@@ -624,6 +793,9 @@ class NIST(NonlinearSolverBase):
 
             # instead of PExt[constraint] += Pe, np.add.at allows for repeated indices
             np.add.at(PExt, PExt.entitiesInDofVector[constraint], Pc)
+
+            if residualOnly:
+                constraint.restoreState(snapshot)
 
         return PExt, K
 

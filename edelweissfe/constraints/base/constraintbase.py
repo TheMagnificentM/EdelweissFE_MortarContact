@@ -118,6 +118,49 @@ class ConstraintBase(ABC, VIJEntityBase):
 
         self.scalarVariables = scalarVariables
 
+    def snapshotState(self) -> dict:
+        """Capture all mutable state of this constraint so a side-effect-free
+        (residual-only) re-evaluation of :func:`applyConstraint` can be rolled back.
+
+        Used by the solver's opt-in line-search globalisation: the merit function is
+        evaluated by re-assembling the residual at trial displacements *within* a
+        single Newton iteration, and those trial evaluations must not advance any
+        per-iteration bookkeeping (e.g. a contact active-set / anti-cycling state
+        machine).
+
+        numpy arrays, sets and dicts are copied because :func:`applyConstraint` may
+        mutate them in place; scalars/immutables and large per-increment-frozen
+        objects (e.g. the model) are kept by reference (they are not mutated within an
+        increment). A constraint without mutable state simply snapshots references.
+
+        Returns
+        -------
+        dict
+            An opaque snapshot to be passed to :func:`restoreState`.
+        """
+
+        snapshot = {}
+        for key, value in self.__dict__.items():
+            if isinstance(value, np.ndarray):
+                snapshot[key] = value.copy()
+            elif isinstance(value, (set, dict)):
+                snapshot[key] = value.copy()
+            else:
+                snapshot[key] = value
+
+        return snapshot
+
+    def restoreState(self, snapshot: dict):
+        """Restore a snapshot produced by :func:`snapshotState`.
+
+        Parameters
+        ----------
+        snapshot
+            The snapshot returned by :func:`snapshotState`.
+        """
+
+        self.__dict__.update(snapshot)
+
     @abstractmethod
     def applyConstraint(
         self,
