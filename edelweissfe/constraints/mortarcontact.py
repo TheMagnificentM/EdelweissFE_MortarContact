@@ -84,6 +84,57 @@ module.addOptionalArg(
     bool,
     False,
 )
+module.addOptionalArg(
+    "friction_coefficient",
+    "Coulomb friction coefficient mu (>= 0.0). mu = 0.0 (default) reproduces the "
+    "frictionless behaviour exactly (the tangential rows stay t_a . z_I = 0).",
+    float,
+    0.0,
+)
+module.addOptionalArg(
+    "friction_ramp",
+    "Ramp the friction coefficient linearly from 0 to its target value over this "
+    "fraction of the step progress, then hold it. 0.0 (default) disables ramping. "
+    "Purely a robustness/continuation device; the converged final state is unaffected.",
+    float,
+    0.0,
+)
+module.addOptionalArg(
+    "friction_cn",
+    "Semi-smooth-Newton complementarity parameter c_n (> 0) entering the augmented "
+    "Coulomb bound b = mu*max(0, p_n + c_n*inv_D*g_sep) (Alart-Curnier; Gitterle et "
+    "al. 2010). Normalized by the nodal mortar weight D_II. Purely algorithmic (no "
+    "effect on the converged solution). Choose at the order of Young's modulus of the "
+    "softer body (Hueber & Wohlmuth 2005; Farah 2018 Sec. 3.5.2, c_n ~ c_t ~ O(E)).",
+    float,
+    1.0e6,
+)
+module.addOptionalArg(
+    "friction_ct",
+    "Semi-smooth-Newton complementarity parameter c_t (> 0) for the tangential set. "
+    "Does NOT change the converged solution, only convergence behaviour (Gitterle et "
+    "al. 2010 p. 555/565). The weighted slip is normalised by D_II, so c_t ~ O(E).",
+    float,
+    1.0,
+)
+module.addOptionalArg(
+    "friction_epsilon",
+    "PDASS friction-activation threshold on the raw normal pressure (MOOSE "
+    "'contact_pressure < epsilon', default 1e-7): friction engages only once p_n "
+    "exceeds it. Prevents a contact-initiation shock. Purely algorithmic.",
+    float,
+    1.0e-7,
+)
+module.addOptionalArg(
+    "frictionSymmetryBCs",
+    "Symmetry / Dirichlet-aware friction restriction (opt-in, default empty). "
+    "Comma-separated '<nodeSet>:<component>' entries (1-based global displacement "
+    "component fixed by a Dirichlet BC, e.g. 'z_symm:3' for u_z = 0). On the listed "
+    "slave nodes friction is restricted out of the fixed direction(s) (no tangential "
+    "traction across the symmetry plane). Must mirror the actual Dirichlet BCs.",
+    str,
+    "",
+)
 
 documentation = [module]
 
@@ -344,20 +395,113 @@ class Constraint(ConstraintBase):
 
         # Opt-in static condensation of the multipliers (solver-level).
         self.use_condensation = bool(kwargs.get("condensation", False))
-        # Coulomb friction is not implemented yet; kept for the friction-ready
-        # interface (the tangential constraint rows become the stick/slip rows).
+
+        # ------------------------------------------------------------------
+        # Coulomb friction (Gitterle, Popp, Gee & Wall 2010; Hueber & Wohlmuth
+        # 2005; MOOSE ComputeFrictionalForceLMMechanicalContact). The tangential
+        # traction is NOT a separate DOF here: in the vectorial formulation it is
+        # the in-plane projection z_t[c] = t_c . z_I of the existing nodal
+        # multiplier vector z_I (the frictionless tangential rows t_a . z_I = 0
+        # are replaced by the Coulomb stick/slip law). Hence, unlike the
+        # scalar-normal formulation, friction adds NO new DOFs and nMultipliers /
+        # _nDof are unchanged.
         self.friction_coefficient = float(
             kwargs.get("friction_coefficient", kwargs.get("frictioncoefficient", 0.0))
         )
+        # Algorithmic complementarity parameters (no effect on the converged
+        # solution; Gitterle 2010 p. 555/565, Alart-Curnier 1991). c_n ~ c_t ~
+        # O(E) is well-scaled (Hueber & Wohlmuth 2005; Farah 2018 Sec. 3.5.2).
+        self.c_t = float(kwargs.get("friction_ct", kwargs.get("frictionct", 1.0)))
+        self.c_n = float(kwargs.get("friction_cn", kwargs.get("frictioncn", 1.0e6)))
+        # PDASS friction-activation threshold on the RAW normal pressure (MOOSE
+        # "contact_pressure < epsilon", default 1e-7): friction engages only once
+        # p_n has built up -> no contact-initiation shock.
+        self.friction_epsilon = float(
+            kwargs.get("friction_epsilon", kwargs.get("frictionepsilon", 1.0e-7))
+        )
+        # Optional mu ramp-up (continuation) over the first `friction_ramp`
+        # fraction of the step progress; frozen within the increment.
+        self.friction_ramp = float(kwargs.get("friction_ramp", kwargs.get("frictionramp", 0.0)))
+
+        # (dim - 1) in-plane tangential components per active slave node (only
+        # meaningful with friction). These index the tangential rows z0+1..z0+dim-1
+        # of the existing vector multiplier; no DOFs are allocated here.
+        self.nTangentialComponents = (self.dim - 1) if self.friction_coefficient > 0.0 else 0
+        # Recovered in-plane tangential tractions z_t (frozen tangent basis) for
+        # output/verification, and the stick/slip classification per slave node.
+        self.recovered_tractions_t = np.zeros((self.nNonMortarNodes, self.nTangentialComponents))
+        self.stick_set = np.zeros(self.nNonMortarNodes, dtype=bool)
+
         if self.use_condensation and self.friction_coefficient > 0.0:
             # Condensation of the tangential (friction) multipliers (Gitterle
-            # Eq. 86, rows St/Sl) is not implemented yet. Fail loudly rather than
+            # Eq. 86, rows St/Sl) is a later milestone. Fail loudly rather than
             # silently producing a frictionless result.
             raise NotImplementedError(
                 "Dual condensation with Coulomb friction (mu > 0) is not implemented yet. "
                 "Use condensation only for frictionless contact, or disable condensation "
                 "to keep the saddle-point formulation."
             )
+
+        # Single-owner treatment of shared slave nodes (friction only): when
+        # decomposed contact surfaces meet at an edge they share slave nodes;
+        # with friction the owner's (normal + dim-1 tangential) constraints
+        # already tie the node completely, so any further contact constraint from
+        # another surface is redundant and makes the saddle system singular.
+        # Once friction is active each shared slave node is owned entirely by the
+        # first surface (input order); others skip it (z_I driven to 0). See
+        # Gitterle 2010; recorded in a model-level registry.
+        self._owns_node = np.ones(self.nNonMortarNodes, dtype=bool)
+        if self.friction_coefficient > 0.0:
+            owners = getattr(model, "_mortarFrictionOwners", None)
+            if owners is None:
+                owners = {}
+                model._mortarFrictionOwners = owners
+            for I, node in enumerate(self.non_mortar_nodes):
+                if owners.setdefault(node, self._name) != self._name:
+                    self._owns_node[I] = False
+
+        # Symmetry / Dirichlet-aware friction restriction. On a slave node whose
+        # displacement is prescribed along a global direction e_k (symmetry
+        # plane u_k = 0), Coulomb friction must not generate a tangential
+        # traction along e_k (by symmetry it is zero; enforcing it fights the
+        # Dirichlet BC and injects a spurious force into the brittle bulk). We
+        # record here which global displacement directions are fixed per slave
+        # node; compute_tangent_basis geometrically removes them from the tangent
+        # frame. Opt-in, self-contained: frictionSymmetryBCs="<nodeSet>:<comp>[,..]"
+        # (1-based global component, must mirror the actual Dirichlet BCs). Empty
+        # -> no restriction (default) so the frictionless path is unchanged.
+        self._node_fixed_dirs = [set() for _ in range(self.nNonMortarNodes)]
+        sym_spec = kwargs.get("frictionSymmetryBCs", kwargs.get("frictionsymmetrybcs", ""))
+        if self.friction_coefficient > 0.0 and sym_spec:
+            node_sets = getattr(model, "nodeSets", {})
+            for pair in str(sym_spec).split(","):
+                pair = pair.strip()
+                if not pair:
+                    continue
+                try:
+                    set_name, comp_str = pair.split(":")
+                    set_name = set_name.strip()
+                    comp = int(comp_str) - 1  # 1-based input -> 0-based direction
+                except ValueError:
+                    raise ValueError(
+                        f"frictionSymmetryBCs entry '{pair}' must be '<nodeSet>:<component>' "
+                        f"(e.g. 'z_symm:3')."
+                    )
+                if not (0 <= comp < model.domainSize):
+                    raise ValueError(
+                        f"frictionSymmetryBCs component in '{pair}' out of range 1..{model.domainSize}."
+                    )
+                if set_name not in node_sets:
+                    raise KeyError(f"frictionSymmetryBCs node set '{set_name}' not found in model.")
+                fixed_nodes = set(node_sets[set_name])
+                for I, node in enumerate(self.non_mortar_nodes):
+                    if node in fixed_nodes:
+                        self._node_fixed_dirs[I].add(comp)
+        # Number of tangential friction components actually enforced per slave
+        # node (<= nTangentialComponents; reduced on symmetry nodes). Recomputed
+        # each increment in compute_tangent_basis; default = all components.
+        self._n_free_tangents = np.full(self.nNonMortarNodes, self.nTangentialComponents, dtype=int)
+
         self._fieldsOnNodes = [[self.field]] * len(self._nodes)
         self.active = True
 
@@ -377,6 +521,13 @@ class Constraint(ConstraintBase):
         self.use_active_set = True
         self.last_timestep_number = -1
         self.current_iteration = 0
+        # PDASS termination + anti-cycling state used by the friction path
+        # (Hueber & Wohlmuth 2005; Bland 1977): the semi-smooth iteration is
+        # frozen for the rest of the increment as soon as its discrete state
+        # (normal active set + friction stick set) REPEATS a state seen this
+        # increment. Reset per increment together with current_iteration.
+        self._seen_states = set()
+        self._set_frozen = False
 
     @property
     def nodes(self) -> list:
@@ -466,6 +617,233 @@ class Constraint(ConstraintBase):
             return [np.array([n_I[1], -n_I[0]])]
         t1, t2 = get_tangent_basis(n_I)
         return [t1, t2]
+
+    def compute_tangent_basis(self, normals: np.ndarray) -> np.ndarray:
+        """Return an orthonormal in-plane tangent basis per slave node, shape
+        (nNonMortarNodes, nTangentialComponents, dim), FROZEN per increment and
+        used by the Coulomb friction rows (z_t[c] = t_c . z_I). In 3D the two
+        vectors t1, t2 span the plane perpendicular to the nodal normal
+        (get_tangent_basis); in 2D the single vector t = [-n_y, n_x]. The basis is
+        arbitrary but consistent per node, sufficient because the Coulomb cone
+        |z_t| <= mu*p_n and the slip increment are expressed in the SAME frame, so
+        |z_t|, |u_t| are frame-invariant. Only used when friction_coefficient > 0.
+        """
+        dim = self.model.domainSize
+        basis = np.zeros((self.nNonMortarNodes, self.nTangentialComponents, dim))
+        if self.nTangentialComponents == 0:
+            return basis
+
+        # A slave node whose area-weighted facet normals cancel gets a zero normal
+        # from compute_normals(); it has no well-defined contact frame. Leave its
+        # tangent basis at zero (friction is skipped for it in applyConstraint) to
+        # avoid the 0/0 = NaN get_tangent_basis would produce (fatal with friction:
+        # it propagates NaN tractions into the bulk).
+        if dim == 3:
+            from edelweissfe.constraints.mortar_geom_utils import get_tangent_basis
+
+            for I in range(self.nNonMortarNodes):
+                if np.dot(normals[I], normals[I]) < 1e-24:
+                    continue  # leave basis[I] = 0
+                t1, t2 = get_tangent_basis(normals[I])
+                basis[I, 0] = t1
+                basis[I, 1] = t2
+        else:  # dim == 2
+            for I in range(self.nNonMortarNodes):
+                n_I = normals[I]
+                if np.dot(n_I, n_I) < 1e-24:
+                    continue  # leave basis[I] = 0
+                basis[I, 0] = np.array([-n_I[1], n_I[0]])
+
+        # Restrict the friction tangent space on symmetry / Dirichlet-fixed nodes
+        # (see __init__): reorder so friction-free directions come first and record
+        # how many tangential components carry friction on each node.
+        self._n_free_tangents = np.full(self.nNonMortarNodes, self.nTangentialComponents, dtype=int)
+        if any(self._node_fixed_dirs):
+            self._restrict_tangents_to_free_space(basis, normals)
+        return basis
+
+    def _restrict_tangents_to_free_space(self, basis: np.ndarray, normals: np.ndarray):
+        """Reorder each slave node's tangent basis so the friction-FREE directions
+        (within the contact tangent plane T AND orthogonal to every Dirichlet-fixed
+        global displacement direction at that node) come first, followed by the
+        FIXED directions, and set ``self._n_free_tangents`` to the number of free
+        directions. Fixed components carry no friction (suppressed in
+        applyConstraint). General: the fixed global axis is projected into the
+        tangent plane, so this works for arbitrarily oriented surfaces and reduces
+        to a plain component drop when a tangent is already axis-aligned. A fixed
+        axis parallel to the contact normal has no in-plane part and leaves the
+        node unrestricted (that direction is carried by the normal contact)."""
+        dim = self.model.domainSize
+        ntc = self.nTangentialComponents
+        tol = 1e-8
+        for I in range(self.nNonMortarNodes):
+            fixed = self._node_fixed_dirs[I]
+            if not fixed:
+                continue
+            n_I = normals[I]
+            if np.dot(n_I, n_I) < 1e-24:
+                continue  # degenerate normal: friction already skipped for this node
+            # Orthonormal basis of the in-plane (tangent) part of the fixed axes.
+            fix_basis = []
+            for k in sorted(fixed):
+                e = np.zeros(dim)
+                e[k] = 1.0
+                p = e - (e @ n_I) * n_I  # project fixed axis onto tangent plane
+                for q in fix_basis:
+                    p = p - (p @ q) * q
+                nrm = np.linalg.norm(p)
+                if nrm > tol:
+                    fix_basis.append(p / nrm)
+            if not fix_basis:
+                continue  # fixed axis parallel to normal -> nothing tangential to drop
+            # Free directions = tangent plane with the fixed in-plane subspace removed.
+            free_basis = []
+            for t in basis[I]:
+                v = t.copy()
+                for q in fix_basis + free_basis:
+                    v = v - (v @ q) * q
+                nrm = np.linalg.norm(v)
+                if nrm > tol:
+                    free_basis.append(v / nrm)
+            new_basis = free_basis + fix_basis  # exactly ntc orthonormal vectors, free first
+            for c in range(min(ntc, len(new_basis))):
+                basis[I, c] = new_basis[c]
+            self._n_free_tangents[I] = len(free_basis)
+
+    def _assemble_friction_tangential_rows(
+        self, I, z0, z_slice, z_I, n_I, t_basis, nzD, nzC, D, C, sf, dim, nSlave,
+        inv_D, sgn_D, p_n, g_sep, mu, du_slave, du_master, PExt, K,
+    ):
+        """Coulomb friction stick/slip constraint rows for the active slave node I,
+        expressed in the VECTORIAL multiplier: the in-plane tangential traction is
+        the projection ``z_t[c] = t_c . z_I`` (NOT a separate DOF), so these rows
+        replace the frictionless rows ``t_a . z_I = 0`` on z0+1..z0+dim-1.
+
+        Semi-smooth PDASS of Gitterle, Popp, Gee & Wall (2010), Eqs. (47) slip
+        increment, (58) trial traction, (60) augmented bound, (61)/(72)-(74)
+        unified stick/slip NCP; identical formulation to MOOSE
+        ComputeFrictionalForceLMMechanicalContact. c_t, c_n are purely algorithmic
+        (no effect on the converged solution; Gitterle p. 555/565, Alart-Curnier
+        1991). Frozen geometry (n, t, D, C) => K is the exact Jacobian of this
+        algebraic residual; verified by the FD tangent check in test9_friction.
+        Sign convention: K[row, col] = -d(PExt[row])/d(col), so K += d(C_t)/d(.).
+
+        The tangential traction FORCE on the bodies is already assembled from the
+        full vector z_I in the equilibrium coupling (+D z_I / -C z_I) of the
+        caller, so it is NOT re-added here - only the constraint rows are set.
+        """
+        ntc = self.nTangentialComponents
+        nf = int(self._n_free_tangents[I])
+        c_t = self.c_t
+
+        # Tangential traction components in the frozen frame: z_t[c] = t_c . z_I.
+        z_t = t_basis @ z_I  # (ntc,)
+
+        # Augmented Coulomb bound b = mu*max(0, p_n + c_n*inv_D*g_sep) (Gitterle
+        # Eq. 60; MOOSE). b_arg SHRINKS under a penetrating transient (removes the
+        # contact-initiation shock); at convergence g_sep -> 0 so b -> mu*p_n.
+        b_arg = p_n + self.c_n * inv_D * g_sep
+        b = mu * max(0.0, b_arg)
+        has_tangent = np.dot(t_basis[0], t_basis[0]) > 0.5
+
+        # PDASS friction gate (MOOSE "contact_pressure < epsilon"): friction acts
+        # only once a genuine normal pressure has built up AND the bound is
+        # positive. At initiation p_n ~ 0 -> enforce zero tangential traction
+        # (z_t = 0), i.e. the frictionless rows, avoiding an initiation shock.
+        if not (p_n > self.friction_epsilon and b > 0.0 and has_tangent):
+            self.recovered_tractions_t[I] = 0.0
+            self.stick_set[I] = False
+            for c in range(ntc):
+                r_t = z0 + 1 + c
+                PExt[r_t] -= float(t_basis[c] @ z_I)
+                K[r_t, z_slice] += t_basis[c]
+            return
+
+        # Derivatives of b. p_n = -lambda_I*sgn_D with lambda_I = n_I . z_I, so
+        #   d(b)/d(z_I) = db_dlam * n_I ,  db_dlam = -mu*sgn_D ;
+        # and via g_sep = sgn_D*g_weak (g_weak depends on displacements through
+        # -D[I,K] n / +C[I,J] n):  d(b)/d(d_sK) = db_disp_fac*D[I,K]*n_I,
+        #   d(b)/d(d_mJ) = -db_disp_fac*C[I,J]*n_I.
+        db_dlam = -mu * sgn_D
+        db_disp_fac = -mu * self.c_n * inv_D * sgn_D
+
+        # Weighted, D_II-normalized tangential slip increment (Gitterle Eq. 47).
+        w_vec = np.zeros(dim)
+        if len(nzD):
+            w_vec += D[I, nzD] @ du_slave[nzD]
+        if len(nzC):
+            w_vec -= C[I, nzC] @ du_master[nzC]
+        u_t = inv_D * (t_basis @ w_vec)  # (ntc,)
+
+        z_tr = z_t + c_t * u_t                       # trial traction (Eq. 58)
+        z_tr_norm = float(np.linalg.norm(z_tr[:nf]))  # Coulomb cone over FREE comps
+
+        # stick / slip = generalized derivative of the max in the unified NCP
+        # (Gitterle Eqs. 72/73), re-evaluated every iteration until the set is
+        # frozen (same freeze signal as the normal active set).
+        if self.active_set_frozen:
+            slip = not self.stick_set[I]
+        else:
+            slip = z_tr_norm > b
+            self.stick_set[I] = not slip
+
+        z_t_rec = z_t.copy()
+        z_t_rec[nf:] = 0.0
+        self.recovered_tractions_t[I] = z_t_rec
+
+        if slip:
+            # SLIP (max = ||z_tr||), Gitterle Eq. 61 (un-normalized form: its
+            # tangent has no bare 1/||z_tr|| term, so it stays bounded at slip
+            # onset; see Gitterle p. 554):  C_t = ||z_tr|| z_t - b z_tr.
+            dir_c = z_tr[:nf] / z_tr_norm      # (nf,) unit trial direction
+            dir_spatial = dir_c @ t_basis[:nf]  # (dim,)
+            C_t = z_tr_norm * z_t - b * z_tr    # (ntc,); only [:nf] used
+            for c in range(nf):
+                r_t = z0 + 1 + c
+                PExt[r_t] -= C_t[c]
+                # d(C_t[c])/d(z_I): via z_t[cp] = t_cp . z_I  and  b(lambda_I).
+                dC_dzI = np.zeros(dim)
+                for cp in range(nf):
+                    dCt_dzt = dir_c[cp] * z_t[c] + ((z_tr_norm - b) if cp == c else 0.0)
+                    dC_dzI += dCt_dzt * t_basis[cp]
+                dC_dzI += (-db_dlam * z_tr[c]) * n_I
+                K[r_t, z_slice] += dC_dzI
+                # d(C_t[c])/d(d): u_t via z_tr (coeff_vec) + b via g_sep.
+                coeff_vec = z_t[c] * dir_spatial - b * t_basis[c]  # (dim,)
+                for K_nd in nzD:
+                    s_dofs = slice(sf * K_nd, sf * K_nd + dim)
+                    K[r_t, s_dofs] += c_t * inv_D * D[I, K_nd] * coeff_vec
+                    K[r_t, s_dofs] += -z_tr[c] * db_disp_fac * D[I, K_nd] * n_I
+                for J in nzC:
+                    m_global = nSlave + J
+                    m_dofs = slice(sf * m_global, sf * m_global + dim)
+                    K[r_t, m_dofs] += -c_t * inv_D * C[I, J] * coeff_vec
+                    K[r_t, m_dofs] += z_tr[c] * db_disp_fac * C[I, J] * n_I
+        else:
+            # STICK (max = b), Gitterle Eq. 74:  C_t = b z_t - b z_tr = -b c_t u_t
+            # -> u_t = 0. z_t cancels (no z_I self-coupling); only b(lambda_I) and
+            # u_t(displacement) remain.
+            C_t = b * z_t - b * z_tr  # (ntc,) == -b c_t u_t; only [:nf] used
+            for c in range(nf):
+                r_t = z0 + 1 + c
+                PExt[r_t] -= C_t[c]
+                K[r_t, z_slice] += (-db_dlam * c_t * u_t[c]) * n_I
+                for K_nd in nzD:
+                    s_dofs = slice(sf * K_nd, sf * K_nd + dim)
+                    K[r_t, s_dofs] += -b * c_t * inv_D * D[I, K_nd] * t_basis[c]
+                    K[r_t, s_dofs] += -c_t * u_t[c] * db_disp_fac * D[I, K_nd] * n_I
+                for J in nzC:
+                    m_global = nSlave + J
+                    m_dofs = slice(sf * m_global, sf * m_global + dim)
+                    K[r_t, m_dofs] += b * c_t * inv_D * C[I, J] * t_basis[c]
+                    K[r_t, m_dofs] += c_t * u_t[c] * db_disp_fac * C[I, J] * n_I
+
+        # Suppress friction on FIXED (symmetry) tangential directions [nf, ntc):
+        # enforce zero tangential traction t_c . z_I = 0 there (well-conditioned).
+        for c in range(nf, ntc):
+            r_t = z0 + 1 + c
+            PExt[r_t] -= float(t_basis[c] @ z_I)
+            K[r_t, z_slice] += t_basis[c]
 
     def compute_local_dual_matrices(self, U_np: np.ndarray = None) -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """Compute the local standard mass matrices M_e, diagonal matrices D_e, and transformation matrices A_e for all non-mortar facets.
@@ -733,6 +1111,12 @@ class Constraint(ConstraintBase):
             self.active_set_frozen = False
             self.active_set_stable_count = 0
             self.current_normals = self.compute_normals(U_np)
+            # Frozen per-node tangent basis for Coulomb friction (all-zero / unused
+            # when mu = 0). Frozen together with the normals and mortar matrices so
+            # the assembled tangent stiffness is the exact Jacobian of the frozen-
+            # geometry residual (Gitterle et al. 2010). Also (re)computes
+            # self._n_free_tangents for symmetry-restricted nodes.
+            self.current_tangents = self.compute_tangent_basis(self.current_normals)
             D_full, C_full = self.compute_mortar_coupling_matrices(U_np)
             # The FULL (element-locally sparse) D matrix is used for forces,
             # stiffness and weak gap. With the basis transformation T_e the
@@ -792,6 +1176,19 @@ class Constraint(ConstraintBase):
         # (stability-based freezing, see the increment-reset block above).
         active_set_before = self.active_set.copy()
 
+        # Coulomb friction coefficient with optional ramp-up (continuation),
+        # frozen within the increment (stepProgress is constant here).
+        mu = self.friction_coefficient
+        if self.friction_ramp > 0.0 and mu > 0.0:
+            prog = max(0.0, float(timeStep.stepProgress))
+            mu = mu * min(1.0, prog / self.friction_ramp)
+        if mu > 0.0:
+            # Displacement INCREMENT (dU since the start of the increment) for the
+            # weighted tangential slip u_t; slaves first, then masters.
+            du_disp = dU[: sf * nNodes].reshape(nNodes, sf)[:, :dim]
+            du_slave = du_disp[:nSlave]
+            du_master = du_disp[nSlave:]
+
         for I in range(nSlave):
             z0 = idx_LM_0 + dim * I
             z_slice = slice(z0, z0 + dim)
@@ -809,9 +1206,13 @@ class Constraint(ConstraintBase):
                 g_I_weak += C[I, nzC] @ (x_master[nzC] @ n_I)
 
             lambda_I = float(z_I @ n_I)  # normal pressure component z_I . n_I
+            sgn_D = np.sign(self.current_D_rowsum[I])
+            D_II = self.current_D_rowsum[I]
+            inv_D = 1.0 / D_II if abs(D_II) > 1e-30 else 0.0
+            p_n = -lambda_I * sgn_D   # physical normal pressure (>= 0 in contact)
+            g_sep = g_I_weak * sgn_D  # separation gap (>0 open, <0 penetrating)
 
             if self.use_active_set and not self.active_set_frozen:
-                sgn_D = np.sign(self.current_D_rowsum[I])
                 if self.active_set[I]:
                     if lambda_I * sgn_D > 1e-10:
                         self.active_set[I] = False
@@ -844,16 +1245,29 @@ class Constraint(ConstraintBase):
                     m_dofs = slice(sf * m_global, sf * m_global + dim)
                     K[z0, m_dofs] += C[I, J] * n_I
 
-                # --- Constraint rows z0+1..z0+dim-1: tangential traction = 0 ---
-                for a, t_a in enumerate(self._local_frame(n_I)):
-                    r_t = z0 + 1 + a
-                    PExt[r_t] -= float(t_a @ z_I)
-                    K[r_t, z_slice] += t_a
+                # --- Constraint rows z0+1..z0+dim-1: tangential ---
+                if mu > 0.0:
+                    # Coulomb friction (stick/slip) in the vectorial frame:
+                    # z_t[c] = t_c . z_I. Replaces the frictionless rows.
+                    self._assemble_friction_tangential_rows(
+                        I, z0, z_slice, z_I, n_I, self.current_tangents[I],
+                        nzD, nzC, D, C, sf, dim, nSlave,
+                        inv_D, sgn_D, p_n, g_sep, mu, du_slave, du_master, PExt, K,
+                    )
+                else:
+                    # Frictionless: zero tangential traction t_a . z_I = 0.
+                    for a, t_a in enumerate(self._local_frame(n_I)):
+                        r_t = z0 + 1 + a
+                        PExt[r_t] -= float(t_a @ z_I)
+                        K[r_t, z_slice] += t_a
             else:
                 # Inactive: z_I = 0 (all components -> normal and tangential)
                 for c in range(dim):
                     PExt[z0 + c] -= z_I[c]
                     K[z0 + c, z0 + c] += 1.0
+                if mu > 0.0:
+                    self.recovered_tractions_t[I] = 0.0
+                    self.stick_set[I] = False
 
         # Stability-based freezing of the active set: once the set is unchanged
         # for two consecutive iterations (and past a small warm-up), freeze it so
