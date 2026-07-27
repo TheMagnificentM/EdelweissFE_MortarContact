@@ -96,13 +96,18 @@ module.addOptionalArg(
 )
 module.addOptionalArg(
     "friction_cn",
-    "Semi-smooth-Newton complementarity parameter c_n (> 0) for the augmented "
-    "normal pressure entering the Coulomb friction bound b = mu*max(0, p_n + c_n*g). "
-    "Large c_n (default 1e6, normalized by the nodal mortar weight D_II) keeps b "
-    "well scaled during the Newton iterations so the stuck-node tangential "
-    "multiplier is well determined (MOOSE ComputeFrictionalForceLMMechanicalContact; "
-    "Alart-Curnier augmented Lagrangian). Purely algorithmic - no effect on the "
-    "converged solution (g -> 0 at convergence).",
+    "Semi-smooth-Newton complementarity parameter c_n (> 0). It enters BOTH the "
+    "normal semi-smooth active-set indicator s_n = p_n - c_n*inv_D*g_sep (active iff "
+    "s_n > 0; MOOSE ComputeWeightedGapLMMechanicalContact / Gitterle et al. 2010 "
+    "Eq. 55) AND the augmented Coulomb bound b = mu*max(0, p_n + c_n*inv_D*g_sep) "
+    "(Alart-Curnier). It is normalized by the nodal mortar weight D_II so that "
+    "c_n*inv_D*g_sep is a pressure directly comparable to p_n. Purely algorithmic - "
+    "no effect on the converged solution (g -> 0 at convergence). It MUST be chosen "
+    "at the order of Young's modulus of the softer contacting body (Hueber & Wohlmuth "
+    "2005; Farah 2018 Sec. 3.5.2, c_n ~ c_t ~ O(E)): a too-large c_n makes the normal "
+    "indicator gap-sign dominated, so near-boundary nodes flip active/inactive every "
+    "iteration -> active-set chattering / non-convergence. Set it explicitly per "
+    "problem; the code default below is only a fallback and should be overridden.",
     float,
     1.0e6,
 )
@@ -117,6 +122,29 @@ module.addOptionalArg(
     "Sec. 3.5.2).",
     float,
     1.0,
+)
+module.addOptionalArg(
+    "friction_epsilon",
+    "PDASS friction-activation threshold on the RAW normal contact pressure "
+    "(MOOSE ComputeFrictionalForceLMMechanicalContact 'contact_pressure < epsilon' "
+    "branch, default 1e-7): friction is enforced on a slave node only once its "
+    "normal pressure p_n exceeds this value. Prevents a contact-initiation shock "
+    "(at first contact p_n ~ 0, so friction stays off). Purely algorithmic.",
+    float,
+    1.0e-7,
+)
+module.addOptionalArg(
+    "frictionSymmetryBCs",
+    "Symmetry / Dirichlet-aware friction restriction (opt-in, default empty). "
+    "Comma-separated list of '<nodeSet>:<component>' entries, where component is "
+    "the 1-based global displacement component that a Dirichlet BC fixes on that "
+    "node set (e.g. 'z_symm:3' for u_z = 0 on a z-symmetry plane). On the listed "
+    "slave nodes the Coulomb friction is restricted out of the fixed global "
+    "direction(s) (no tangential traction across the symmetry plane), which "
+    "otherwise fights the Dirichlet BC and injects a spurious force into the bulk. "
+    "Must mirror the actual Dirichlet BCs. Only relevant when friction is active.",
+    str,
+    "",
 )
 
 documentation = [module]
@@ -312,6 +340,18 @@ class Constraint(ConstraintBase):
         )
         self.c_t = float(kwargs.get("friction_ct", kwargs.get("frictionct", 1.0)))
         self.c_n = float(kwargs.get("friction_cn", kwargs.get("frictioncn", 1.0e6)))
+        # PDASS friction-activation threshold on the RAW normal contact pressure:
+        # friction is enforced on a slave node only once its normal pressure
+        # p_n exceeds this epsilon, exactly as in MOOSE
+        # ComputeFrictionalForceLMMechanicalContact (the "contact_pressure <
+        # epsilon" branch, default 1e-7). This is the semi-smooth friction gate
+        # and it prevents a contact-initiation shock: at first contact p_n ~ 0,
+        # so friction stays off (z_t = 0) until a genuine normal pressure has
+        # built up, instead of being triggered by the transient penetration via
+        # the augmented bound.
+        self.friction_epsilon = float(
+            kwargs.get("friction_epsilon", kwargs.get("frictionepsilon", 1.0e-7))
+        )
         self.friction_ramp = float(kwargs.get("friction_ramp", kwargs.get("frictionramp", 0.0)))
 
         non_mortar_surf_name = kwargs["nonMortarSurface"]
@@ -410,6 +450,58 @@ class Constraint(ConstraintBase):
             for I, node in enumerate(self.non_mortar_nodes):
                 if owners.setdefault(node, self._name) != self._name:
                     self._owns_node[I] = False
+        # ------------------------------------------------------------------
+        # Symmetry / Dirichlet-aware friction restriction.
+        # On a slave node whose displacement is prescribed in some global
+        # direction e_k (a symmetry plane: u_k = 0), Coulomb friction must NOT
+        # generate a tangential traction along e_k: by symmetry the out-of-plane
+        # tangential slip and traction are exactly zero, and enforcing a friction
+        # constraint there fights the Dirichlet BC (the slave displacement row is
+        # overwritten by applyDirichletK), injecting a spurious tangential force
+        # into the brittle bulk. The allowed friction directions on such a node
+        # are therefore T ∩ span{e_k}^⊥ (T = contact tangent plane). This is
+        # applied geometrically in compute_tangent_basis (works for arbitrarily
+        # oriented surfaces, not only axis-aligned ones); here we only record,
+        # per slave node, which global displacement directions are fixed.
+        #
+        # Declared self-contained on the *constraint block (opt-in, no solver
+        # coupling) via  frictionSymmetryBCs = "<nodeSet>:<component>[, ...]"
+        # where component is the 1-based global displacement component that the
+        # Dirichlet BC fixes on that node set (e.g. "z_symm:3" for u_z = 0). Must
+        # mirror the actual Dirichlet BCs. Empty -> no restriction (default), so
+        # the frictionless path and existing friction tests are unchanged.
+        self._node_fixed_dirs = [set() for _ in range(self.nNonMortarNodes)]
+        sym_spec = kwargs.get("frictionSymmetryBCs", kwargs.get("frictionsymmetrybcs", ""))
+        if self.friction_coefficient > 0.0 and sym_spec:
+            node_sets = getattr(model, "nodeSets", {})
+            for pair in str(sym_spec).split(","):
+                pair = pair.strip()
+                if not pair:
+                    continue
+                try:
+                    set_name, comp_str = pair.split(":")
+                    set_name = set_name.strip()
+                    comp = int(comp_str) - 1  # 1-based input -> 0-based direction
+                except ValueError:
+                    raise ValueError(
+                        f"frictionSymmetryBCs entry '{pair}' must be '<nodeSet>:<component>' "
+                        f"(e.g. 'z_symm:3')."
+                    )
+                if not (0 <= comp < model.domainSize):
+                    raise ValueError(
+                        f"frictionSymmetryBCs component in '{pair}' out of range 1..{model.domainSize}."
+                    )
+                if set_name not in node_sets:
+                    raise KeyError(f"frictionSymmetryBCs node set '{set_name}' not found in model.")
+                fixed_nodes = set(node_sets[set_name])
+                for I, node in enumerate(self.non_mortar_nodes):
+                    if node in fixed_nodes:
+                        self._node_fixed_dirs[I].add(comp)
+        # Number of tangential friction components actually enforced per slave
+        # node (<= nTangentialComponents; reduced on symmetry nodes). Recomputed
+        # each increment in compute_tangent_basis; default = all components.
+        self._n_free_tangents = np.full(self.nNonMortarNodes, self.nTangentialComponents, dtype=int)
+
         self._fieldsOnNodes = [[self.field]] * len(self._nodes)
         self.active = True
 
@@ -429,6 +521,16 @@ class Constraint(ConstraintBase):
         self.use_active_set = True
         self.last_timestep_number = -1
         self.current_iteration = 0
+        # PDASS termination + anti-cycling state (Hueber & Wohlmuth 2005;
+        # Bland 1977). The semi-smooth active-set iteration is frozen for the
+        # rest of the increment as soon as its discrete state (normal active set
+        # + friction stick set) REPEATS a state already seen in this increment -
+        # this terminates both the trivial "unchanged from the previous
+        # iteration" convergence and any longer active-set limit cycle (see
+        # applyConstraint). _seen_states holds the states visited this increment;
+        # reset per increment together with current_iteration.
+        self._seen_states = set()
+        self._set_frozen = False
 
     @property
     def nodes(self) -> list:
@@ -483,7 +585,62 @@ class Constraint(ConstraintBase):
                 if np.dot(n_I, n_I) < 1e-24:
                     continue  # leave basis[I] = 0
                 basis[I, 0] = np.array([-n_I[1], n_I[0]])
+
+        # Restrict the friction tangent space on symmetry / Dirichlet-fixed nodes
+        # (see __init__): reorder so friction-free directions come first and
+        # record how many tangential components carry friction on each node.
+        self._n_free_tangents = np.full(self.nNonMortarNodes, self.nTangentialComponents, dtype=int)
+        if any(self._node_fixed_dirs):
+            self._restrict_tangents_to_free_space(basis, normals)
         return basis
+
+    def _restrict_tangents_to_free_space(self, basis: np.ndarray, normals: np.ndarray):
+        """Reorder each slave node's tangent basis so the friction-FREE directions
+        (within the contact tangent plane T AND orthogonal to every Dirichlet-fixed
+        global displacement direction at that node) come first, followed by the
+        FIXED directions, and set ``self._n_free_tangents`` to the number of free
+        directions. Fixed components carry no friction (suppressed in
+        applyConstraint). General: the fixed global axis is projected into the
+        tangent plane, so this works for arbitrarily oriented surfaces and reduces
+        to a plain component drop when a tangent is already axis-aligned. A fixed
+        axis parallel to the contact normal has no in-plane part and leaves the
+        node unrestricted (that direction is carried by the normal contact)."""
+        dim = self.model.domainSize
+        ntc = self.nTangentialComponents
+        tol = 1e-8
+        for I in range(self.nNonMortarNodes):
+            fixed = self._node_fixed_dirs[I]
+            if not fixed:
+                continue
+            n_I = normals[I]
+            if np.dot(n_I, n_I) < 1e-24:
+                continue  # degenerate normal: friction already skipped for this node
+            # Orthonormal basis of the in-plane (tangent) part of the fixed axes.
+            fix_basis = []
+            for k in sorted(fixed):
+                e = np.zeros(dim)
+                e[k] = 1.0
+                p = e - (e @ n_I) * n_I  # project fixed axis onto tangent plane
+                for q in fix_basis:
+                    p = p - (p @ q) * q
+                nrm = np.linalg.norm(p)
+                if nrm > tol:
+                    fix_basis.append(p / nrm)
+            if not fix_basis:
+                continue  # fixed axis parallel to normal -> nothing tangential to drop
+            # Free directions = tangent plane with the fixed in-plane subspace removed.
+            free_basis = []
+            for t in basis[I]:
+                v = t.copy()
+                for q in fix_basis + free_basis:
+                    v = v - (v @ q) * q
+                nrm = np.linalg.norm(v)
+                if nrm > tol:
+                    free_basis.append(v / nrm)
+            new_basis = free_basis + fix_basis  # exactly ntc orthonormal vectors, free first
+            for c in range(min(ntc, len(new_basis))):
+                basis[I, c] = new_basis[c]
+            self._n_free_tangents[I] = len(free_basis)
 
     def compute_normals(self, U_np: np.ndarray = None) -> np.ndarray:
         """Compute area-weighted outward-pointing unit normal vectors for all non-mortar nodes.
@@ -798,6 +955,11 @@ class Constraint(ConstraintBase):
         if timeStep.number != self.last_timestep_number or not hasattr(self, "current_normals"):
             self.last_timestep_number = timeStep.number
             self.current_iteration = 0
+            # New increment: geometry (normals, D, C) is re-frozen below, so the
+            # PDASS set is re-opened and must re-converge from scratch this
+            # increment (the frozen sets from the previous increment are stale).
+            self._seen_states = set()
+            self._set_frozen = False
             self.current_normals = self.compute_normals(U_np)
             # Frozen per-node tangent basis for Coulomb friction (empty if mu = 0).
             # Frozen together with the normals and the mortar matrices, so the
@@ -904,15 +1066,55 @@ class Constraint(ConstraintBase):
             if len(nzC):
                 g_I_weak += C[I, nzC] @ (x_master[nzC] @ n_I)
 
-            if self.use_active_set:
-                if self.current_iteration < 5:
-                    sgn_D = np.sign(self.current_D_rowsum[I])
-                    if self.active_set[I]:
-                        if lambda_I * sgn_D > 1e-10:
-                            self.active_set[I] = False
-                    else:
-                        if g_I_weak * sgn_D < -1e-10:
-                            self.active_set[I] = True
+            # ----------------------------------------------------------------
+            # Semi-smooth normal complementarity (primal-dual active set) of
+            # Hueber & Wohlmuth (2005) / Gitterle et al. (2010, Eq. 55), fully
+            # consistent with MOOSE ComputeWeightedGapLMMechanicalContact. The
+            # nodal normal contact NCP function is
+            #     C_n = z_n - max(0, z_n - c_n * g_tilde),
+            # whose generalized derivative selects, RE-EVALUATED EVERY ITERATION:
+            #     active   (z_n - c_n g_tilde > 0):  constraint  g_weak = 0,
+            #     inactive (z_n - c_n g_tilde <= 0): constraint  lambda = 0.
+            # In this code's sign convention z_n = p_n (physical pressure >= 0)
+            # and g_tilde = inv_D * g_sep is the D_II-normalized weighted
+            # (separation) gap, so the semi-smooth indicator is s_normal =
+            # p_n - c_n*g_tilde (below). NOTE it grows under penetration so the
+            # node activates. This is a DIFFERENT quantity from the Coulomb
+            # friction bound argument b_arg = p_n + c_n*g_tilde (opposite sign of
+            # the c_n term), which instead shrinks under a penetrating transient;
+            # both come straight from MOOSE (normal min-NCP vs frictional bound).
+            # The heuristic sign-threshold set, frozen after 5 iterations, used a
+            # different (non-semi-smooth) update than
+            # the tangential NCP and the two fought each other at contact
+            # initiation. c_n is purely algorithmic: at convergence g_weak -> 0,
+            # the indicator reduces to z_n > 0 and the converged solution is
+            # c_n-independent (Hueber & Wohlmuth 2005; Farah 2018 Sec. 3.5.2).
+            # The active-branch residual is kept as the unscaled weighted gap
+            # g_weak (not c_n*g_weak): scaling a single row of the linear system
+            # by the constant c_n leaves the Newton solution unchanged, so this
+            # is identical to the c_n-scaled MOOSE row while preserving the
+            # validated symmetric saddle-point structure (K[disp,LM]=K[LM,disp]).
+            # ----------------------------------------------------------------
+            sgn_D = np.sign(self.current_D_rowsum[I])
+            D_II = self.current_D_rowsum[I]
+            inv_D = 1.0 / D_II if abs(D_II) > 1e-30 else 0.0
+            p_n = -lambda_I * sgn_D  # physical normal pressure (>= 0 in contact)
+            g_sep = g_I_weak * sgn_D  # separation gap (>0 open, <0 penetrating)
+            # Normal semi-smooth indicator s_n = z_n - c_n*g_tilde (MOOSE
+            # ComputeWeightedGapLMMechanicalContact: min(lm, c*weighted_gap),
+            # active iff lm - c*weighted_gap > 0). NOTE the sign: under
+            # penetration (g_sep < 0) s_n grows, so the node activates - this is
+            # the OPPOSITE sign of the Coulomb friction bound argument below
+            # (b_arg = z_n + c_n*g_tilde), which must instead SHRINK under a
+            # penetrating transient; the two are distinct quantities.
+            s_normal = p_n - self.c_n * inv_D * g_sep
+
+            # PDASS: re-evaluate the set every iteration (semi-smooth Newton)
+            # UNTIL it has stabilized, then use the frozen set (see the freeze
+            # block after the node loop). self._set_frozen is checked here so a
+            # frozen node keeps its classification for the rest of the increment.
+            if self.use_active_set and not self._set_frozen:
+                self.active_set[I] = s_normal > 0.0
 
             self.recovered_lambdas[I] = lambda_I if self.active_set[I] else 0.0
 
@@ -944,9 +1146,16 @@ class Constraint(ConstraintBase):
             # semi-smooth Newton method with consistent linearization",
             # Int. J. Numer. Methods Eng. 84:543-571.
             #
+            # This is the exact PDASS friction of MOOSE
+            # ComputeFrictionalForceLMMechanicalContact (semi-smooth Newton):
+            # friction is gated on the raw normal pressure (p_n > friction_epsilon,
+            # MOOSE's "contact_pressure < epsilon" branch), and once engaged uses
+            # the unified NCP  max(b, ||z_tr||) z_t - b z_tr  with the augmented
+            # Coulomb bound  b = mu*max(0, p_n + c_n*g_tilde)  (Eq. 60).
+            #
             # Trial traction  z_tr = z_t + c_t * u_t  (Gitterle Eq. 58), with the
-            # physical (D_II-normalized) slip increment u_t (Eq. 47) and friction
-            # bound  b = mu * p_n. Node classified by ||z_tr|| vs b (Eqs. 72/73):
+            # physical (D_II-normalized) slip increment u_t (Eq. 47). Node
+            # classified by ||z_tr|| vs b (Eqs. 72/73):
             #   stick (||z_tr|| <= b): exact constraint  C_t = u_t = 0  (Eq. 54/74),
             #        z_t is its Lagrange multiplier (tangential analog of g_weak=0).
             #   slip  (||z_tr|| >  b): C_t = z_t - b * z_tr/||z_tr||  (Eq. 61 divided
@@ -956,9 +1165,8 @@ class Constraint(ConstraintBase):
             # purely algorithmic parameter with no effect on the converged solution
             # (Gitterle p. 555/565). The stick row (zero z_t-diagonal, saddle-point)
             # mirrors the well-conditioned normal row; the slip row has an O(1)
-            # z_t-diagonal. The nested c_n*g_tilde term of the bound (Eq. 60) is
-            # dropped: it vanishes at convergence (normal row drives g_weak -> 0) and
-            # active/inactive is decided by the normal active set above.
+            # z_t-diagonal. c_n is likewise algorithmic: at convergence g_tilde -> 0
+            # so b -> mu*p_n, the exact Coulomb bound, independent of c_n.
             # p_n is the PHYSICAL (>= 0) normal pressure; in this code's sign
             # convention p_n = -lambda_I*sgn_D for an active (compressed) node.
             # Frozen geometry (n, t, D, C) => K is the exact Jacobian of this
@@ -969,40 +1177,56 @@ class Constraint(ConstraintBase):
                 idx_TAU_I0 = idx_TAU_0 + I * ntc
                 t_I = tangents[I]  # (ntc, dim) orthonormal in-plane basis
                 z_t = np.array([U_np[idx_TAU_I0 + c] for c in range(ntc)])
+                # Number of FREE tangential friction components on this node
+                # (< ntc on symmetry / Dirichlet-fixed nodes). The tangent basis
+                # was reordered so components [0, nf) are the friction-carrying
+                # (free) directions and [nf, ntc) act along fixed displacement
+                # directions and carry NO friction (suppressed below). See
+                # _restrict_tangents_to_free_space.
+                nf = int(self._n_free_tangents[I])
 
-                sgn_D = np.sign(self.current_D_rowsum[I])
-                D_II = self.current_D_rowsum[I]
-                inv_D = 1.0 / D_II if abs(D_II) > 1e-30 else 0.0
-                p_n = -lambda_I * sgn_D  # physical normal pressure
-
-                # Augmented normal pressure in the Coulomb bound (Alart-Curnier /
-                # MOOSE ComputeFrictionalForceLMMechanicalContact):
-                #   b = mu * max(0, p_n + c_n * penetration),
-                # with the penetration given by the (D_II-normalized) weighted gap:
-                # g_sep = g_weak*sgn_D is the separation gap (>0 open, <0 penetrating),
-                # so -c_n*inv_D*g_sep = c_n*penetration. The large c_n keeps b well
-                # scaled during the Newton iterations (crucial: with b = mu*p_n only,
-                # p_n is tiny early and the stuck-node row -b*c_t*u_t is so weakly
-                # scaled that its multiplier z_t is left ~0). At convergence g -> 0 so
-                # b -> mu*p_n; c_n is purely algorithmic (no effect on the solution).
-                g_sep = g_I_weak * sgn_D
-                p_aug = p_n - self.c_n * inv_D * g_sep
-                b = mu * max(0.0, p_aug)
+                # Augmented Coulomb bound, EXACTLY MOOSE
+                # ComputeFrictionalForceLMMechanicalContact (line ~231):
+                #   b = mu * max(0, contact_pressure + c*weighted_gap)
+                #     = mu * max(0, p_n + c_n*inv_D*g_sep)  =:  mu*max(0, b_arg).
+                # sgn_D, D_II, inv_D, p_n, g_sep are shared with the normal set.
+                # CRUCIAL sign difference to the normal indicator s_normal:
+                # s_normal = p_n - c_n*inv_D*g_sep GROWS under penetration (g_sep<0)
+                # so the node ACTIVATES, whereas the bound argument
+                #   b_arg = p_n + c_n*inv_D*g_sep
+                # SHRINKS under penetration (and is clamped by max(0, .)). During a
+                # penetrating transient (node too deep, p_n still small) b_arg -> 0,
+                # so the friction bound vanishes and no spurious tangential traction
+                # is generated - this is what removes the contact-initiation shock.
+                # At convergence g_sep -> 0 so b -> mu*p_n, the exact Coulomb bound;
+                # c_n is purely algorithmic (Alart-Curnier; Gitterle 2010 Eq. 60).
+                b_arg = p_n + self.c_n * inv_D * g_sep
+                b = mu * max(0.0, b_arg)
 
                 # A node with a degenerate (zero) nodal normal has no valid
                 # tangent frame (t_I == 0); skip friction for it (enforce z_t = 0)
                 # to avoid a zero/NaN tangential row.
                 has_tangent = np.dot(t_I[0], t_I[0]) > 0.5
 
-                if self.active_set[I] and b > 0.0 and has_tangent:
-                    # b = mu*p_aug here (p_aug > 0). Derivatives of b:
-                    #   d(b)/d(lambda_I) = -mu*sgn_D
+                # PDASS friction gate (MOOSE line ~221 "contact_pressure <
+                # epsilon"): friction is enforced only once a genuine normal
+                # pressure has built up (p_n > friction_epsilon) AND the bound is
+                # positive (b > 0, i.e. b_arg > 0). At contact initiation p_n ~ 0
+                # so this is false and z_t is driven to 0 (else-branch below) -
+                # no initiation shock. b > 0 additionally guards the stick/slip
+                # rows against a degenerate (zero) bound.
+                if self.active_set[I] and p_n > self.friction_epsilon and b > 0.0 and has_tangent:
+                    # b = mu*b_arg here (b_arg > 0), b_arg = p_n + c_n*inv_D*g_sep.
+                    # Derivatives of b:
+                    #   d(b)/d(lambda_I) = -mu*sgn_D           (g_sep has no lambda dep.)
                     #   d(b)/d(u): via g_sep = sgn_D*g_weak, d(g_weak)/d(d_s_K) = -D[I,K] n,
                     #     d(g_weak)/d(d_m_J) = C[I,J] n  =>
                     #     d(b)/d(d_s_K) =  db_disp_fac * D[I,K] * n_I  (dim-vector)
                     #     d(b)/d(d_m_J) = -db_disp_fac * C[I,J] * n_I
+                    # Sign of db_disp_fac is NEGATIVE (opposite of the old wrong-signed
+                    # bound), matching b_arg = p_n + c_n*inv_D*g_sep.
                     db_dlam = -mu * sgn_D
-                    db_disp_fac = mu * self.c_n * inv_D * sgn_D  # scalar
+                    db_disp_fac = -mu * self.c_n * inv_D * sgn_D  # scalar
 
                     # Weighted tangential slip increment (Gitterle Eq. 47), normalized
                     # by D_II so it is the physical relative slip and c_t ~ E is
@@ -1015,19 +1239,27 @@ class Constraint(ConstraintBase):
                         w_vec -= C[I, nzC] @ du_master[nzC]
                     u_t = inv_D * (t_I @ w_vec)  # (ntc,) physical slip increment
 
-                    z_tr = z_t + self.c_t * u_t  # trial tangential traction
-                    z_tr_norm = np.linalg.norm(z_tr)
+                    z_tr = z_t + self.c_t * u_t  # trial tangential traction (ntc,)
+                    z_tr_norm = np.linalg.norm(z_tr[:nf])  # Coulomb cone over FREE comps only
 
                     # stick / slip branch = generalized derivative of the max in the
                     # unified NCP (Gitterle Eqs. 72/73). Evaluated fresh every
-                    # iteration (semi-smooth Newton), like MOOSE; NOT frozen.
-                    slip = z_tr_norm > b
-                    self.stick_set[I] = not slip
+                    # iteration (semi-smooth Newton), like MOOSE, UNTIL the PDASS
+                    # set has stabilized; once frozen the stored stick/slip
+                    # classification is reused (same freeze as the normal set, so
+                    # both stop switching together - see the freeze block after
+                    # the node loop).
+                    if self._set_frozen:
+                        slip = not self.stick_set[I]
+                    else:
+                        slip = z_tr_norm > b
+                        self.stick_set[I] = not slip
 
                     # Friction nodal force: same structure as the normal force
                     # lambda*D*n, with the normal n replaced by each tangent
-                    # basis vector t_c. Applied for both stick and slip.
-                    for c in range(ntc):
+                    # basis vector t_c. Applied for both stick and slip, over the
+                    # FREE tangential components only.
+                    for c in range(nf):
                         idx_TAU_Ic = idx_TAU_I0 + c
                         t_c = t_I[c]
                         for K_nd in nzD:
@@ -1052,14 +1284,14 @@ class Constraint(ConstraintBase):
                         # instead carries d(dir)/du ~ 1/||z_tr||, which blows the tangent
                         # up for just-slipping nodes and corrupts the displacement
                         # solution (breaks the bulk return mapping). See Gitterle p. 554.
-                        dir_c = z_tr / z_tr_norm      # (ntc,) unit trial direction
-                        dir_spatial = dir_c @ t_I     # (dim,)
-                        C_t = z_tr_norm * z_t - b * z_tr  # (ntc,)
-                        for c in range(ntc):
+                        dir_c = z_tr[:nf] / z_tr_norm   # (nf,) unit trial direction
+                        dir_spatial = dir_c @ t_I[:nf]  # (dim,)
+                        C_t = z_tr_norm * z_t - b * z_tr  # (ntc,); only [:nf] used
+                        for c in range(nf):
                             idx_TAU_Ic = idx_TAU_I0 + c
                             PExt[idx_TAU_Ic] -= C_t[c]
                             # d(C_t[c])/d(z_t[cp]) = dir_c[cp] z_t[c] + (||z_tr|| - b) delta
-                            for cp in range(ntc):
+                            for cp in range(nf):
                                 idx_TAU_Icp = idx_TAU_I0 + cp
                                 dCt_dzt = dir_c[cp] * z_t[c] + ((z_tr_norm - b) if cp == c else 0.0)
                                 K[idx_TAU_Ic, idx_TAU_Icp] += dCt_dzt
@@ -1087,8 +1319,8 @@ class Constraint(ConstraintBase):
                         # z_t has no self-diagonal here (d/dz_t = b - b = 0): a saddle row,
                         # like the normal LM. b depends on lambda (via p_n), giving the
                         # d/dlambda coupling below.
-                        C_t = b * z_t - b * z_tr  # (ntc,) == -b c_t u_t
-                        for c in range(ntc):
+                        C_t = b * z_t - b * z_tr  # (ntc,) == -b c_t u_t; only [:nf] used
+                        for c in range(nf):
                             idx_TAU_Ic = idx_TAU_I0 + c
                             PExt[idx_TAU_Ic] -= C_t[c]
                             # d(C_t[c])/d(lambda) = db_dlam (z_t - z_tr)[c] = -db_dlam c_t u_t[c]
@@ -1106,7 +1338,17 @@ class Constraint(ConstraintBase):
                                 K[idx_TAU_Ic, m_dofs] += b * self.c_t * inv_D * C[I, J] * t_I[c]
                                 K[idx_TAU_Ic, m_dofs] += self.c_t * u_t[c] * db_disp_fac * C[I, J] * n_I
 
-                    self.recovered_tractions_t[I] = z_t
+                    # Suppress the FIXED (symmetry-constrained) tangential
+                    # components [nf, ntc): no friction along a Dirichlet-fixed
+                    # displacement direction (z_t driven to 0, well-conditioned
+                    # unit diagonal). Trivial no-op when nf == ntc (no symmetry).
+                    for c in range(nf, ntc):
+                        idx_TAU_Ic = idx_TAU_I0 + c
+                        PExt[idx_TAU_Ic] -= z_t[c]
+                        K[idx_TAU_Ic, idx_TAU_Ic] += 1.0
+                    z_t_rec = z_t.copy()
+                    z_t_rec[nf:] = 0.0
+                    self.recovered_tractions_t[I] = z_t_rec
                 else:
                     # Inactive node, or active node with no normal pressure yet
                     # (b = mu*p_n = 0): no friction. Enforce z_t = 0, which also
@@ -1118,6 +1360,42 @@ class Constraint(ConstraintBase):
                         PExt[idx_TAU_Ic] -= z_t[c]
                         K[idx_TAU_Ic, idx_TAU_Ic] += 1.0
 
+        # ------------------------------------------------------------------
+        # PDASS termination + anti-cycling globalization (Hueber & Wohlmuth
+        # 2005; Bland 1977). The primal-dual active set strategy switches the
+        # discrete sets - the normal active set and, with friction, the
+        # stick/slip set - every semi-smooth Newton iteration; it has converged
+        # (or is cycling) once the current discrete state REPEATS a state already
+        # visited in this increment. We then FREEZE the sets for the remainder of
+        # the increment, so the remaining iterations are a consistent linear
+        # solve on a fixed set (geometry, normals, D and C are frozen within the
+        # increment, hence the assembled stiffness is the exact Jacobian) ->
+        # convergence and no active-set chattering / limit cycle.
+        #
+        # Freezing on the first REVISIT (rather than only on "unchanged from the
+        # previous iteration") is what terminates a genuine active-set limit
+        # cycle of period >= 2: a well-scaled c_n ~ O(E) (Hueber & Wohlmuth 2005;
+        # Farah 2018 Sec. 3.5.2) damps the switching so that the physical
+        # displacement is essentially converged and only a few MARGINAL nodes
+        # (weighted gap ~ 0 and pressure ~ 0, i.e. indifferent) keep flipping;
+        # such a set oscillates with a short period and never repeats the
+        # immediately preceding state. Because there are only finitely many
+        # states, the first repeat is a proven cycle and freezing terminates it
+        # in finitely many iterations (finite-set anti-cycling, cf. Bland's rule
+        # for the simplex method, Bland 1977). Which member of the cycle is
+        # frozen is immaterial: the members differ only in the indifferent
+        # marginal nodes. This is NOT a tuned iteration count; it replaces the
+        # earlier heuristic "freeze after 5 iterations" and is applied UNIFORMLY
+        # to the normal and the frictional set so the two stop switching
+        # together. The trivial "set unchanged" case is subsumed (a repeat of the
+        # previous state).
+        if self.use_active_set and not self._set_frozen:
+            state = (self.active_set.tobytes(), self.stick_set.tobytes())
+            if state in self._seen_states:
+                self._set_frozen = True
+            else:
+                self._seen_states.add(state)
+
         import os as _os
         if mu > 0.0 and _os.environ.get("FRICTION_DEBUG"):
             import sys as _sys
@@ -1128,7 +1406,7 @@ class Constraint(ConstraintBase):
             maxpe = float(np.abs(PExt[np.isfinite(PExt)]).max()) if fin else float("nan")
             print(
                 f"[FRIC ts={timeStep.number} it={self.current_iteration}] "
-                f"active={nact} stick={nstick} slip={nact - nstick} "
+                f"active={nact} stick={nstick} slip={nact - nstick} frozen={self._set_frozen} "
                 f"max|z_t|={maxzt:.3e} max|PExt|={maxpe:.3e} PExt_finite={fin}",
                 file=_sys.stderr, flush=True,
             )

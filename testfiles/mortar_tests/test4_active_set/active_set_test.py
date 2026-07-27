@@ -114,8 +114,21 @@ def run_active_set_test():
     
     print("\n[PASS] PDASS Active Set Verification Successful!")
 
-def test_active_set_freezing():
-    print("\n--- Running Active Set Freezing Test ---")
+def test_active_set_semismooth_and_pdass_freeze():
+    """Semi-smooth normal complementarity + PDASS termination.
+
+    The normal active set is re-evaluated from the augmented-pressure indicator
+    s_n = p_n - c_n*inv_D*g_sep > 0 (Hueber & Wohlmuth 2005; Gitterle et al. 2010,
+    Eq. 55; MOOSE ComputeWeightedGapLMMechanicalContact). It is updated on EVERY
+    Newton iteration as long as it keeps changing (NOT frozen after a fixed
+    iteration count, unlike the earlier heuristic), and it FREEZES for the rest of
+    the increment once it is unchanged between two consecutive iterations - the
+    literal PDASS stopping criterion (Hueber & Wohlmuth 2005). Freezing the
+    stabilized set is the globalization that stops active-set chattering. A new
+    increment (changed timeStep.number) re-opens the set. This test asserts all
+    three properties.
+    """
+    print("\n--- Running Semi-smooth Active Set + PDASS Freeze Test ---")
     model = FEModel(dimension=3)
     slave_coords = [
         [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
@@ -155,25 +168,73 @@ def test_active_set_freezing():
     dU = np.zeros(constraint.nDof)
     PExt = np.zeros(constraint.nDof)
     K = np.zeros((constraint.nDof, constraint.nDof))
-    timeStep = TimeStep(1, 0.0, 0.0, 0.0, 0.0, 0.0)
-    
-    # Run 5 iterations within the same timestep (iterations 0 to 4)
-    for i in range(5):
-        constraint.applyConstraint(U_np, dU, PExt, K, timeStep)
-        print(f"  Iteration {i}: current_iteration = {constraint.current_iteration}")
-        assert constraint.current_iteration == i
-        
-    # Displace Slave nodes to trigger penetration
-    for nd in constraint.non_mortar_nodes:
-        idx = constraint.node_to_global_idx[nd]
-        U_np[constraint.sizeField * idx + 2] = 0.15
-        
-    # Re-apply constraint (6th iteration, index 5)
-    constraint.applyConstraint(U_np, dU, PExt, K, timeStep)
-    print(f"  Iteration 5: current_iteration = {constraint.current_iteration}")
-    print("  Active set status at iteration 5 (should be all False since frozen):", constraint.active_set)
-    assert not np.any(constraint.active_set), "Expected active set to be frozen at iteration 5"
-    print("[PASS] Active Set Freezing Test Successful!")
+    slave_nodes = list(constraint.non_mortar_nodes)
+
+    def penetrate_first(k):
+        """Push the first k slave nodes into the master, the rest out."""
+        for j, nd in enumerate(slave_nodes):
+            idx = constraint.node_to_global_idx[nd]
+            U_np[constraint.sizeField * idx + 2] = 0.15 if j < k else 0.0
+
+    # ------------------------------------------------------------------
+    # (1) The set is updated EVERY iteration as long as its state is still
+    #     new (semi-smooth; there is NO fixed iteration count in the freeze).
+    #     Go from all-open to all-penetrating: both are new states, so the set
+    #     tracks the current configuration and does not freeze. (all-or-nothing
+    #     avoids the mortar coupling ambiguity of a partially penetrating face.)
+    # ------------------------------------------------------------------
+    ts1 = TimeStep(1, 0.0, 0.0, 0.0, 0.0, 0.0)
+    penetrate_first(0)                                   # all open
+    constraint.applyConstraint(U_np, dU, PExt, K, ts1)
+    assert constraint.current_iteration == 0
+    assert not np.any(constraint.active_set), "open gap -> inactive"
+    assert not constraint._set_frozen
+    penetrate_first(len(slave_nodes))                    # all penetrating (new state)
+    constraint.applyConstraint(U_np, dU, PExt, K, ts1)
+    assert constraint.current_iteration == 1
+    assert np.all(constraint.active_set), "penetration -> the set updated this iteration"
+    assert not constraint._set_frozen, "a still-new state must not freeze"
+    print("  (1) updated the set to the new state each iteration, not frozen: OK")
+
+    # ------------------------------------------------------------------
+    # (2) Anti-cycling (Bland 1977): a period-2 active-set limit cycle is
+    #     detected and frozen. Alternate all-penetrate / all-release; the set
+    #     A, B, A... repeats state A at the 3rd iteration -> freeze. A later
+    #     change of the iterate must then NOT flip it (this is the anti-
+    #     chattering globalization that terminates the cycle).
+    # ------------------------------------------------------------------
+    ts2 = TimeStep(2, 0.0, 0.0, 0.0, 0.0, 0.0)
+    penetrate_first(len(slave_nodes))                    # state A: all active
+    constraint.applyConstraint(U_np, dU, PExt, K, ts2)   # new increment -> re-opened
+    assert not constraint._set_frozen
+    assert np.all(constraint.active_set)
+    penetrate_first(0)                                   # state B: all inactive
+    constraint.applyConstraint(U_np, dU, PExt, K, ts2)
+    assert not constraint._set_frozen                    # B is still a new state
+    assert not np.any(constraint.active_set)
+    penetrate_first(len(slave_nodes))                    # back to state A -> revisit
+    constraint.applyConstraint(U_np, dU, PExt, K, ts2)
+    assert constraint._set_frozen, "a repeated state (period-2 cycle) must freeze (anti-cycling)"
+    assert np.all(constraint.active_set)                 # frozen on the revisited state A
+    penetrate_first(0)                                   # reopen the gap mid-increment
+    constraint.applyConstraint(U_np, dU, PExt, K, ts2)
+    assert constraint._set_frozen and np.all(constraint.active_set), (
+        "frozen set must NOT change within the increment even though the gap "
+        "reopened (globalization that terminates the cycle)"
+    )
+    print("  (2) detected the period-2 cycle, froze it, and held against a later change: OK")
+
+    # ------------------------------------------------------------------
+    # (3) A new increment re-opens the set: the freeze is reset and the set
+    #     is re-evaluated from the current (now open) configuration.
+    # ------------------------------------------------------------------
+    ts3 = TimeStep(3, 0.0, 0.0, 0.0, 0.0, 0.0)
+    constraint.applyConstraint(U_np, dU, PExt, K, ts3)   # gap still open from (2)
+    assert not constraint._set_frozen, "new increment must reset the freeze"
+    assert not np.any(constraint.active_set), "re-opened set must reflect the open gap (inactive)"
+    print("  (3) new increment reset the freeze and re-evaluated the set: OK")
+
+    print("[PASS] Semi-smooth Active Set + PDASS Freeze Test Successful!")
 
 def test_bvh_search_correctness():
     print("\n--- Running BVH Search Correctness Test ---")
@@ -243,5 +304,5 @@ def test_bvh_search_correctness():
 
 if __name__ == '__main__':
     run_active_set_test()
-    test_active_set_freezing()
+    test_active_set_semismooth_and_pdass_freeze()
     test_bvh_search_correctness()

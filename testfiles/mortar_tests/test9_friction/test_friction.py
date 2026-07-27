@@ -58,7 +58,7 @@ def _quad8(shift_x=0.0, z=0.0):
     ]
 
 
-def _build(dim, el_type, slave_pts, master_pts, mu, cn=1.0e6):
+def _build(dim, el_type, slave_pts, master_pts, mu, cn=1.0e6, sym=None):
     model = FEModel(dimension=dim)
     slave_nodes = _make_nodes(model, 1, slave_pts)
     master_nodes = _make_nodes(model, 100, master_pts)
@@ -74,10 +74,19 @@ def _build(dim, el_type, slave_pts, master_pts, mu, cn=1.0e6):
     for node in model.nodes.values():
         node.fields["displacement"] = FieldVariable(node, "displacement")
 
-    return MortarContact(
-        "c_friction", model, nonMortarSurface="slave", mortarSurface="master",
-        field="displacement", friction_coefficient=str(mu), friction_cn=str(cn),
+    kwargs = dict(
+        nonMortarSurface="slave", mortarSurface="master", field="displacement",
+        friction_coefficient=str(mu), friction_cn=str(cn),
     )
+    if sym is not None:
+        # sym = (nodeSetName, component[1-based]): declare a symmetry BC on all
+        # slave nodes so friction is restricted out of that global direction.
+        set_name, comp = sym
+        if not hasattr(model, "nodeSets") or model.nodeSets is None:
+            model.nodeSets = {}
+        model.nodeSets[set_name] = slave_nodes
+        kwargs["frictionSymmetryBCs"] = f"{set_name}:{comp}"
+    return MortarContact("c_friction", model, **kwargs)
 
 
 def _prime_and_freeze(mc, U, dU, timeStep, n=7):
@@ -118,7 +127,12 @@ def _check_tangent(mc, U0, dU0, timeStep, nDof, eps=1e-7, tol=1e-5, label=""):
 def test_2d_stick():
     print("\n=== 2D Coulomb friction: stick ===")
     mu = 0.3
-    mc = _build(2, "CONLINE2", _line2(), _line2(), mu)
+    # cn=1.0 (moderate) so the augmented Coulomb bound b = mu*max(0, p_n +
+    # c_n*g_tilde) is > 0 at this near-contact state and its consistent tangent
+    # (the db/du terms) is exercised by the FD check. With the MOOSE-correct
+    # bound sign the augmentation SHRINKS b under penetration, so the state must
+    # keep c_n*|g_tilde| small vs p_n (small penetration, strong pressure).
+    mc = _build(2, "CONLINE2", _line2(), _line2(), mu, cn=1.0)
     nNodes = len(mc.nodes); dim = 2
     nDof = dim * nNodes + mc.nMultipliers + mc.nTangentialMultipliers
     idx_LM0 = dim * nNodes
@@ -126,11 +140,11 @@ def test_2d_stick():
 
     U = np.zeros(nDof)
     for i in range(2):
-        U[2 * i + 1] = -0.1     # penetration (n = [0, -1])
+        U[2 * i + 1] = -0.002   # small penetration (n = [0, -1])
         U[2 * i] = 0.001        # small tangential displacement
     for i in range(2):
-        U[idx_LM0 + i] = -0.05  # negative = compression (sgn_D = +1)
-        U[idx_TAU0 + i] = 0.003  # |z_t| well inside the cone mu*0.05 = 0.015
+        U[idx_LM0 + i] = -0.5   # negative = compression (sgn_D = +1) -> p_n = 0.5
+        U[idx_TAU0 + i] = 0.01  # |z_t| well inside the cone mu*p_n = 0.15
     dU = U.copy()
 
     ts = TimeStep(1, 1.0, 1.0, 1.0, 1.0, 1.0)
@@ -188,7 +202,10 @@ def test_2d_slip():
 def test_3d_stick():
     print("\n=== 3D Coulomb friction (CONQUAD8): stick ===")
     mu = 0.25
-    mc = _build(3, "CONQUAD8", _quad8(), _quad8(), mu)
+    # cn=1.0: see test_2d_stick - keeps b > 0 at this near-contact state so the
+    # augmented-bound tangent is exercised (quad8 inv_D ~ 7-9, so the penetration
+    # is kept small vs the pressure).
+    mc = _build(3, "CONQUAD8", _quad8(), _quad8(), mu, cn=1.0)
     nNodes = len(mc.nodes); dim = 3
     nDof = dim * nNodes + mc.nMultipliers + mc.nTangentialMultipliers
     idx_LM0 = dim * nNodes
@@ -196,10 +213,10 @@ def test_3d_stick():
 
     U = np.zeros(nDof)
     for i in range(8):
-        U[3 * i + 2] = 0.05     # penetration (n = [0, 0, 1])
+        U[3 * i + 2] = 0.002    # small penetration (n = [0, 0, 1])
         U[3 * i] = 0.0005
     for i in range(8):
-        U[idx_LM0 + i] = -0.02
+        U[idx_LM0 + i] = -0.2   # p_n = 0.2
         U[idx_TAU0 + 2 * i] = 0.0005
         U[idx_TAU0 + 2 * i + 1] = 0.0003
     dU = U.copy()
@@ -240,6 +257,48 @@ def test_3d_slip():
     print("  [PASS]")
 
 
+def test_symmetry_friction_restriction():
+    """Symmetry / Dirichlet-aware friction restriction: on a slave node whose
+    displacement is fixed in a global direction e_k (symmetry plane), friction
+    must not act along e_k. Here the CONQUAD8 slave lies in the x-y plane
+    (normal = ±z, tangent plane = x-y); declaring u_x fixed (component 1) must
+    leave exactly ONE free friction direction (y) per node, with the free
+    tangent orthogonal to x and the fixed tangent aligned with x, and the
+    assembled tangent must stay FD-consistent."""
+    print("\n=== 3D friction: symmetry restriction (fix u_x) ===")
+    mu = 0.25
+    mc = _build(3, "CONQUAD8", _quad8(), _quad8(), mu, cn=1.0, sym=("sym_x", 1))
+    nNodes = len(mc.nodes); dim = 3
+    nDof = dim * nNodes + mc.nMultipliers + mc.nTangentialMultipliers
+    idx_LM0 = dim * nNodes
+    idx_TAU0 = idx_LM0 + mc.nNonMortarNodes
+
+    U = np.zeros(nDof)
+    for i in range(8):
+        U[3 * i + 2] = 0.002    # small penetration (normal = ±z)
+        U[3 * i + 1] = 0.001    # tangential motion in y (the FREE direction)
+    for i in range(8):
+        U[idx_LM0 + i] = -0.2   # p_n = 0.2
+        U[idx_TAU0 + 2 * i] = 0.0006      # component 0
+        U[idx_TAU0 + 2 * i + 1] = 0.0004  # component 1
+    dU = U.copy()
+
+    ts = TimeStep(1, 1.0, 1.0, 1.0, 1.0, 1.0)
+    _prime_and_freeze(mc, U, dU, ts)
+
+    # exactly one free friction direction per node
+    assert np.all(mc._n_free_tangents == 1), f"expected nf=1, got {mc._n_free_tangents}"
+    # free tangent (index 0) orthogonal to x; fixed tangent (index 1) aligned with x
+    tg = mc.current_tangents
+    ex = np.array([1.0, 0.0, 0.0])
+    for I in range(mc.nNonMortarNodes):
+        assert abs(tg[I, 0] @ ex) < 1e-9, f"free tangent not ⊥ x at node {I}: {tg[I,0]}"
+        assert abs(abs(tg[I, 1] @ ex) - 1.0) < 1e-9, f"fixed tangent not ∥ x at node {I}: {tg[I,1]}"
+    print("  free tangent ⊥ x, fixed tangent ∥ x on all nodes")
+    _check_tangent(mc, U, dU, ts, nDof, label="3D symmetry-restricted")
+    print("  [PASS]")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("COULOMB FRICTION (saddle-point) VERIFICATION SUITE")
@@ -248,4 +307,5 @@ if __name__ == "__main__":
     test_2d_slip()
     test_3d_stick()
     test_3d_slip()
+    test_symmetry_friction_restriction()
     print("\n[SUCCESS] all friction tests passed")

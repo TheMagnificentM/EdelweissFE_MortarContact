@@ -143,6 +143,12 @@ penalty=400
 ** ------------------------------------------------------------------------------
 ** MORTAR KONTAKT (6 Kontaktpaare: links + rechts, je Schaft-Seite + Kopf-Unter + Kopf-Seite)
 **
+** friction_cn = 41069.0 ~ E (Beton-E-Modul, siehe *material GCDP): der semismooth-
+** Newton-Komplementaritaetsparameter c_n muss in der Groessenordnung des E-Moduls
+** liegen (Hueber & Wohlmuth 2005; Farah 2018 Sec. 3.5.2, c_n ~ c_t ~ O(E)). Er skaliert
+** den normalen Active-Set-Indikator s_n = p_n - c_n*inv_D*g_sep; ein zu grosses c_n
+** (z. B. 1e6 ~ 24*E) macht den Indikator gap-vorzeichen-dominiert -> Active-Set-Chattering.
+**
 ** nonMortarSurface = Slave = Beton  (die "empfangende" Seite, Lagrange-Multiplikatoren sitzen hier)
 ** mortarSurface    = Master = Stahl (die "projizierende" Seite)
 **
@@ -158,36 +164,42 @@ penalty=400
 nonMortarSurface=con_conc_l_stud_vert
 mortarSurface=con_stl_l_stud_vert
 field=displacement
+friction_cn=41069.0
 **
 ** --- Links: Kopf unten (horizontal) ---
 *constraint, type=mortarcontact, name=contact_l_head_horiz
 nonMortarSurface=con_conc_l_head_horiz
 mortarSurface=con_stl_l_head_horiz
 field=displacement
+friction_cn=41069.0
 **
 ** --- Links: Kopf seitlich (vertikal) ---
 *constraint, type=mortarcontact, name=contact_l_head_vert
 nonMortarSurface=con_conc_l_head_vert
 mortarSurface=con_stl_l_head_vert
 field=displacement
+friction_cn=41069.0
 **
 ** --- Rechts: Schaft seitlich (vertikal) ---
 *constraint, type=mortarcontact, name=contact_r_stud_vert
 nonMortarSurface=con_conc_r_stud_vert
 mortarSurface=con_stl_r_stud_vert
 field=displacement
+friction_cn=41069.0
 **
 ** --- Rechts: Kopf unten (horizontal) ---
 *constraint, type=mortarcontact, name=contact_r_head_horiz
 nonMortarSurface=con_conc_r_head_horiz
 mortarSurface=con_stl_r_head_horiz
 field=displacement
+friction_cn=41069.0
 **
 ** --- Rechts: Kopf seitlich (vertikal) ---
 *constraint, type=mortarcontact, name=contact_r_head_vert
 nonMortarSurface=con_conc_r_head_vert
 mortarSurface=con_stl_r_head_vert
 field=displacement
+friction_cn=41069.0
 **
 ** ------------------------------------------------------------------------------
 ** LASTSCHRITT
