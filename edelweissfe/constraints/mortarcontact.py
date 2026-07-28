@@ -784,6 +784,18 @@ class Constraint(ConstraintBase):
             slip = z_tr_norm > b
             self.stick_set[I] = not slip
 
+        # Robustness guard against the frozen-slip degeneracy: a node FROZEN as
+        # slip (slip taken from the stored stick_set, not re-tested) whose trial
+        # traction has since collapsed to ~0 has no defined slip direction, and
+        # the unit direction z_tr/||z_tr|| below would be 0/0 -> NaN (observed on
+        # POT head_horiz slip nodes). Physically ||z_tr|| -> 0 means no slip
+        # tendency, so assemble the well-defined STICK rows (no division) instead.
+        # This does NOT modify the frozen stick_set state (b > 0 is guaranteed by
+        # the friction gate; when the set is NOT frozen, slip implies
+        # z_tr_norm > b so the guard is a no-op).
+        if slip and z_tr_norm <= 1e-12 * b:
+            slip = False
+
         z_t_rec = z_t.copy()
         z_t_rec[nf:] = 0.0
         self.recovered_tractions_t[I] = z_t_rec
@@ -1107,6 +1119,11 @@ class Constraint(ConstraintBase):
             # against pathological non-settling (e.g. chattering).
             self.active_set_frozen = False
             self.active_set_stable_count = 0
+            # Anti-cycling bookkeeping (Bland 1977), reset per increment: the set
+            # of discrete states (active set + stick set) already visited this
+            # increment, and the immediately-previous state.
+            self._seen_states = set()
+            self._last_state = None
             self.current_normals = self.compute_normals(U_np)
             # Frozen per-node tangent basis for Coulomb friction (all-zero / unused
             # when mu = 0). Frozen together with the normals and mortar matrices so
@@ -1209,13 +1226,44 @@ class Constraint(ConstraintBase):
             p_n = -lambda_I * sgn_D   # physical normal pressure (>= 0 in contact)
             g_sep = g_I_weak * sgn_D  # separation gap (>0 open, <0 penetrating)
 
-            if self.use_active_set and not self.active_set_frozen:
-                if self.active_set[I]:
-                    if lambda_I * sgn_D > 1e-10:
-                        self.active_set[I] = False
-                else:
-                    if g_I_weak * sgn_D < -1e-10:
-                        self.active_set[I] = True
+            # Single-owner treatment of shared slave nodes (friction only). A node
+            # owned by another decomposed surface is already tied completely there
+            # (normal + tangential); re-enforcing contact here duplicates the
+            # constraints on the same displacement DOFs -> singular tangential
+            # block -> the direct solve returns garbage/huge multipliers (Gitterle
+            # 2010; see _owns_node in __init__). Force such nodes inactive so their
+            # multiplier is driven to zero by the inactive branch below.
+            owns = (mu <= 0.0) or self._owns_node[I]
+            if not owns:
+                self.active_set[I] = False
+
+            if owns and self.use_active_set and not self.active_set_frozen:
+                # Semismooth normal complementarity (Gitterle et al. 2010 Eq. 55;
+                # Hüeber & Wohlmuth 2005; MOOSE ComputeWeightedGapLMMechanical
+                # Contact): the node is active iff the augmented indicator
+                #   s_n = p_n - c_n * inv_D * g_sep  >  0
+                # re-evaluated EVERY Newton iteration. This is the literature-
+                # standard PDASS = semismooth-Newton formulation (local superlinear
+                # convergence), and it uses the SAME c_n (D_II-normalized) as the
+                # Coulomb friction bound so the normal and tangential active sets
+                # are coherent (one consistent semismooth scheme). c_n is purely
+                # algorithmic - independent of the converged solution since
+                # g_sep -> 0 there, so the CONVERGED normal-contact result is
+                # identical to any admissible active-set rule; choose c_n ~ O(E)
+                # of the softer body (Farah 2018 Sec. 3.5.2).
+                #
+                # ROBUSTNESS NOTE (POT_Dejori hex20 + GCDP): with this consistent
+                # NCP the frictionless case is regression-free, but the FRICTIONAL
+                # case has a smaller convergence radius than the older heuristic
+                # two-sided rule (inc 1 cuts back; disp reached ~0.0028 vs ~0.022)
+                # because the augmented indicator flips the set aggressively near
+                # the contact boundary under the friction+damage coupling. The
+                # literature-consistent remedy is a line-search / damped-Newton
+                # GLOBALISATION (Deuflhard 2004; De Luca-Facchinei-Kanzow 1996) to
+                # enlarge the radius - NOT a fallback to the heuristic. Planned as
+                # the next step; the formulation here is kept as the correct one.
+                s_n = p_n - self.c_n * inv_D * g_sep
+                self.active_set[I] = bool(s_n > 0.0)
 
             self.recovered_lambdas[I] = lambda_I if self.active_set[I] else 0.0
             self.recovered_tractions[I] = z_I if self.active_set[I] else 0.0
@@ -1266,17 +1314,35 @@ class Constraint(ConstraintBase):
                     self.recovered_tractions_t[I] = 0.0
                     self.stick_set[I] = False
 
-        # Stability-based freezing of the active set: once the set is unchanged
-        # for two consecutive iterations (and past a small warm-up), freeze it so
-        # the Newton iteration converges on a fixed set. A safeguard cap prevents
-        # an unbounded outer loop should the set fail to settle (e.g. oscillate).
+        # Termination of the semismooth active-set / stick-slip iteration. The
+        # discrete state is the pair (normal active set, friction stick set),
+        # updated every Newton iteration. Two literature-grounded freeze triggers:
+        #  (1) PDASS convergence (Hüeber & Wohlmuth 2005): the state has settled,
+        #      i.e. is unchanged for two consecutive iterations past a warm-up.
+        #  (2) Anti-cycling (Bland 1977): the state CHANGED this iteration but
+        #      revisits a state already seen earlier this increment -> a proven
+        #      limit cycle (only finitely many states, so a revisit-after-change
+        #      is a cycle). Freezing breaks it; the remaining Newton iterations
+        #      are a linear solve on the fixed set. This is what cured the POT
+        #      head_horiz multiplier-residual oscillation (displacement already
+        #      converged, only the discrete set kept flipping).
+        # A hard iteration cap remains as a final safeguard. For mu = 0 the stick
+        # set is constant, so the state reduces to the active set (unchanged
+        # frictionless behaviour).
         if self.use_active_set and not self.active_set_frozen:
-            if np.array_equal(self.active_set, active_set_before):
-                self.active_set_stable_count += 1
-            else:
+            state = (self.active_set.tobytes(), self.stick_set.tobytes())
+            changed = state != self._last_state
+            if changed:
                 self.active_set_stable_count = 0
-            if (self.active_set_stable_count >= 2 and self.current_iteration >= 2) or (
-                self.current_iteration >= 20
+            else:
+                self.active_set_stable_count += 1
+            cycle = changed and (state in self._seen_states)
+            self._seen_states.add(state)
+            self._last_state = state
+            if (
+                (self.active_set_stable_count >= 2 and self.current_iteration >= 2)
+                or cycle
+                or (self.current_iteration >= 20)
             ):
                 self.active_set_frozen = True
 
