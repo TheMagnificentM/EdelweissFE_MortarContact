@@ -67,12 +67,12 @@
 
 *job, name=POT_Dejori_MortarContact, domain=3d
 *solver, solver=NISTParallel, name=theSolver
-*updateConfiguration, configuration=fluxResidualTolerance
-scalar variables=1e-3
-*updateConfiguration, configuration=fluxResidualToleranceAlternative
-scalar variables=1e-3
-*updateConfiguration, configuration=fieldCorrectionTolerance
-scalar variables=1e5
+** *updateConfiguration, configuration=fluxResidualTolerance
+** scalar variables=1e-3
+** *updateConfiguration, configuration=fluxResidualToleranceAlternative
+** scalar variables=1e-3
+** *updateConfiguration, configuration=fieldCorrectionTolerance
+** scalar variables=1e5
 
 
 ** ------------------------------------------------------------------------------
@@ -153,19 +153,77 @@ penalty=400
 ** Das ist die korrekte Orientierung fuer Mortar-Kontakt.
 ** ------------------------------------------------------------------------------
 **
-** --- left ---
-*constraint, type=mortarcontact, name=contact_l
-nonMortarSurface=con_conc_l
-mortarSurface=con_stl_l
+** --- Links: Schaft seitlich (vertikal) ---
+*constraint, type=mortarcontact, name=contact_l_stud_vert
+nonMortarSurface=con_conc_l_stud_vert
+mortarSurface=con_stl_l_stud_vert
 field=displacement
-condensation=True
+** friction_coefficient=0.3   
+** friction_ramp=0.1
+** friction_ct=10000.0
+** friction_cn=41069.0
+** frictionSymmetryBCs=z_symm:3
+** condensation=True
 **
-** --- right ---
-*constraint, type=mortarcontact, name=contact_r
-nonMortarSurface=con_conc_r
-mortarSurface=con_stl_r
+** --- Links: Kopf unten (horizontal) ---
+*constraint, type=mortarcontact, name=contact_l_head_horiz
+nonMortarSurface=con_conc_l_head_horiz
+mortarSurface=con_stl_l_head_horiz
 field=displacement
-condensation=True
+** friction_coefficient=0.3   
+** friction_ramp=0.1
+** friction_ct=10000.0
+** friction_cn=41069.0
+** frictionSymmetryBCs=z_symm:3
+** condensation=True
+**
+** --- Links: Kopf seitlich (vertikal) ---
+*constraint, type=mortarcontact, name=contact_l_head_vert
+nonMortarSurface=con_conc_l_head_vert
+mortarSurface=con_stl_l_head_vert
+field=displacement
+** friction_coefficient=0.3   
+** friction_ramp=0.1
+** friction_ct=10000.0
+** friction_cn=41069.0
+** frictionSymmetryBCs=z_symm:3
+** condensation=True
+**
+** --- Rechts: Schaft seitlich (vertikal) ---
+*constraint, type=mortarcontact, name=contact_r_stud_vert
+nonMortarSurface=con_conc_r_stud_vert
+mortarSurface=con_stl_r_stud_vert
+field=displacement
+** friction_coefficient=0.3   
+** friction_ramp=0.1
+** friction_ct=10000.0
+** friction_cn=41069.0
+** frictionSymmetryBCs=z_symm:3
+** condensation=True
+**
+** --- Rechts: Kopf unten (horizontal) ---
+*constraint, type=mortarcontact, name=contact_r_head_horiz
+nonMortarSurface=con_conc_r_head_horiz
+mortarSurface=con_stl_r_head_horiz
+field=displacement
+** friction_coefficient=0.3   
+** friction_ramp=0.1
+** friction_ct=10000.0
+** friction_cn=41069.0
+** frictionSymmetryBCs=z_symm:3
+** condensation=True
+**
+** --- Rechts: Kopf seitlich (vertikal) ---
+*constraint, type=mortarcontact, name=contact_r_head_vert
+nonMortarSurface=con_conc_r_head_vert
+mortarSurface=con_stl_r_head_vert
+field=displacement
+** friction_coefficient=0.3   
+** friction_ramp=0.1
+** friction_ct=10000.0
+** friction_cn=41069.0
+** frictionSymmetryBCs=z_symm:3
+** condensation=True
 **
 ** ------------------------------------------------------------------------------
 ** LASTSCHRITT

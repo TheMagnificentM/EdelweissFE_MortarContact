@@ -54,8 +54,12 @@ UNSUPPORTED_SECTIONS = [
 
 # Definiere die Kontaktoberflächen (Slave, Master)
 CONTACT_SURFACES = [
-    ("CONT_SURF_CONC_L", "CONT_SURF_STL_L"),
-    ("CONT_SURF_CONC_R", "CONT_SURF_STL_R"),
+    ("CONT_SURF_CONC_L_STUD_VERT", "CONT_SURF_STL_L_STUD_VERT"),
+    ("CONT_SURF_CONC_L_HEAD_HORIZ", "CONT_SURF_STL_L_HEAD_HORIZ"),
+    ("CONT_SURF_CONC_L_HEAD_VERT", "CONT_SURF_STL_L_HEAD_VERT"),
+    ("CONT_SURF_CONC_R_STUD_VERT", "CONT_SURF_STL_R_STUD_VERT"),
+    ("CONT_SURF_CONC_R_HEAD_HORIZ", "CONT_SURF_STL_R_HEAD_HORIZ"),
+    ("CONT_SURF_CONC_R_HEAD_VERT", "CONT_SURF_STL_R_HEAD_VERT"),
 ]
 
 # ===========================================================================
