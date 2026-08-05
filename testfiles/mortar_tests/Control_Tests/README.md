@@ -268,16 +268,28 @@ nie maschinengenau. Mesh: ~11–22 Elemente über die halbe Kontaktbreite. Druck
 > **Offener Punkt – `hertz_hex20_medium` konvergiert nicht zuverlässig.** Von den vier
 > Hertz-Varianten laufen `hex8_medium`, `hex8_fine` und `hex20_fine` durch; `hex20_medium` ist
 > seit Einführung der semismooth NCP nur noch **marginal** konvergent und dabei
-> **nichtdeterministisch** (paralleler Solver → andere Rundungsreihenfolge): ein Lauf ging über
-> 27 Inkremente durch, ein zweiter brach in Inkrement 7 ab. Mit der früheren heuristischen
-> Aktiv-Set-Regel lief er deterministisch in 10 Inkrementen. Es ist **kein** c_n-Problem – ein
-> Sweep über c_n = 10 … 10⁶ ändert nichts. Ursache ist der kleinere Konvergenzradius des
-> semismooth-Newton-Verfahrens: genau hier (quadratische Elemente, mittleres Netz) fällt die
-> Knoten-zu-Knoten-Oszillation des Kontaktdrucks am Kontaktrand mit ~10 % am stärksten aus, und
-> die Aktiv-Menge wandert dort von Iteration zu Iteration. Das literaturkonforme Gegenmittel ist
-> eine Line-Search-/Damped-Newton-Globalisierung (Deuflhard 2004; De Luca–Facchinei–Kanzow 1996),
-> **nicht** ein Rückfall auf die Heuristik. Bis dahin wird dieser eine Fall hingenommen; alle
-> übrigen 21 Varianten der Testreihe sind unberührt.
+> **nichtdeterministisch** (paralleler Solver → andere Rundungsreihenfolge): bei identischem
+> Input läuft derselbe Fall manchmal komplett durch (27 Inkremente, 1 Cutback) und bricht
+> manchmal ab. Mit der früheren heuristischen Aktiv-Set-Regel lief er deterministisch in
+> 10 Inkrementen.
+>
+> Was nachgemessen wurde und es **nicht** erklärt bzw. behebt:
+> - **c_n**: Sweep über c_n = 10 … 10⁶ – ändert nichts (wie es sein muss, c_n ist algorithmisch).
+> - **Geduld des Solvers**: `maxIter` 30 → 50 und `maxGrowIter` 10 → 25 – 2 von 4 Läufen durch,
+>   2 abgebrochen, also keine Verbesserung.
+> - **Schrittweite**: `minInc` 10⁻⁴ → 10⁻⁷ mit `maxNumInc=2000` – 0 von 3 Läufen durch. Kleinere
+>   Lastschritte helfen also gerade nicht; das schließt ein reines Lastpfad-/Schrittweitenproblem
+>   aus und deutet auf Active-Set-Chattering.
+>
+> Ursache ist der kleinere Konvergenzradius des semismooth-Newton-Verfahrens: genau hier
+> (quadratische Elemente, mittleres Netz) fällt die Knoten-zu-Knoten-Oszillation des
+> Kontaktdrucks am Kontaktrand mit ~10 % am stärksten aus (Ecke/Mittelknoten-Effekt, s. oben),
+> und die Aktiv-Menge wandert dort von Iteration zu Iteration. Das literaturkonforme Gegenmittel
+> ist eine Line-Search-/Damped-Newton-Globalisierung (Deuflhard 2004; De Luca–Facchinei–Kanzow
+> 1996), **nicht** ein Rückfall auf die Heuristik. Bis dahin wird dieser eine Fall bewusst
+> hingenommen; die Testeinstellungen bleiben deshalb unverändert (die obigen Werte sind nur
+> Messungen, sie stehen nicht im Input). Alle übrigen 21 Varianten der Testreihe sind unberührt,
+> insbesondere auch das feinere `hex20_fine`.
 
 **Zusammengefasst:** Der Mortar-Kontakt arbeitet in allen geprüften Fällen korrekt: er überträgt
 Druck mit gleichmäßigem Kontaktdruck, trennt sich unter Zug, gleitet reibungsfrei, hält die
