@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Test 3B: Assembly and Verification of Mortar Coupling Matrices D and C
-=======================================================================
+Test 3: Assembly and Verification of Mortar Coupling Matrices D and C
+=====================================================================
 
 This script sets up a multi-element quad mesh setup, instantiates the Mortar
 constraint, calculates the global D and C matrices via polygon projection,
@@ -126,8 +126,9 @@ def run_coupling_assembly_test():
     D, C = constraint.compute_mortar_coupling_matrices()
     
     # Write output to test results log
-    output_dir = "testfiles/mortar_tests/test3_mortar_intersection"
-    os.makedirs(output_dir, exist_ok=True)
+    # Next to this script, independent of the current working directory (a
+    # relative path created a stray nested testfiles/ tree when run from here).
+    output_dir = os.path.dirname(os.path.abspath(__file__))
     out_path = os.path.join(output_dir, "coupling_assembly_results.txt")
     
     with open(out_path, 'w') as f:

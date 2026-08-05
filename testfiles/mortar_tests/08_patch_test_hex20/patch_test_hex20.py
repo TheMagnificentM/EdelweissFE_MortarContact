@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Test 6: Kontakt-Patch-Test für hex20-(Serendipity)-Elemente
+Test 8: Kontakt-Patch-Test für hex20-(Serendipity)-Elemente
 ===========================================================
 
 Der klassische Mortar-Kontakt-Patch-Test (vgl. Puso & Laursen 2004; Farah 2018,
@@ -90,9 +90,12 @@ genA_all
 *section, name=secB, material=mat, type=solid
 genB_all
 
+** cn: Komplementaritaetsparameter c_n der Normalkontakt-NCP, rein algorithmisch
+** und ~ O(E) des weicheren Koerpers zu waehlen (Farah 2018, Abschn. 3.5.2).
 *constraint, type=mortarcontact, name=contact
 nonMortarSurface=con_slave
 mortarSurface=con_master
+cn={E}
 
 *job, name=patchjob, domain=3d
 *solver, name=theSolver, solver=NISTParallel

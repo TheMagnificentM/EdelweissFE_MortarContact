@@ -153,7 +153,7 @@ def test_curved_cylinder_sphere_projection():
     ax.set_title('Sphere-to-Cylinder Surface Clipping and Triangulation (With Source Bodies)')
     ax.legend(loc='upper right')
     
-    output_dir = 'testfiles/mortar_tests/test3_mortar_intersection'
+    output_dir = 'testfiles/mortar_tests/02_polygon_clipping/visualization'
     os.makedirs(output_dir, exist_ok=True)
     output_image = os.path.join(output_dir, 'cylinder_sphere_intersection_plot.png')
     plt.savefig(output_image)

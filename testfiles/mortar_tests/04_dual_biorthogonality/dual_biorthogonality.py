@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Test 2: Verifizierung der Biorthogonalität (Schritt 2)
-======================================================
+Test 4: Verifizierung der Biorthogonalität der dualen Basis
+===========================================================
 
 Dieser Test prüft die Korrektheit der dualen Basisfunktionen auf den Slave-Grenzflächen.
 

@@ -54,10 +54,12 @@ genA_all
 *section, name=secB, material=mat, type=solid
 genB_all
 
+** cn: Komplementaritaetsparameter c_n der Normalkontakt-NCP ~ O(E) = 1000.
 *constraint, type=mortarcontact, name=contact
 nonMortarSurface=con_slave
 mortarSurface=con_master
 field=displacement
+cn=1000.0
 
 *job, name=hertzjob, domain=3d
 *solver, name=theSolver, solver=NISTParallel

@@ -1,3 +1,17 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Test 2: Polygon-Clipping-Korrektheit (Sutherland--Hodgman)
+==========================================================
+
+Verifiziert die geometrische Verschneidung zweier projizierter Facetten-Polygone
+(Sutherland & Hodgman 1974): voller Überlapp, kein Überlapp, halber Überlapp und
+verdreht/verzerrt. Grundlage der segmentbasierten Mortar-Integration.
+
+Die visuelle Inspektion (flache/gekrümmte Projektion, VTK-Export für ParaView)
+liegt im Unterordner ``visualization/``.
+"""
+
 import os
 import unittest
 import numpy as np

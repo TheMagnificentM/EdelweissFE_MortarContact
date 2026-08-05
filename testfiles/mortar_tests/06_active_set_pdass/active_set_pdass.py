@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Test 4: Verification of the Primal-Dual Active Set Strategy (PDASS)
+Test 6: Verification of the Primal-Dual Active Set Strategy (PDASS)
 ==================================================================
 
-This test verifies the active set status updates, residual vector assembly, 
+This test verifies the active set status updates, residual vector assembly,
 and stiffness matrix assembly under contact and separation conditions.
+
+The active set follows the semi-smooth normal complementarity function (NCP)
+
+    C_n,I = p_n - max(0, p_n - c_n * inv_D * g_sep) = 0
+        <=>  active  iff  s_n = p_n - c_n * inv_D * g_sep > 0
+
+(Gitterle et al. 2010, Eq. (55); Hueber & Wohlmuth 2005), re-evaluated in EVERY
+Newton iteration. The semi-smooth (outer) iteration is terminated once the
+discrete state has settled - NOT after a fixed number of iterations.
 """
 
 import sys
@@ -114,8 +123,8 @@ def run_active_set_test():
     
     print("\n[PASS] PDASS Active Set Verification Successful!")
 
-def test_active_set_freezing():
-    print("\n--- Running Active Set Freezing Test ---")
+def build_two_block_contact(cn=1000.0):
+    """Two unit blocks, slave face at z = 1.0, master face at z = 1.1 (gap 0.1)."""
     model = FEModel(dimension=3)
     slave_coords = [
         [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
@@ -129,51 +138,137 @@ def test_active_set_freezing():
         model.nodes[i+1] = Node(i+1, np.array(pt))
     for i, pt in enumerate(master_coords):
         model.nodes[i+9] = Node(i+9, np.array(pt))
-        
+
     ConQuadClass = getElementClass("CONQUAD4", "edelweiss")
     s_con = ConQuadClass("CONQUAD4", 3)
     s_con.setNodes([model.nodes[5], model.nodes[6], model.nodes[7], model.nodes[8]])
     m_con = ConQuadClass("CONQUAD4", 4)
     m_con.setNodes([model.nodes[9], model.nodes[10], model.nodes[11], model.nodes[12]])
-    
+
     model.surfaces = {
         "slave_surf": {1: [s_con]},
         "master_surf": {1: [m_con]}
     }
     for node in model.nodes.values():
         node.fields["displacement"] = FieldVariable(node, "displacement")
-        
+
     constraint = MortarContact(
         "contact_constraint",
         model,
         nonMortarSurface="slave_surf",
         mortarSurface="master_surf",
-        field="displacement"
+        field="displacement",
+        cn=cn,
     )
-    
-    U_np = np.zeros(constraint.nDof)
-    dU = np.zeros(constraint.nDof)
-    PExt = np.zeros(constraint.nDof)
-    K = np.zeros((constraint.nDof, constraint.nDof))
-    timeStep = TimeStep(1, 0.0, 0.0, 0.0, 0.0, 0.0)
-    
-    # Run 5 iterations within the same timestep (iterations 0 to 4)
-    for i in range(5):
-        constraint.applyConstraint(U_np, dU, PExt, K, timeStep)
-        print(f"  Iteration {i}: current_iteration = {constraint.current_iteration}")
-        assert constraint.current_iteration == i
-        
-    # Displace Slave nodes to trigger penetration
-    for nd in constraint.non_mortar_nodes:
+    nDof = constraint.nDof
+    return (constraint, np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), np.zeros((nDof, nDof)))
+
+
+def set_slave_z(constraint, U_np, values):
+    """Prescribe the z-displacement of every slave node (order of non_mortar_nodes)."""
+    for local, nd in enumerate(constraint.non_mortar_nodes):
         idx = constraint.node_to_global_idx[nd]
-        U_np[constraint.sizeField * idx + 2] = 0.15
-        
-    # Re-apply constraint (6th iteration, index 5)
+        U_np[constraint.sizeField * idx + 2] = values[local]
+
+
+def test_ncp_indicator():
+    """The NCP indicator s_n = p_n - c_n*inv_D*g_sep decides - not penetration alone.
+
+    At a CLOSED gap (g_sep = 0) a positive normal pressure keeps the node active
+    and a tensile (negative) pressure releases it. This is the branch a pure
+    penetration heuristic cannot represent (Gitterle et al. 2010, Eq. (55)).
+    """
+    print("\n--- Running Normal NCP Indicator Test ---")
+    constraint, U_np, dU, PExt, K = build_two_block_contact()
+
+    # Close the gap exactly (slave face 1.0 -> 1.1 = master face): g_sep = 0
+    set_slave_z(constraint, U_np, [0.1] * 4)
+
+    # Increment 1: g_sep = 0 and lambda = 0 -> s_n = 0, NOT > 0 -> inactive
+    constraint.applyConstraint(U_np, dU, PExt, K, TimeStep(1, 0.0, 0.0, 0.0, 0.0, 0.0))
+    print("  g_sep = 0, p_n = 0 -> active set:", constraint.active_set)
+    assert not np.any(constraint.active_set), "s_n = 0 must not activate"
+
+    idx_LM_0 = constraint.sizeField * len(constraint._nodes)
+    sgn_D = np.sign(constraint.current_D_rowsum)
+
+    # Increment 2: g_sep = 0 but COMPRESSIVE pressure p_n = -lambda*sgn_D = +1 > 0
+    U_np[idx_LM_0:] = -sgn_D
+    PExt.fill(0.0); K.fill(0.0)
+    constraint.applyConstraint(U_np, dU, PExt, K, TimeStep(2, 0.0, 0.0, 0.0, 0.0, 0.0))
+    print("  g_sep = 0, p_n = +1 -> active set:", constraint.active_set)
+    assert np.all(constraint.active_set), "positive pressure at closed gap must be active"
+
+    # Increment 3: g_sep = 0 but TENSILE pressure p_n = -1 < 0 -> released
+    U_np[idx_LM_0:] = sgn_D
+    PExt.fill(0.0); K.fill(0.0)
+    constraint.applyConstraint(U_np, dU, PExt, K, TimeStep(3, 0.0, 0.0, 0.0, 0.0, 0.0))
+    print("  g_sep = 0, p_n = -1 -> active set:", constraint.active_set)
+    assert not np.any(constraint.active_set), "tensile pressure must release the node"
+    print("[PASS] Normal NCP Indicator Test Successful!")
+
+
+def test_active_set_reevaluated_every_iteration():
+    """No fixed iteration cutoff: the indicator is re-evaluated in EVERY Newton
+    iteration as long as the discrete state has not settled - also past iteration
+    5, where the previous heuristic stopped updating (Hueber & Wohlmuth 2005).
+    """
+    print("\n--- Running Active Set Re-evaluation Test ---")
+    constraint, U_np, dU, PExt, K = build_two_block_contact()
+    timeStep = TimeStep(1, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    # Eight pairwise DIFFERENT active-set patterns of the four slave nodes, so the
+    # state neither settles (freeze trigger 1) nor recurs (anti-cycling trigger 2).
+    # For linear facets D is diagonal, hence each nodal gap is controlled by that
+    # node's own displacement alone: z = 0.15 penetrates, z = 0.0 stays separated.
+    patterns = [
+        (0, 0, 0, 0), (1, 0, 0, 0), (0, 1, 0, 0), (1, 1, 0, 0),
+        (0, 0, 1, 0), (1, 0, 1, 0), (0, 1, 1, 0), (1, 1, 1, 0),
+    ]
+    for it, pat in enumerate(patterns):
+        set_slave_z(constraint, U_np, [0.15 if p else 0.0 for p in pat])
+        PExt.fill(0.0); K.fill(0.0)
+        constraint.applyConstraint(U_np, dU, PExt, K, timeStep)
+        got = tuple(int(b) for b in constraint.active_set)
+        print(f"  Iteration {constraint.current_iteration}: active set {got}, expected {pat}")
+        assert constraint.current_iteration == it
+        assert not constraint.active_set_frozen, "set has not settled - must not be frozen"
+        assert got == pat, f"iteration {it}: expected {pat}, got {got}"
+    print("[PASS] Active Set Re-evaluation Test Successful (updated up to iteration 7)!")
+
+
+def test_active_set_pdass_termination():
+    """PDASS convergence criterion (Hueber & Wohlmuth 2005): the semi-smooth
+    iteration is frozen once the discrete state has SETTLED - unchanged for two
+    consecutive iterations past a warm-up - and not after a fixed iteration count.
+    The next increment restarts it.
+    """
+    print("\n--- Running PDASS Termination Test ---")
+    constraint, U_np, dU, PExt, K = build_two_block_contact()
+    timeStep = TimeStep(1, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    # Iterations 0, 1, 2 without penetration: the state (all inactive) settles.
+    for it in range(3):
+        PExt.fill(0.0); K.fill(0.0)
+        constraint.applyConstraint(U_np, dU, PExt, K, timeStep)
+        print(f"  Iteration {constraint.current_iteration}: frozen = {constraint.active_set_frozen}")
+        assert constraint.current_iteration == it
+    assert constraint.active_set_frozen, "settled state must terminate the PDASS loop"
+
+    # A penetration applied AFTER the freeze must not change the set any more.
+    set_slave_z(constraint, U_np, [0.15] * 4)
+    PExt.fill(0.0); K.fill(0.0)
     constraint.applyConstraint(U_np, dU, PExt, K, timeStep)
-    print(f"  Iteration 5: current_iteration = {constraint.current_iteration}")
-    print("  Active set status at iteration 5 (should be all False since frozen):", constraint.active_set)
-    assert not np.any(constraint.active_set), "Expected active set to be frozen at iteration 5"
-    print("[PASS] Active Set Freezing Test Successful!")
+    print("  Active set after penetration in the frozen increment:", constraint.active_set)
+    assert not np.any(constraint.active_set), "frozen set must not change within the increment"
+
+    # The next increment restarts the semi-smooth iteration -> penetration detected.
+    PExt.fill(0.0); K.fill(0.0)
+    constraint.applyConstraint(U_np, dU, PExt, K, TimeStep(2, 0.0, 0.0, 0.0, 0.0, 0.0))
+    print("  Active set in the new increment:", constraint.active_set)
+    assert not constraint.active_set_frozen, "new increment must reset the freeze"
+    assert np.all(constraint.active_set), "penetration must be detected again"
+    print("[PASS] PDASS Termination Test Successful!")
 
 def test_bvh_search_correctness():
     print("\n--- Running BVH Search Correctness Test ---")
@@ -243,5 +338,7 @@ def test_bvh_search_correctness():
 
 if __name__ == '__main__':
     run_active_set_test()
-    test_active_set_freezing()
+    test_ncp_indicator()
+    test_active_set_reevaluated_every_iteration()
+    test_active_set_pdass_termination()
     test_bvh_search_correctness()

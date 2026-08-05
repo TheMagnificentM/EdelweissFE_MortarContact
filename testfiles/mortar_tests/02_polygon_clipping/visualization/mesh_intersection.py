@@ -1,4 +1,6 @@
 import os
+import sys
+
 import numpy as np
 from edelweissfe.constraints.mortar_geom_utils import (
     project_point_to_plane,
@@ -8,7 +10,11 @@ from edelweissfe.constraints.mortar_geom_utils import (
     sutherland_hodgman_clip,
     triangulate_polygon
 )
-from testfiles.mortar_tests.test3_mortar_intersection.vtk_exporter import write_vmesh_to_vtk
+
+# vtk_exporter lives next to this script; import it locally (the numbered
+# package dir "02_polygon_clipping" is not a valid Python module name).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from vtk_exporter import write_vmesh_to_vtk
 
 def run_large_mesh_intersection_test():
     """
@@ -117,7 +123,7 @@ def run_large_mesh_intersection_test():
         intersection_cells_3d.append(tri_3d)
         
     # 10. Write detailed coordinates and results to text report
-    output_dir = 'testfiles/mortar_tests/test3_mortar_intersection'
+    output_dir = 'testfiles/mortar_tests/02_polygon_clipping/visualization'
     os.makedirs(output_dir, exist_ok=True)
     report_path = os.path.join(output_dir, 'mesh_intersection_report.txt')
     with open(report_path, 'w') as f:

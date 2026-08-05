@@ -91,6 +91,26 @@ Steifigkeit und liegt bei ~10⁻⁶ (u_y oben −0.02 bis auf ~5·10⁻⁷ genau
 vernachlässigbar. Die weggesteuerten Tests (03, 04, 05) und der schiefe Test (06) schreiben die
 bewegte Fläche per Dirichlet vor und brauchen keine Feder.
 
+### Die Aktiv-Menge: semismooth NCP und der Parameter `cn`
+
+Ob ein Slave-Knoten Kontakt trägt, entscheidet die nichtglatte Komplementaritätsfunktion (NCP)
+der Signorini-Bedingungen (Druck p ≥ 0, Spalt g̃ ≥ 0, p·g̃ = 0):
+
+```
+C_n,I = p_I − max(0, p_I − c_n·D̃_II⁻¹·g̃_I) = 0     ⟺     aktiv ⟺ s_n,I = p_I − c_n·D̃_II⁻¹·g̃_I > 0
+```
+
+Gelöst wird das mit einer primal-dualen Active-Set-Strategie (= semismooth Newton): die Menge wird
+in **jeder** Newton-Iteration neu bestimmt, die äußere Schleife ist konvergiert, sobald sie sich
+nicht mehr ändert (Hüeber & Wohlmuth 2005; Gitterle et al. 2010, Gl. 55; Farah 2018, Abschn.
+3.5.2). Es gibt bewusst **keinen** festen Iterations-Cutoff.
+
+`c_n` ist **rein algorithmisch**: bei Konvergenz ist g̃ → 0, der Term verschwindet, die konvergierte
+Lösung ist also c_n-unabhängig — er beeinflusst nur den Iterationsweg. Zu wählen in der
+Größenordnung des E-Moduls des **weicheren** Körpers; hier ist das in allen Tests Block A mit
+E = 1000 (auch im Steifigkeitskontrast-Test 07), daher steht in jedem Input `cn=1000.0`. Ein zu
+großes c_n macht den Indikator spaltvorzeichen-dominiert und erzeugt Active-Set-Chattering.
+
 ### Die Referenzlösungen
 
 Verglichen wird gegen die exakte Handrechnung und – bei den Drucktests (01–03) – zusätzlich gegen
@@ -245,10 +265,26 @@ nie maschinengenau. Mesh: ~11–22 Elemente über die halbe Kontaktbreite. Druck
 `08_hertz/hertz_profile_*.csv`, Punktwolke in `08_hertz/lambda_hertz_*.vtk`, Bild in
 `hertz_pressure_profile.png`.
 
+> **Offener Punkt – `hertz_hex20_medium` konvergiert nicht zuverlässig.** Von den vier
+> Hertz-Varianten laufen `hex8_medium`, `hex8_fine` und `hex20_fine` durch; `hex20_medium` ist
+> seit Einführung der semismooth NCP nur noch **marginal** konvergent und dabei
+> **nichtdeterministisch** (paralleler Solver → andere Rundungsreihenfolge): ein Lauf ging über
+> 27 Inkremente durch, ein zweiter brach in Inkrement 7 ab. Mit der früheren heuristischen
+> Aktiv-Set-Regel lief er deterministisch in 10 Inkrementen. Es ist **kein** c_n-Problem – ein
+> Sweep über c_n = 10 … 10⁶ ändert nichts. Ursache ist der kleinere Konvergenzradius des
+> semismooth-Newton-Verfahrens: genau hier (quadratische Elemente, mittleres Netz) fällt die
+> Knoten-zu-Knoten-Oszillation des Kontaktdrucks am Kontaktrand mit ~10 % am stärksten aus, und
+> die Aktiv-Menge wandert dort von Iteration zu Iteration. Das literaturkonforme Gegenmittel ist
+> eine Line-Search-/Damped-Newton-Globalisierung (Deuflhard 2004; De Luca–Facchinei–Kanzow 1996),
+> **nicht** ein Rückfall auf die Heuristik. Bis dahin wird dieser eine Fall hingenommen; alle
+> übrigen 21 Varianten der Testreihe sind unberührt.
+
 **Zusammengefasst:** Der Mortar-Kontakt arbeitet in allen geprüften Fällen korrekt: er überträgt
 Druck mit gleichmäßigem Kontaktdruck, trennt sich unter Zug, gleitet reibungsfrei, hält die
 Steifigkeit elementunabhängig (auch bei Steifigkeitskontrast), ist auf einer um 30° geneigten
 Fläche maschinengenau und reproduziert den Hertz'schen Kontakt im erwarteten Näherungsrahmen.
 Weggesteuert (03), Abheben (04), Gleiten (05) und der schiefe Test (06) sind maschinengenau ganz
 ohne Eingriff; bei den kraftgesteuerten Fällen (01, 02) steckt nur die dokumentierte, winzige
-Stabilisierungsfeder (~10⁻⁶) drin. Kein Restfehler stammt aus einem Fehler des Kontakts.
+Stabilisierungsfeder (~10⁻⁶) drin. Kein Restfehler stammt aus einem Fehler des Kontakts. Einzige
+Ausnahme im Konvergenzverhalten (nicht in der Genauigkeit) ist `hertz_hex20_medium` – siehe den
+Kasten oben.

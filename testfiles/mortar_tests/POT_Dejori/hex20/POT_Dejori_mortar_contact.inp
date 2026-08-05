@@ -158,36 +158,42 @@ penalty=400
 nonMortarSurface=con_conc_l_stud_vert
 mortarSurface=con_stl_l_stud_vert
 field=displacement
+cn=41069.0
 **
 ** --- Links: Kopf unten (horizontal) ---
 *constraint, type=mortarcontact, name=contact_l_head_horiz
 nonMortarSurface=con_conc_l_head_horiz
 mortarSurface=con_stl_l_head_horiz
 field=displacement
+cn=41069.0
 **
 ** --- Links: Kopf seitlich (vertikal) ---
 *constraint, type=mortarcontact, name=contact_l_head_vert
 nonMortarSurface=con_conc_l_head_vert
 mortarSurface=con_stl_l_head_vert
 field=displacement
+cn=41069.0
 **
 ** --- Rechts: Schaft seitlich (vertikal) ---
 *constraint, type=mortarcontact, name=contact_r_stud_vert
 nonMortarSurface=con_conc_r_stud_vert
 mortarSurface=con_stl_r_stud_vert
 field=displacement
+cn=41069.0
 **
 ** --- Rechts: Kopf unten (horizontal) ---
 *constraint, type=mortarcontact, name=contact_r_head_horiz
 nonMortarSurface=con_conc_r_head_horiz
 mortarSurface=con_stl_r_head_horiz
 field=displacement
+cn=41069.0
 **
 ** --- Rechts: Kopf seitlich (vertikal) ---
 *constraint, type=mortarcontact, name=contact_r_head_vert
 nonMortarSurface=con_conc_r_head_vert
 mortarSurface=con_stl_r_head_vert
 field=displacement
+cn=41069.0
 **
 ** ------------------------------------------------------------------------------
 ** LASTSCHRITT

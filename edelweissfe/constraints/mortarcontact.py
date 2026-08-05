@@ -40,6 +40,21 @@ from edelweissfe.utils.misc import (
 """
 A mortar contact constraint with Lagrange multipliers and dual basis functions.
 
+The Signorini conditions (normal pressure p_I >= 0, weighted gap g_I >= 0,
+complementarity p_I g_I = 0) are enforced through a single non-smooth
+complementarity function (NCP)
+
+    C_n,I = p_I - max(0, p_I - c_n D_II^-1 g_I) = 0
+        <=>  active  iff  s_n,I = p_I - c_n D_II^-1 g_I > 0,
+
+solved by a primal-dual active set strategy = semi-smooth Newton method
+(Hueber & Wohlmuth 2005; Gitterle et al. 2010, Eq. (55); Farah 2018,
+Sec. 3.5.2). The active set is re-evaluated in EVERY Newton iteration and the
+outer (semi-smooth) loop is converged as soon as the set no longer changes;
+c_n > 0 is purely algorithmic (g_I -> 0 at convergence, hence the converged
+solution is c_n-independent) and is chosen at the order of Young's modulus of
+the softer body.
+
 Only the saddle-point formulation (explicit multiplier DOFs) is implemented.
 A "dual condensation" variant (eliminating the multipliers via lambda_I =
 -g_weak,I / D_II, evaluated fresh from the current gap each iteration) was
@@ -74,6 +89,23 @@ if keyword in inputLanguage:
 module.addRequiredArg("nonMortarSurface", "The non-mortar (slave) surface name.", str)
 module.addRequiredArg("mortarSurface", "The mortar (master) surface name.", str)
 module.addOptionalArg("field", "The field this constraint acts on (e.g. displacement).", str, "displacement")
+module.addOptionalArg(
+    "cn",
+    "Semi-smooth-Newton complementarity parameter c_n (> 0) of the normal contact "
+    "NCP. It enters the semi-smooth active-set indicator s_n = p_n - c_n*inv_D*g_sep "
+    "(active iff s_n > 0; Gitterle et al. 2010 Eq. 55; Hueber & Wohlmuth 2005; MOOSE "
+    "ComputeWeightedGapLMMechanicalContact). It is normalized by the nodal mortar "
+    "weight D_II so that c_n*inv_D*g_sep is a pressure directly comparable to p_n. "
+    "Purely algorithmic - no effect on the converged solution (g_sep -> 0 there), so "
+    "the converged normal-contact result is identical to any admissible active-set "
+    "rule. It MUST be chosen at the order of Young's modulus of the softer contacting "
+    "body (Hueber & Wohlmuth 2005; Farah 2018 Sec. 3.5.2, c_n ~ O(E)): a too-large "
+    "c_n makes the indicator gap-sign dominated, so near-boundary nodes flip "
+    "active/inactive every iteration -> active-set chattering / non-convergence. Set "
+    "it explicitly per problem; the default below is only a fallback.",
+    float,
+    1.0e6,
+)
 
 documentation = [module]
 
@@ -320,6 +352,11 @@ class Constraint(ConstraintBase):
         self._fieldsOnNodes = [[self.field]] * len(self._nodes)
         self.active = True
 
+        # Semi-smooth-Newton complementarity parameter of the normal contact NCP
+        # (Gitterle et al. 2010 Eq. 55; Hueber & Wohlmuth 2005). Purely
+        # algorithmic; must be ~O(E) of the softer body (Farah 2018 Sec. 3.5.2).
+        self.c_n = float(kwargs["cn"])
+
         # Node index lookups for fast access
         self.node_to_global_idx = {node: i for i, node in enumerate(self._nodes)}
         self.slave_node_to_idx = {node: i for i, node in enumerate(self.non_mortar_nodes)}
@@ -334,8 +371,18 @@ class Constraint(ConstraintBase):
         # Initialize PDASS variables
         self.active_set = np.zeros(self.nNonMortarNodes, dtype=bool)
         self.use_active_set = True
-        self.last_timestep_number = -1
+        # Identifies the increment ATTEMPT (number, size, end time) - see
+        # applyConstraint: a cutback re-attempt keeps the number but changes size.
+        self.last_timestep_key = None
         self.current_iteration = 0
+        # Termination + anti-cycling state of the semi-smooth (PDASS) iteration,
+        # reset per increment in applyConstraint: the set is frozen for the rest
+        # of the increment once it has settled (Hueber & Wohlmuth 2005) or once a
+        # discrete state already visited this increment recurs (Bland 1977).
+        self.active_set_frozen = False
+        self.active_set_stable_count = 0
+        self._seen_states = set()
+        self._last_state = None
 
     @property
     def nodes(self) -> list:
@@ -662,9 +709,32 @@ class Constraint(ConstraintBase):
         # Normals and coupling matrices are frozen within each increment
         # (staggered geometry update), so the assembled stiffness is the exact
         # Jacobian of the residual equations within the increment.
-        if timeStep.number != self.last_timestep_number or not hasattr(self, "current_normals"):
-            self.last_timestep_number = timeStep.number
+        # A RE-ATTEMPT of an increment after a solver cutback carries the SAME
+        # increment number but a smaller time increment, and it restarts the Newton
+        # iteration from the last converged state. It must therefore be treated
+        # exactly like a new increment: the staggered geometry (normals, D, C) has
+        # to be re-evaluated at the state the attempt starts from - otherwise the
+        # frozen data would stem from the diverged iterate of the failed attempt -
+        # and the semi-smooth active-set iteration has to restart as well.
+        # Keying the reset on the increment number alone would miss this.
+        step_key = (timeStep.number, timeStep.timeIncrement, timeStep.totalTime)
+        if step_key != self.last_timestep_key or not hasattr(self, "current_normals"):
+            self.last_timestep_key = step_key
             self.current_iteration = 0
+            # The active set (Signorini) is re-evaluated in EVERY Newton iteration
+            # and the outer semi-smooth loop is converged once the set no longer
+            # changes - the convergence criterion of the primal-dual active set
+            # strategy (Hueber & Wohlmuth 2005) / semi-smooth Newton mortar contact
+            # (Gitterle et al. 2010; Popp et al. 2012). There is deliberately NO
+            # fixed iteration-count cutoff (that would be an ad-hoc heuristic and
+            # could freeze a not-yet-settled set); a safeguard cap only guards
+            # against pathological non-settling. Reset per increment:
+            self.active_set_frozen = False
+            self.active_set_stable_count = 0
+            # Anti-cycling bookkeeping (Bland 1977): the discrete states already
+            # visited this increment, and the immediately previous one.
+            self._seen_states = set()
+            self._last_state = None
             self.current_normals = self.compute_normals(U_np)
             D_full, C_full = self.compute_mortar_coupling_matrices(U_np)
             # The FULL (element-locally sparse) D matrix is used for forces,
@@ -718,15 +788,32 @@ class Constraint(ConstraintBase):
             if len(nzC):
                 g_I_weak += C[I, nzC] @ (x_master[nzC] @ n_I)
 
-            if self.use_active_set:
-                if self.current_iteration < 5:
-                    sgn_D = np.sign(self.current_D_rowsum[I])
-                    if self.active_set[I]:
-                        if lambda_I * sgn_D > 1e-10:
-                            self.active_set[I] = False
-                    else:
-                        if g_I_weak * sgn_D < -1e-10:
-                            self.active_set[I] = True
+            sgn_D = np.sign(self.current_D_rowsum[I])
+            D_II = self.current_D_rowsum[I]
+            inv_D = 1.0 / D_II if abs(D_II) > 1e-30 else 0.0
+            p_n = -lambda_I * sgn_D   # physical normal pressure (>= 0 in contact)
+            g_sep = g_I_weak * sgn_D  # separation gap (>0 open, <0 penetrating)
+
+            if self.use_active_set and not self.active_set_frozen:
+                # Semi-smooth normal complementarity (Gitterle et al. 2010 Eq. 55;
+                # Hueber & Wohlmuth 2005; MOOSE ComputeWeightedGapLMMechanical
+                # Contact): the Signorini KKT conditions p_n >= 0, g_sep >= 0,
+                # p_n*g_sep = 0 are written as the single non-smooth function
+                #   C_n = p_n - max(0, p_n - c_n*inv_D*g_sep) = 0,
+                # whose two branches are
+                #   active   (s_n > 0):  constraint  g_weak = 0,
+                #   inactive (s_n <= 0): constraint  lambda = 0,
+                # with the augmented indicator s_n = p_n - c_n*inv_D*g_sep. It is
+                # re-evaluated EVERY Newton iteration - this is the literature-
+                # standard PDASS = semi-smooth-Newton formulation with local
+                # superlinear convergence. c_n is purely algorithmic: at
+                # convergence g_sep -> 0, so the converged result is c_n-
+                # independent and identical to any admissible active-set rule;
+                # c_n ~ O(E) of the softer body (Farah 2018 Sec. 3.5.2). The
+                # D_II-normalization makes c_n*inv_D*g_sep a pressure directly
+                # comparable to p_n.
+                s_n = p_n - self.c_n * inv_D * g_sep
+                self.active_set[I] = bool(s_n > 0.0)
 
             self.recovered_lambdas[I] = lambda_I if self.active_set[I] else 0.0
 
@@ -750,3 +837,31 @@ class Constraint(ConstraintBase):
             else:
                 PExt[idx_LM_I] -= lambda_I
                 K[idx_LM_I, idx_LM_I] += 1.0
+
+        # Termination of the semi-smooth active-set iteration. The discrete state
+        # is the normal active set, updated every Newton iteration. Two
+        # literature-grounded freeze triggers:
+        #  (1) PDASS convergence (Hueber & Wohlmuth 2005): the state has settled,
+        #      i.e. is unchanged for two consecutive iterations past a warm-up.
+        #  (2) Anti-cycling (Bland 1977): the state CHANGED this iteration but
+        #      revisits a state already seen earlier this increment -> a proven
+        #      limit cycle (only finitely many states, so a revisit-after-change
+        #      is a cycle). Freezing breaks it; the remaining Newton iterations
+        #      are a linear solve on the fixed set.
+        # A hard iteration cap remains as a final safeguard.
+        if self.use_active_set and not self.active_set_frozen:
+            state = self.active_set.tobytes()
+            changed = state != self._last_state
+            if changed:
+                self.active_set_stable_count = 0
+            else:
+                self.active_set_stable_count += 1
+            cycle = changed and (state in self._seen_states)
+            self._seen_states.add(state)
+            self._last_state = state
+            if (
+                (self.active_set_stable_count >= 2 and self.current_iteration >= 2)
+                or cycle
+                or (self.current_iteration >= 20)
+            ):
+                self.active_set_frozen = True

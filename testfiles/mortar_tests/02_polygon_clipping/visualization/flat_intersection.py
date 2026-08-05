@@ -98,7 +98,7 @@ def test_flat_intersection():
     ax.set_title('3D Mortar Contact Flat Surface Clipping and Triangulation')
     ax.legend()
     
-    output_dir = 'testfiles/mortar_tests/test3_mortar_intersection'
+    output_dir = 'testfiles/mortar_tests/02_polygon_clipping/visualization'
     os.makedirs(output_dir, exist_ok=True)
     output_image = os.path.join(output_dir, 'flat_intersection_plot.png')
     plt.savefig(output_image)

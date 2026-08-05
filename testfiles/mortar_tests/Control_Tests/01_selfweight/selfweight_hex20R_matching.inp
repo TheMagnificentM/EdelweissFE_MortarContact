@@ -50,10 +50,14 @@ genA_all
 *section, name=secB, material=mat, type=solid
 genB_all
 
+** cn: Komplementaritaetsparameter c_n der Normalkontakt-NCP, rein algorithmisch
+** (kein Einfluss auf die konvergierte Loesung) und in der Groessenordnung des
+** E-Moduls des weicheren Koerpers zu waehlen -> E_A = 1000 (Farah 2018, 3.5.2).
 *constraint, type=mortarcontact, name=contact
 nonMortarSurface=con_slave
 mortarSurface=con_master
 field=displacement
+cn=1000.0
 
 *job, name=selfweightjob, domain=3d
 *solver, name=theSolver, solver=NISTParallel

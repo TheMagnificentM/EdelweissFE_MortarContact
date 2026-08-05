@@ -44,6 +44,13 @@ WITH_MONOLITH = {"selfweight", "pressure", "dispcontrol"}
 E_A_STIFF = 1000.0      # Block A (unten, Slave) = weich
 E_B_STIFF = 100000.0    # Block B (oben, Master) = steif (Verhaeltnis 100)
 
+# Komplementaritaetsparameter c_n der semismooth Normalkontakt-NCP. Rein
+# algorithmisch (bei Konvergenz g -> 0, also loesungsunabhaengig) und in der
+# Groessenordnung des E-Moduls des WEICHEREN Koerpers zu waehlen (Hueber &
+# Wohlmuth 2005; Farah 2018, Abschn. 3.5.2). Der weichere Block ist in allen
+# Tests Block A mit E = 1000 (auch im Steifigkeitskontrast-Test 07).
+CN = 1000.0
+
 # --- exakte / erwartete Loesung, als Kommentarblock je Test --------------------
 EXACT = {
     "selfweight": (
@@ -247,10 +254,14 @@ elType={elType}
 
 {MATSEC[test]}
 
+** cn: Komplementaritaetsparameter c_n der Normalkontakt-NCP, rein algorithmisch
+** (kein Einfluss auf die konvergierte Loesung) und in der Groessenordnung des
+** E-Moduls des weicheren Koerpers zu waehlen -> E_A = 1000 (Farah 2018, 3.5.2).
 *constraint, type=mortarcontact, name=contact
 nonMortarSurface=con_slave
 mortarSurface=con_master
 field=displacement
+cn={CN}
 
 *job, name={test}job, domain=3d
 *solver, name=theSolver, solver=NISTParallel
@@ -403,10 +414,12 @@ genA_all
 *section, name=secB, material=mat, type=solid
 genB_all
 
+** cn: Komplementaritaetsparameter c_n der Normalkontakt-NCP ~ O(E) = 1000.
 *constraint, type=mortarcontact, name=contact
 nonMortarSurface=con_slave
 mortarSurface=con_master
 field=displacement
+cn={CN}
 
 *job, name=hertzjob, domain=3d
 *solver, name=theSolver, solver=NISTParallel
