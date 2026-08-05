@@ -1,0 +1,82 @@
+** ==============================================================================
+** Control Test 08 - Hertz'scher Kontakt   (hex20_medium)
+** ==============================================================================
+**
+** Parabolischer Indenter (Block B, Unterseite y += x^2/2R, R=10.0)
+** auf flacher Foundation (Block A). Beide linear-elastisch (E=1000, nu=0), duenne
+** Scheibe mit z-Fixierung (ebener Verzerrungszustand), Halbmodell x>=0 mit
+** Symmetrie bei x=0. Verschiebungsgesteuert (Indenter oben um 0.03 gedrueckt).
+**
+** VERGLEICH: Kontaktdruck-Verteilung lambda(x) gegen Hertz p(x)=p0*sqrt(1-(x/a)^2),
+**   Kontakthalbbreite a und Maximaldruck p0 aus der berechneten Last P' (2D Hertz):
+**   a = sqrt(4 P' R / (pi E*)),  p0 = 2 P'/(pi a),  1/E* = (1-nu^2)/E1 + (1-nu^2)/E2.
+** Hertz ist eine Naeherung (Halbraum) -> nicht maschinengenau, konvergiert aber mit
+** Netzverfeinerung (coarse -> medium -> fine).
+**
+** Ausfuehren:  edelweissfe hertz_hex20_medium.inp
+** Auswerten:   python ../evaluate.py hertz_hex20_medium.inp
+** ------------------------------------------------------------------------------
+
+*modelGenerator, generator=boxGen, name=genA
+x0=0.0
+nX=100
+nY=12
+nZ=1
+lX=4.0
+lY=5.0
+lZ=0.1
+elType=C3D20
+
+*modelGenerator, generator=boxGen, name=genB
+x0=0.0
+y0=5.0
+nX=100
+nY=12
+nZ=1
+lX=4.0
+lY=5.0
+lZ=0.1
+elType=C3D20
+
+*modelGenerator, generator=executePythonCode, name=hertzgen
+import os
+import sys
+sys.path.append(os.getcwd())
+sys.path.append(os.path.dirname(os.getcwd()))
+import contact_setup
+contact_setup.setup_hertz(model)
+
+*material, name=linearelastic, id=mat
+1000.0, 0.0
+
+*section, name=secA, material=mat, type=solid
+genA_all
+*section, name=secB, material=mat, type=solid
+genB_all
+
+*constraint, type=mortarcontact, name=contact
+nonMortarSurface=con_slave
+mortarSurface=con_master
+field=displacement
+
+*job, name=hertzjob, domain=3d
+*solver, name=theSolver, solver=NISTParallel
+
+*fieldOutput
+>>perNode,    name=displacement, elSet=all, field=displacement, result=U
+>>perNode,    name=P,            elSet=all, field=displacement, result=P
+>>perElement, name=stress,       elSet=solids, result=stress, quadraturePoint=0:27, f(x)='np.mean(x,axis=1)'
+
+*output, type=ensight, name=ensight_hertz_hex20_medium
+>>perNode,    fieldOutput=displacement
+>>perNode,    fieldOutput=P
+>>perElement, fieldOutput=stress
+>>configuration, overwrite=yes
+
+*step, solver=theSolver
+maxInc=0.1, minInc=1e-4, maxNumInc=400, maxIter=30, stepLength=1
+>>dirichlet, name=zfix, nSet=allnodes,    field=displacement, 3=0.0
+>>dirichlet, name=symA, nSet=genA_left,   field=displacement, 1=0.0
+>>dirichlet, name=symB, nSet=genB_left,   field=displacement, 1=0.0
+>>dirichlet, name=bot,  nSet=genA_bottom, field=displacement, 1=0.0, 2=0.0
+>>dirichlet, name=top,  nSet=genB_top,    field=displacement, 2=-0.03, f(t)=t

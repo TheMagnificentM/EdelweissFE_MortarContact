@@ -1,0 +1,48 @@
+
+*modelGenerator, generator=boxGen, name=genA
+x0=0.0
+nX=160
+nY=14
+nZ=1
+lX=6
+lY=6
+lZ=0.1
+elType=C3D20
+*modelGenerator, generator=boxGen, name=genB
+x0=0.0
+y0=6
+nX=160
+nY=14
+nZ=1
+lX=6
+lY=6
+lZ=0.1
+elType=C3D20
+*modelGenerator, generator=executePythonCode, name=g
+import os
+import sys
+sys.path.append(os.getcwd())
+import contact_setup
+contact_setup.setup_hertz(model)
+*material, name=linearelastic, id=mat
+1000.0, 0.0
+*section, name=secA, material=mat, type=solid
+genA_all
+*section, name=secB, material=mat, type=solid
+genB_all
+*constraint, type=mortarcontact, name=contact
+nonMortarSurface=con_slave
+mortarSurface=con_master
+field=displacement
+*job, name=j, domain=3d
+*solver, name=s, solver=NISTParallel
+*fieldOutput
+>>perNode, name=P, elSet=all, field=displacement, result=P
+>>perNode, name=displacement, elSet=all, field=displacement, result=U
+*step, solver=s
+maxInc=0.1, minInc=1e-4, maxNumInc=400, maxIter=30, stepLength=1
+>>dirichlet, name=zf, nSet=allnodes, field=displacement, 3=0.0
+>>dirichlet, name=symA, nSet=genA_left, field=displacement, 1=0.0
+>>dirichlet, name=symB, nSet=genB_left, field=displacement, 1=0.0
+>>dirichlet, name=bot, nSet=genA_bottom, field=displacement, 1=0.0, 2=0.0
+>>dirichlet, name=top, nSet=genB_top, field=displacement, 2=-0.03, f(t)=t
