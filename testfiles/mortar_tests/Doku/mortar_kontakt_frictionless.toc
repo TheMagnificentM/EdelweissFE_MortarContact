@@ -1,0 +1,64 @@
+\babel@toc {german}{}\relax 
+\contentsline {section}{Geltungsbereich und Implementierungsstand}{4}{section*.2}%
+\contentsline {section}{\numberline {1}Einleitung und Problemstellung}{5}{section.1}%
+\contentsline {section}{\numberline {2}Kontinuierliche Formulierung}{6}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Kinematik und Spalt}{6}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Hertz--Signorini--Moreau / KKT-Bedingungen}{6}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}Schwache Form und Multiplikatorraum}{6}{subsection.2.3}%
+\contentsline {section}{\numberline {3}Diskretisierung und Programmarchitektur}{7}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Kontaktelemente als geometrische Rand-Overlays}{7}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Verarbeitungs-Pipeline}{7}{subsection.3.2}%
+\contentsline {subsection}{\numberline {3.3}Modulzuordnung}{7}{subsection.3.3}%
+\contentsline {section}{\numberline {4}Geometrische Verarbeitung: Nachbarsuche, Projektion, Clipping}{8}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Nachbarsuche mit Bounding-Volume-Hierarchie}{8}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Hilfsebene und Projektion}{8}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}Sutherland--Hodgman-Clipping und Triangulierung}{8}{subsection.4.3}%
+\contentsline {section}{\numberline {5}Segmentbasierte Quadratur: warum Genauigkeitsgrad 5}{9}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Notwendigkeit der segmentbasierten Integration}{9}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Anhebung des Integrationsgrades}{9}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Die 7-Punkt-Regel vom Grad 5 (Dunavant, 1985)}{10}{subsection.5.3}%
+\contentsline {subsection}{\numberline {5.4}Der zweidimensionale Fall}{10}{subsection.5.4}%
+\contentsline {subsection}{\numberline {5.5}Auswertung an den Gauß-Punkten}{10}{subsection.5.5}%
+\contentsline {section}{\numberline {6}Koppelmatrizen $\bm {D},\bm {M}$ und gewichteter Spalt}{11}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Entstehung von $\bm {D}$ und $\bm {M}$}{11}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Gewichteter (schwacher) Normalspalt}{11}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Zeilensummen-Identität und Impulserhaltung}{11}{subsection.6.3}%
+\contentsline {section}{\numberline {7}Duale Lagrange-Multiplikatoren und Biorthogonalität}{13}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Definition und Motivation}{13}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Diagonalisierung von $\bm {D}$}{13}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}Elementlokale Konstruktion}{13}{subsection.7.3}%
+\contentsline {section}{\numberline {8}Duale Basis für quadratische Elemente: die Basistransformation $\bm {T}_e$}{14}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Verlust der Integral-Positivität bei quadratischen Formfunktionen}{14}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}Basistransformation der Formfunktionen}{14}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}Wahl des Transformationsparameters $\alpha $}{15}{subsection.8.3}%
+\contentsline {paragraph}{Integral-Positivität genügt bei partieller Überdeckung nicht.}{15}{section*.3}%
+\contentsline {paragraph}{Numerischer Befund.}{15}{section*.4}%
+\contentsline {subsection}{\numberline {8.4}Auswirkung auf die Struktur von $\bm {D}$}{16}{subsection.8.4}%
+\contentsline {section}{\numberline {9}Quadratische Facetten: lineare Sub-Cells}{17}{section.9}%
+\contentsline {subsection}{\numberline {9.1}Notwendigkeit der linearen Zerlegung}{17}{subsection.9.1}%
+\contentsline {subsection}{\numberline {9.2}Die konkrete Zerlegung}{17}{subsection.9.2}%
+\contentsline {subsection}{\numberline {9.3}Wie die Krümmung dennoch eingeht}{17}{subsection.9.3}%
+\contentsline {section}{\numberline {10}Knotennormalen und eingefrorene Geometrie}{18}{section.10}%
+\contentsline {subsection}{\numberline {10.1}Flächengewichtete Knotennormale}{18}{subsection.10.1}%
+\contentsline {subsection}{\numberline {10.2}Eingefrorene Geometrie (staggered update)}{18}{subsection.10.2}%
+\contentsline {section}{\numberline {11}Signorini als semismooth NCP}{19}{section.11}%
+\contentsline {subsection}{\numberline {11.1}Von den KKT-Bedingungen zur NCP-Funktion}{19}{subsection.11.1}%
+\contentsline {subsection}{\numberline {11.2}Der Aktivierungsindikator und die Codeform}{19}{subsection.11.2}%
+\contentsline {subsection}{\numberline {11.3}Der Parameter $c_n$}{20}{subsection.11.3}%
+\contentsline {subsection}{\numberline {11.4}PDASS als semismooth Newton}{20}{subsection.11.4}%
+\contentsline {section}{\numberline {12}Lösungsstrategie: Newton-Ablauf und Active-Set}{21}{section.12}%
+\contentsline {subsection}{\numberline {12.1}Sattelpunkt-Struktur}{21}{subsection.12.1}%
+\contentsline {subsection}{\numberline {12.2}Ein Newton pro Increment mit eingefrorener Geometrie}{21}{subsection.12.2}%
+\contentsline {subsection}{\numberline {12.3}Active-Set-Iteration und Anti-Cycling}{21}{subsection.12.3}%
+\contentsline {section}{\numberline {13}Verifikation}{22}{section.13}%
+\contentsline {section}{\numberline {14}Forschung: Warum ist \texttt {\small hex20} im Ausziehversuch steifer als \texttt {\small hex8}?}{23}{section.14}%
+\contentsline {subsection}{\numberline {14.1}Beobachtung}{23}{subsection.14.1}%
+\contentsline {subsection}{\numberline {14.2}Der entscheidende Hinweis: die Steifigkeit bestimmt der Kontakt, nicht das Volumenelement}{23}{subsection.14.2}%
+\contentsline {subsection}{\numberline {14.3}Der physikalische Mechanismus: Lasteinleitung am Bolzenkopf}{23}{subsection.14.3}%
+\contentsline {subsection}{\numberline {14.4}Abgleich mit der Verifikation}{24}{subsection.14.4}%
+\contentsline {subsection}{\numberline {14.5}Schlussfolgerung}{24}{subsection.14.5}%
+\contentsline {section}{\numberline {15}Zusammenfassung}{25}{section.15}%
+\contentsline {section}{\numberline {16}Anwendungsanleitung: Kontaktspezifikation in der Input-Datei}{26}{section.16}%
+\contentsline {subsection}{\numberline {16.1}Syntax-Struktur des Mortar-Constraint-Blocks}{26}{subsection.16.1}%
+\contentsline {subsection}{\numberline {16.2}Schlüsselwörter}{26}{subsection.16.2}%
+\contentsline {subsection}{\numberline {16.3}Vorbereitung der Oberflächen und Kontaktelemente}{26}{subsection.16.3}%

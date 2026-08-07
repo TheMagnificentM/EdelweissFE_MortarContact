@@ -1,0 +1,1207 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[german]{babel}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{bm}
+\usepackage{geometry}
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{xurl}
+\usepackage[round,authoryear]{natbib}
+\usepackage{hyperref}
+
+\geometry{margin=2.5cm}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+% Mathe-Makros in PDF-Lesezeichen (hyperref) neutralisieren
+\pdfstringdefDisableCommands{%
+  \def\bm#1{#1}%
+  \def\tfrac#1#2{#1/#2}%
+  \def\tilde#1{#1}%
+}
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.96,0.96,0.94}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2
+}
+\lstset{style=mystyle}
+
+\newcommand{\Ntilde}{\tilde{N}}
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\file}[1]{\texttt{\small #1}}
+
+% Saubere Ränder: keine microtype-Protrusion (Bindestriche/Klammern/Schrägstriche
+% ragen sonst optisch in den Rand); Notfall-Dehnung gegen überstehende Zeilen.
+\microtypesetup{protrusion=false}
+\emergencystretch=3em
+\hyphenation{Con-straint}
+
+% Große Abschnitte (\section) immer auf einer neuen Seite beginnen.
+\let\stdsection\section
+\renewcommand{\section}{\clearpage\stdsection}
+
+\title{\textbf{Reibungsfreier Mortar-Kontakt in EdelweissFE}\\
+\large Theorie, Herleitung und Implementierung des Normalkontakts\\
+\normalsize (Branch \code{0\_mortarcontact})}
+\author{\textbf{Manuel Hradsky}\\
+\small Arbeitsbereich f\"ur Festigkeitslehre und Baustatik\\
+\small Universit\"at Innsbruck}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Dieses Dokument beschreibt Theorie, Herleitung und Implementierung des \emph{reibungsfreien}
+Mortar-Normalkontakts, wie er auf dem Branch \code{0\_mortarcontact} des Finite-Elemente-Frameworks
+\code{EdelweissFE} rechnet. Die Darstellung ist bewusst als in sich geschlossene, paper-artige
+Referenz angelegt: jede Formel, jeder Algorithmus und jede Konstante wird aus den Primärquellen
+der Literatur hergeleitet und mit exakter Fundstelle (Autor, Jahr, Gleichung bzw.\ Abschnitt)
+belegt, und jeder Baustein wird auf die konkrete Codestelle (\file{Datei:Zeile}) abgebildet.
+Die Formulierung beruht auf \emph{dualen} Lagrange-Multiplikatoren zur knotenweisen Entkopplung der
+Kontaktbedingungen \citep{wohlmuth2000}, einer \emph{segmentbasierten} Integration mit linearer
+Sub-Zellen-Zerlegung für lineare und quadratische Facetten- und Linienelemente
+(\code{CONLINE2/3}, \code{CONQUAD4/8/9}, \code{CONTRI3/6}), einer konsistenten Randbehandlung
+partiell überdeckter Elemente \citep{cichosz} und einer semiglatten Primal-Dual
+Active-Set-Strategie (PDASS) zur Lösung der diskreten Signorini-Bedingungen
+\citep{hueber2005,gitterle}. Besonderes Gewicht liegt auf den vier
+technischen Kernpunkten der zugehörigen Präsentation: (i)~warum die Segmentquadratur den
+Genauigkeitsgrad~5 verwendet (7-Punkt-Dreiecksregel nach \citealt{dunavant1985}), (ii)~Herleitung der
+Koppelmatrizen $\bm D,\bm M$ und des gewichteten Spalts, (iii)~warum die Basistransformation
+quadratischer Elemente den Faktor $\tfrac13$ trägt \citep{popp2012}, und (iv)~die Herleitung
+der Normal-NCP-Funktion \citep[Gl.~(55)]{gitterle}. Reibung und statische Kondensation
+sind auf diesem Branch \emph{nicht} enthalten und werden hier bewusst nicht behandelt.
+\end{abstract}
+
+\clearpage
+\tableofcontents
+\clearpage
+
+% =====================================================================
+\section*{Geltungsbereich und Implementierungsstand}
+\addcontentsline{toc}{section}{Geltungsbereich und Implementierungsstand}
+
+Beschrieben wird ausschließlich der Zustand auf Branch \code{0\_mortarcontact}: der reibungsfreie
+Mortar-Normalkontakt in \textbf{Sattelpunkt-Formulierung} (die Lagrange-Multiplikatoren sind
+explizite zusätzliche Unbekannte). Es gibt auf diesem Branch:
+\begin{itemize}
+  \item \textbf{keine} Coulomb-Reibung (kein \code{friction\_coefficient}-Schlüsselwort),
+  \item \textbf{keine} statische/duale Kondensation (kein \code{condensation}-Schlüsselwort). Die
+        Constraint-Argumente sind \code{nonMortarSurface}, \code{mortarSurface}, \code{field} sowie
+        der NCP-Parameter \code{cn} (\file{mortarcontact.py:\allowbreak{}89--108}); \code{cn} ist optional
+        (Standard $10^6$), sollte aber gesetzt werden (Abschnitt~\ref{sec:ncp}).
+\end{itemize}
+Auf diesem Branch wird pro Slave-Knoten \emph{genau ein skalarer} Lagrange-Multiplikator
+instanziiert -- die Normalkomponente $\lambda_I$ der Kontakttraktion (der Kontaktdruck): es gibt
+einen Multiplikator-Freiheitsgrad je Slave-Knoten, \emph{nicht} $\dim$
+(\file{mortarcontact.py:\allowbreak{}348--351}). Die Kontaktkraft entsteht daraus als
+$\lambda_I\,\bm n_I$, also allein in Richtung der Knotennormale
+(\file{mortarcontact.py:\allowbreak{}825, 833}). In der allgemeinen (kontinuierlichen)
+Mortar-Formulierung ist der Multiplikator ein vollst\"andiger Traktionsvektor
+$\bm z_I\in\mathbb R^{\dim}$, dessen Tangentialkomponenten erst mit Coulomb-Reibung physikalisch
+aktiv w\"urden (dann $\dim$ Multiplikatoren je Knoten). Diese Vektor-Erweiterung ist der
+nat\"urliche Reibungspfad, auf Branch \code{0\_mortarcontact} aber \emph{nicht} instanziiert.
+Der Code ist reines Python im Framework \code{EdelweissFE}; die drei
+zentralen Quelldateien -- \file{mortarcontact.py} (867~Z.), \file{mortar\_geom\_utils.py} (119~Z.)
+und \file{contactelement/element.py} (511~Z.) -- werden mit ihren vollständigen Pfaden in
+Abschnitt~\ref{sec:architektur} (Tab.~Modulzuordnung) aufgeführt.
+
+\medskip
+\noindent\textbf{Notationskonvention.} In der Literatur und in der Präsentation heißt die
+Slave--Master-Koppelmatrix~$\bm M$. Im Quelltext heißt dieselbe Matrix~\code{C}, während der
+Bezeichner~\code{M} dort für die lokale Biorthogonalitäts-Massenmatrix reserviert ist. Dieses
+Dokument folgt der Literatur und schreibt durchgehend $\bm D$ (Slave--Slave) und $\bm M$
+(Slave--Master); an den Codestellen wird jeweils auf den Bezeichner \code{C} hingewiesen.
+
+% =====================================================================
+\section{Einleitung und Problemstellung}
+\label{sec:einleitung}
+
+Zwei deformierbare Körper -- im Zielanwendungsfall ein Stahlanker (Master) in einem Betonblock
+(Slave) -- sollen an ihrer gemeinsamen Kontaktfläche $\gamma_c$ Kräfte übertragen, ohne sich zu
+durchdringen. Die Finite-Elemente-Netze der beiden Körper sind \emph{nichtkonform}: ihre Knoten
+treffen an der Kontaktfläche nicht aufeinander. Ein klassischer Knoten-auf-Knoten-Kontakt
+(\emph{node-to-node}) setzt die Nichtdurchdringung punktweise an paarenden Knoten durch und ist
+damit auf nichtkonforme Netze nicht anwendbar: es gibt keine natürliche Knotenpaarung, und ein
+naiver Knoten-auf-Segment-Kontakt (\emph{node-to-segment}) verletzt den Kontakt-Patch-Test, weil er
+einen konstanten Druck nicht exakt überträgt~\citep{wriggers}.
+
+Die \textbf{Mortar-Methode} setzt die Kontaktbedingung stattdessen \emph{schwach} durch: nicht
+punktweise, sondern im integralen Mittel über die Kontaktfläche, gewichtet mit den Formfunktionen
+der Slave-Seite. Der zugehörige Lagrange-Multiplikator $\bm\lambda$ ist physikalisch die
+Kontakttraktion (im reibungsfreien Fall der Kontaktdruck) und lebt auf der Slave-Fläche. Werden für
+$\bm\lambda$ \emph{duale} Formfunktionen im Sinne von \citet{wohlmuth2000} gewählt, so
+entkoppeln die Kontaktbedingungen knotenweise (Abschnitte~\ref{sec:koppelmatrizen}
+und~\ref{sec:dual}), und die Methode besteht den Kontakt-Patch-Test bei optimaler
+Konvergenzordnung. Die Mortar-Methode ist heute der Standardzugang für Kontakt zwischen
+nichtkonformen Netzen bei großen Deformationen~\citep{puso2004,popp2010,farah}.
+
+Dieses Dokument beschreibt die konkrete reibungsfreie Umsetzung in \code{EdelweissFE}. Die Darstellung
+folgt der Verarbeitungs-Pipeline: von der Geometrie (Nachbarsuche, Projektion, Clipping,
+Quadratur) über die diskreten Koppelmatrizen und den gewichteten Spalt bis zur Lösung der
+Kontaktbedingung als semiglattes Komplementaritätsproblem.
+
+% =====================================================================
+\section{Kontinuierliche Formulierung}
+\label{sec:kontinuierlich}
+
+\subsection{Kinematik und Spalt}
+Der Slave-Körper trägt den Index~$(1)$, der Master-Körper den Index~$(2)$. Zu einem Slave-Punkt
+$\bm x^{(1)}\in\gamma_c$ wird über die Kontaktnormale $\bm n$ der nächste Master-Punkt
+$\hat{\bm x}^{(2)}$ (die \emph{Projektion}) bestimmt. Der Normalspalt ist
+\begin{equation}
+g_n = -\,\bm n\cdot\big(\bm x^{(1)} - \hat{\bm x}^{(2)}\big),
+\label{eq:gap}
+\end{equation}
+mit der Vorzeichenkonvention $g_n>0$ bei geöffnetem Kontakt (Trennung) und $g_n<0$ bei
+Durchdringung~\citep{wriggers,farah}.
+
+\subsection{Hertz--Signorini--Moreau / KKT-Bedingungen}
+Der reibungsfreie Normalkontakt fordert Nichtdurchdringung, nichtklebende (nur drückende)
+Kontakttraktion und Komplementarität. Mit dem Kontaktdruck $p=\lambda\ge0$ (Normalkomponente der
+Traktion) lauten die Karush--Kuhn--Tucker-Bedingungen (Hertz--Signorini--Moreau)
+\begin{equation}
+g_n \ge 0, \qquad p \ge 0, \qquad p\, g_n = 0 \qquad \text{auf } \gamma_c .
+\label{eq:kkt}
+\end{equation}
+Entweder ist der Spalt offen ($g_n>0$) und der Druck null, oder es besteht Kontakt ($g_n=0$) mit
+$p\ge0$~\citep[Kap.~4]{wriggers}.
+
+\subsection{Schwache Form und Multiplikatorraum}
+Die Kontaktbedingung wird über einen Lagrange-Multiplikator $\bm\lambda$ (die Kontakttraktion) in
+das Prinzip der virtuellen Arbeit eingebracht. Der zusätzliche Kontaktbeitrag zur virtuellen Arbeit
+ist
+\begin{equation}
+\delta W_c = \int_{\gamma_c} \bm\lambda\cdot\big(\delta\bm u^{(1)} - \delta\bm u^{(2)}\big)\,
+\mathrm d\gamma,
+\end{equation}
+und die schwache Nichtdurchdringung wird mit Testfunktionen $\delta\bm\lambda$ aus dem
+Multiplikatorraum $M$ als Variationsungleichung angesetzt. Die Wahl des diskreten Raums für
+$\bm\lambda$ ist entscheidend: \citet{wohlmuth2000} zeigt, dass ein \emph{dualer} Raum
+(biorthogonal zu den Slave-Formfunktionen) die inf-sup/LBB-Stabilität sichert und eine optimale
+a-priori-Fehlerabschätzung liefert, während er zugleich die spätere knotenweise Elimination erlaubt.
+Genau dieser duale Raum wird hier verwendet (Abschnitt~\ref{sec:dual}). Die Diskretisierung von
+\eqref{eq:gap}--\eqref{eq:kkt} führt auf die gewichteten Größen der folgenden Abschnitte: die
+Koppelmatrizen $\bm D,\bm M$, den gewichteten Spalt $\tilde g_I$ und die knotenweise
+NCP-Bedingung.
+
+% =====================================================================
+\section{Diskretisierung und Programmarchitektur}
+\label{sec:architektur}
+
+\subsection{Kontaktelemente als geometrische Rand-Overlays}
+\code{EdelweissFE} besitzt keine eingebauten Kontaktelemente. Der Mortar-Kontakt definiert sie daher
+selbst als rein \emph{geometrische} Rand-Overlay-Elemente (kein Materialkern): sie tragen die
+Verschiebungs-Freiheitsgrade der zugehörigen Volumenoberfläche und liefern Formfunktionen $N_I$,
+duale Funktionen $\Phi_I$ und Quadraturpunkte. Erzeugt werden sie aus den Seitenflächen (Sidesets)
+der Volumenelemente (z.\,B.\ CONQUAD8 auf der Oberfläche eines hex20).
+
+\begin{center}
+\small
+\begin{tabular}{lccc}
+\toprule
+Typ & Knoten & Geometrie & Ordnung \\
+\midrule
+CONLINE2 / CONLINE3 & 2 / 3 & 2D-Kante & linear / quadratisch \\
+CONQUAD4 / CONQUAD8 / CONQUAD9 & 4 / 8 / 9 & 3D-Fläche & linear / quadratisch \\
+CONTRI3 / CONTRI6 & 3 / 6 & 3D-Dreieck & linear / quadratisch \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Verarbeitungs-Pipeline}
+Die Berechnung folgt einer festen Pipeline, die zugleich die Gliederung dieses Dokuments ist:
+\begin{enumerate}\itemsep2pt
+  \item \textbf{Nachbarsuche} (BVH) $\to$ Kandidatenpaare (Abschnitt~\ref{sec:geometrie}).
+  \item \textbf{Projektion + Clipping + Triangulierung} $\to$ Integrationszellen
+        (Abschnitt~\ref{sec:geometrie}), für quadratische Facetten nach linearer Sub-Cell-Zerlegung
+        (Abschnitt~\ref{sec:subcells}).
+  \item \textbf{Segmentquadratur} (Grad~5) $\to$ Koppelmatrizen $\bm D,\bm M$
+        (Abschnitte~\ref{sec:quadratur}, \ref{sec:koppelmatrizen}).
+  \item \textbf{Gewichteter Spalt} $\tilde g_j$ und \textbf{NCP} $\to$ Active Set
+        (Abschnitte~\ref{sec:koppelmatrizen}, \ref{sec:ncp}).
+  \item \textbf{Assemblierung + Newton} $\to$ Lösung (Abschnitt~\ref{sec:solve}).
+\end{enumerate}
+
+\subsection{Modulzuordnung}
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{lX}
+\toprule
+Datei & Rolle \\
+\midrule
+\file{constraints/mortarcontact.py} & Segmentierung, $\bm D,\bm M$-Assemblierung, gewichteter Spalt, NCP/Active-Set, K/PExt-Assemblierung \\
+\file{constraints/mortar\_geom\_utils.py} & Ebenenprojektion, Sutherland--Hodgman-Clipping, Triangulierung, 1D-Clip \\
+\file{elements/contactelement/element.py} & Formfunktionen, Quadraturpunkte, Basistransformation $\bm T_e$, lokale $\bm M_e/\bm D_e/\bm A_e$ \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+% =====================================================================
+\section{Geometrische Verarbeitung: Nachbarsuche, Projektion, Clipping}
+\label{sec:geometrie}
+
+Bei nichtkonformen Netzen ist a priori unbekannt, welche Master-Facette welche Slave-Facette
+überlappt. Die geometrische Verarbeitung bestimmt diese Überlappungen und zerlegt sie in
+Integrationszellen (Folien~5--6).
+
+\subsection{Nachbarsuche mit Bounding-Volume-Hierarchie}
+Eine naive Prüfung aller Slave--Master-Paare kostet $\mathcal O(N^2)$. Stattdessen werden die
+achsparallelen Hüllboxen (AABB) der Master-Facetten in einer \emph{Bounding-Volume-Hierarchie}
+organisiert -- einem binären Baum mit Median-Split entlang der längsten Achse und Blattgröße~$\le2$
+\citep{ericson2004}. Pro Slave-Facette liefert eine Baumabfrage nur wenige
+\emph{Kandidaten}; der Aufwand sinkt auf $\sim\mathcal O(N\log N)$. Die AABB erhalten einen
+Sicherheitsrand $\max(0.15\cdot\text{Ausdehnung},\,0.1)$; nur für die Kandidaten wird anschließend
+die exakte geometrische Verschneidung durchgeführt.
+
+\subsection{Hilfsebene und Projektion}
+Für ein Kandidatenpaar wird an der Slave-(Sub-)Facette eine \emph{Hilfsebene} definiert (Stützpunkt
+$\bm p_0$, Normale $\bm n$). Beide Polygone -- Slave und Master -- werden in diese Ebene projiziert
+und dort in ebenen Koordinaten dargestellt (\file{mortar\_geom\_utils.py}, \code{get\_tangent\_basis},
+\code{to\_plane\_coords}). Diese Ebene dient nur der Schnittbildung; die tatsächliche Geometrie geht
+später über die Newton-Rückabbildung an den Gauß-Punkten ein (Abschnitt~\ref{sec:quadratur}).
+
+\subsection{Sutherland--Hodgman-Clipping und Triangulierung}
+In der Ebene wird das Master-Polygon gegen das (konvexe) Slave-Polygon geschnitten. Dafür dient der
+\emph{Sutherland--Hodgman-Algorithmus}~\citep{sutherland1974}: das zu schneidende Polygon wird
+sukzessive an jeder Kante des Clip-Polygons gekappt (\emph{reentrant polygon clipping}). Der
+Algorithmus setzt ein \emph{konvexes} Clip-Polygon voraus -- deshalb wird als Clip-Fenster die
+(konvexe) Slave-Facette bzw.\ Sub-Cell verwendet, nicht umgekehrt. Das Ergebnis ist das konvexe
+Überlappungspolygon $\text{Slave}\cap\text{Master}$ (\code{sutherland\_hodgman\_clip}).
+
+Da die Segmentquadratur (Abschnitt~\ref{sec:quadratur}) auf Dreiecken definiert ist, wird das
+Überlappungspolygon abschließend \emph{fächerartig} von einer Ecke aus trianguliert
+(\code{triangulate\_polygon}): ein $n$-Eck ergibt $n-2$ Integrationsdreiecke. Weil das Polygon konvex
+ist, ist diese Triangle-Fan-Zerlegung immer gültig. Im 2D-Fall reduziert sich das Ganze auf einen
+1D-Intervallschnitt (\code{clip\_1d\_segments}). Das Vorgehen entspricht MOOSEs
+\code{AutomaticMortarGeneration}.
+
+% =====================================================================
+\section{Segmentbasierte Quadratur: warum Genauigkeitsgrad 5}
+\label{sec:quadratur}
+
+Nach dem Clipping (Abschnitt~\ref{sec:geometrie}) liegt die Überlappung eines Slave--Master-Paars
+als Menge ebener Integrationsdreiecke (3D) bzw.\ Teilstrecken (2D) vor. Auf diesen wird integriert.
+Dieser Abschnitt beantwortet die zentrale Frage der Präsentation (Folie~7): \emph{Warum verwendet
+der Code Genauigkeitsgrad~5 -- konkret die 7-Punkt-Dreiecksregel im 3D-Fall?} Die Antwort hat drei
+Schichten: (i)~warum überhaupt \emph{segment}basiert integriert wird, (ii)~warum der effektive
+Integrationsgrad \emph{über} das nominelle Formfunktionsprodukt angehoben werden muss, und
+(iii)~woher die konkrete 7-Punkt-Regel stammt.
+
+\subsection{Notwendigkeit der segmentbasierten Integration}
+Die Mortar-Matrizen $\bm D,\bm M$ (Abschnitt~\ref{sec:koppelmatrizen}) enthalten unter dem Integral
+ein Produkt aus Größen \emph{beider} Seiten -- der dualen bzw.\ Standard-Formfunktionen der
+Slave-Seite und den auf die Slave-Fläche zurückprojizierten Formfunktionen der Master-Seite. Bei
+nichtkonformen Netzen besitzt dieser Integrand \emph{Knicke} (schwache Diskontinuitäten) im Inneren
+einer Slave-Facette: nämlich überall dort, wo eine Master-Elementkante die Slave-Facette kreuzt.
+\citet{farah2015} formulieren das explizit:
+\begin{quote}
+\small ``the integrand represents a non-smooth function which cannot be evaluated exactly by using
+standard Gauss rules. This non-smoothness stems from the locally supported Lagrange polynomials on
+master and slave side having kinks at the respective element nodes and edges.''
+\hfill \citep[S.~214]{farah2015}
+\end{quote}
+Eine Standard-Gauß-Regel, die über die ganze Facette gelegt wird (\emph{element}based), ``sieht''
+diese Knicke nicht und ist deshalb hochgradig empfindlich gegenüber Gauß-Punkt-Zahl und
+Netz-Verhältnis~\citep[S.~217]{farah2015}. Der Ausweg ist die \emph{segment}basierte Integration:
+die Überlappung wird in glatte, knickfreie Zellen mit konstantem Jacobian zerlegt (hier: Dreiecke),
+auf denen der Integrand wieder polynomial-glatt ist und Gauß-Quadratur ihre volle Ordnung
+entfaltet~\citep[Abschn.~3.1]{farah2015}. Genau das leistet die Clipping--Triangulierungs-Pipeline aus
+Abschnitt~\ref{sec:geometrie}.
+
+\subsection{Anhebung des Integrationsgrades}
+Innerhalb einer knickfreien Integrationszelle bleibt ein Resteffekt: die Rückabbildung eines
+Gauß-Punkts von der Hilfsebene in die \emph{Natur}koordinaten von Slave und Master ist
+\emph{nichtlinear} (bei gekrümmten/verzerrten Facetten und generell durch die Projektion). Dadurch
+ist der Integrand -- als Funktion der Zell-Koordinaten -- kein Polynom vom Grad des reinen
+Formfunktionsprodukts, sondern effektiv höhergradig. \citet{farah2015} geben deshalb die
+Faustregel und die konkrete Empfehlung an (der Satz findet sich wortgleich in \citealt[Anh.~A.1.1]{farah}):
+\begin{quote}
+\small ``the highest polynomial degree that can be computed exactly by the integration rule should
+be chosen somewhat higher than the product of shape functions on slave and master side would
+indicate. This is due to the nonlinearity of the projections between auxiliary plane and actual
+contact surfaces. Based on our experiences, we suggest to use seven Gauss points per triangular
+integration cell, which are able to exactly calculate a polynomial degree of 5.''
+\hfill (\citealp[S.~217]{farah2015}; identisch \citealp[Anh.~A.1.1, S.~209--210]{farah})
+\end{quote}
+Die Wahl ``7 Punkte / Grad~5'' ist also eine \emph{empirisch abgesicherte} Empfehlung: sie liegt im
+gesättigten Genauigkeitsbereich, höhere Punktzahlen ändern die Lösung praktisch nicht mehr
+(\citealp[Kap.~6]{farah}). Im Code ist genau das umgesetzt (\file{mortarcontact.py:\allowbreak{}201--224}), mit
+demselben Begründungskommentar und Verweis auf \citet[Anh.~A.1.1]{farah}.
+
+\subsection{Die 7-Punkt-Regel vom Grad 5 (Dunavant, 1985)}
+Die symmetrische 7-Punkt-Regel mit Genauigkeitsgrad~5 auf dem Referenzdreieck stammt aus
+\citet{dunavant1985}. Er approximiert (Gl.~(4), S.~1129)
+\begin{equation}
+\int_A f(\alpha,\beta,\gamma)\,\mathrm dA \;=\; A\sum_{i=1}^{n_g} w_i\, f(\alpha_i,\beta_i,\gamma_i),
+\qquad \alpha+\beta+\gamma=1,
+\end{equation}
+in baryzentrischen Koordinaten und bestimmt die $(w_i,\alpha_i,\beta_i,\gamma_i)$ aus den
+Momentenbedingungen $\int_A \alpha^i\beta^j\,\mathrm dA = 2A\,i!\,j!/(i+j+2)!$ (Gl.~(13), S.~1132).
+Die Punkte werden in \emph{Symmetrieorbits} gruppiert: ein Schwerpunktpunkt ($n_0$), Dreiergruppen
+auf den Seitenhalbierenden ($n_1$, je 3~Punkte) und allgemeine Sechsergruppen ($n_2$), mit
+Gesamtzahl $n_g = n_0 + 3n_1 + 6n_2$ (Gl.~(34), S.~1135). Für Grad $p=5$ liefert Dunavant
+$n_0=1,\;n_1=2,\;n_2=0$, also
+\begin{equation}
+n_g = 1 + 3\cdot 2 = 7 \quad\text{(Dunavant, 1985, Tab.~III/IV, S.~1135--1137)}.
+\end{equation}
+Das ist effizienter als die Gauß-Produktregel, die für Grad~5 neun Punkte bräuchte
+($7<9$). Die konkreten Werte \citep[Anh.~II, S.~1140]{dunavant1985} sind:
+\begin{center}
+\small
+\begin{tabular}{lcccc}
+\toprule
+Orbit & Gewicht $w_i$ (pro Punkt) & $\alpha$ & $\beta,\gamma$ & \#Punkte \\
+\midrule
+Schwerpunkt & $0.225000000000$ & $0.333333333333$ & $0.333333333333$ & 1 \\
+$n_1$-Orbit 1 & $0.132394152789$ & $0.059715871790$ & $0.470142064105$ & 3 \\
+$n_1$-Orbit 2 & $0.125939180545$ & $0.797426985353$ & $0.101286507323$ & 3 \\
+\bottomrule
+\end{tabular}
+\end{center}
+Die Dreiergruppen entstehen durch zyklische Permutation von $(\alpha,\beta,\gamma)$; die
+Gewichtssumme ist $0.225 + 3\cdot0.132394\ldots + 3\cdot0.125939\ldots = 1.000$. Zwei Eigenschaften
+machen gerade diese Regel für den Kontakt attraktiv: \textbf{alle sieben Punkte liegen im Inneren}
+des Dreiecks ($\alpha,\beta,\gamma\in(0,1)$) und \textbf{alle Gewichte sind positiv}. Grad~5 ist
+oberhalb von Grad~2 die niedrigste Dunavant-Regel mit diesen beiden Eigenschaften -- die Grad-3-Regel
+etwa hat ein negatives Gewicht ($-0.5625$; \citealp[S.~1140]{dunavant1985}) und ist damit numerisch
+ungünstig. Dieselbe Regel steht im Code in \file{mortarcontact.py:\allowbreak{}201--224}; die
+Gauß-Punkte sind identisch, die Gewichte dort ($9/80,\ (155\mp\sqrt{15})/2400$, Summe~$\tfrac12$
+statt~$1$) sind bereits mit der Referenzdreiecksfläche~$\tfrac12$ verrechnet, sodass das Produkt
+$w\cdot J_{\text{cell}}$ und damit die Regel unverändert bleibt.
+
+\subsection{Der zweidimensionale Fall}
+Im 2D-Fall wird pro geclipptem Liniensegment eine 3-Punkt-Gauß--Legendre-Regel auf $[-1,1]$ mit
+Punkten $\xi\in\{0,\pm\sqrt{0.6}\}$ und Gewichten $\{5/9,8/9,5/9\}$ eingesetzt
+(\file{mortarcontact.py:\allowbreak{}192--198}). Sie ist exakt bis Polynomgrad $2n-1=5$ (Nullstellen des
+Legendre-Polynoms $P_3$) -- daher der Kommentar ``degree~5'' im Code, konsistent mit der Grad-5-Wahl
+im 3D-Fall. \emph{Bemerkung:} \citet{farah} verwendet im 2D-Kontext empirisch \emph{fünf}
+Gauß-Punkte pro Segment, nicht drei. Beide Wahlen folgen derselben Logik (Grad über das
+Formfunktionsprodukt anheben wegen nichtlinearer Projektion); der Code priorisiert hier die
+einheitliche \emph{Grad}-5-Aussage über 2D und 3D. Für die im 2D auftretenden Integranden ist Grad~5
+in der Praxis ausreichend (bestätigt durch die 2D-Patch-Tests, Abschnitt~\ref{sec:verif}).
+
+\subsection{Auswertung an den Gauß-Punkten}
+An jedem Gauß-Punkt wird der Ebenenpunkt per \emph{Newton-Iteration} in die Naturkoordinaten von
+Slave \emph{und} Master zurückabgebildet, sodass dort $N_s$ und $N_m$ (und die dualen $\Phi$)
+ausgewertet werden können; das gewichtete Produkt geht mit $w\cdot J_{\text{cell}}$ in die
+Summation über alle Zellen ein und liefert $\bm D$ und $\bm M$ (\file{mortarcontact.py:\allowbreak{}600--648};
+Summenform nach \citealt[Alg.~1, S.~215]{farah2015}):
+\begin{equation}
+\bm D_{IK} = \sum_{c=1}^{n_{\text{cell}}}\sum_{g=1}^{n_g} w_g\,
+\Phi_I(\xi_g^{(1)})\,N_K^{(1)}(\xi_g^{(1)})\,J_c,
+\qquad
+\bm M_{IJ} = \sum_{c}\sum_{g} w_g\,
+\Phi_I(\xi_g^{(1)})\,N_J^{(2)}(\xi_g^{(2)})\,J_c .
+\end{equation}
+
+% =====================================================================
+\section{Koppelmatrizen $\bm D,\bm M$ und gewichteter Spalt}
+\label{sec:koppelmatrizen}
+
+Dieser Abschnitt leitet die diskreten Mortar-Koppelmatrizen und den gewichteten Spalt her -- die
+Größen der Präsentation (Folie~8), die am Ende der Segmentquadratur stehen.
+
+\subsection{Entstehung von $\bm D$ und $\bm M$}
+Man diskretisiert die Kontakttraktion mit dem dualen Multiplikatorfeld
+$\bm\lambda_h = \sum_j \Phi_j\,\bm z_j$ (allgemeine Vektorform; auf Branch \code{0\_mortarcontact}
+wird davon nur die Normalkomponente $\bm z_j\!\cdot\!\bm n_j=\lambda_j$ instanziiert, s.\
+Geltungsbereich) und die Geometrie beider Seiten mit den jeweiligen
+Standard-Formfunktionen $N^{(1)},N^{(2)}$ und setzt beides in die Kontakt-Virtuelle-Arbeit ein.
+Sortiert man nach den Knotenbeiträgen um, treten genau zwei Matrizen auf -- die \emph{Mortar-Matrizen}
+(\citealp[Gl.~(3.34)--(3.36)]{farah}; \citealp[Gl.~(3.5)--(3.6)]{popp2012}; \citealp[Gl.~(35)/(36)]{poppgeewall2009}):
+\begin{equation}
+\bm D[j,k] = D_{jk}\,\bm I \;=\; \int_{\gamma_{c,h}^{(1)}} \Phi_j\,N_k^{(1)}\,\mathrm d\gamma\;\bm I,
+\qquad
+\bm M[j,l] = M_{jl}\,\bm I \;=\; \int_{\gamma_{c,h}^{(1)}} \Phi_j\,\big(N_l^{(2)}\!\circ P_h\big)\,\mathrm d\gamma\;\bm I .
+\label{eq:DM}
+\end{equation}
+Dabei ist $j$ ein Slave-Multiplikatorknoten, $k$ ein Slave-Verschiebungsknoten $(1)$, $l$ ein
+Master-Verschiebungsknoten $(2)$, $\bm I\in\mathbb R^{\dim\times\dim}$ die Einheitsmatrix, und
+$P_h:\gamma_{c,h}^{(1)}\!\to\!\gamma_{c,h}^{(2)}$ die diskrete Kontaktabbildung (die Projektion). Beide
+Integrale laufen über die \emph{Slave}-Fläche. $\bm D$ (Slave--Slave) ist quadratisch, $\bm M$
+(Slave--Master) im Allgemeinen rechteckig~\citep[S.~B427]{popp2012}. Die algebraische Kontaktkraft ist
+$\bm f_c = [\,\bm 0\;\;-\bm M\;\;\bm D\,]^{\!\top}\bm z$ \citep[Gl.~(3.38)]{farah}. Im Code werden
+$\bm D,\bm M$ in \file{mortarcontact.py:\allowbreak{}487--690} assembliert (die Slave--Master-Matrix heißt dort
+\code{C}; vgl.\ Notationskonvention).
+
+\subsection{Gewichteter (schwacher) Normalspalt}
+Die diskrete schwache Nichtdurchdringung wird pro Slave-Knoten $j$ zu einem \emph{gewichteten Spalt}
+\citep[Gl.~(3.40)]{farah}
+\begin{equation}
+\tilde g_{n,j} = \int_{\gamma_{c,h}^{(1)}} \Phi_j\, g_{n,h}\,\mathrm d\gamma .
+\label{eq:wgap_int}
+\end{equation}
+Setzt man $g_{n,h}$ über \eqref{eq:gap} ein und sortiert nach Knotenpositionen um, erhält man die
+Positionsform (\citealp[Gl.~(36) und~(50)]{gitterle}; \citealp[Gl.~(50)]{poppgeewall2009}):
+\begin{equation}
+\tilde g_{j} \;=\; \bm n_j\!\cdot\!\Big(\sum_k \bm D[j,k]\,\bm x_k^{(1)}
+- \sum_l \bm M[j,l]\,\bm x_l^{(2)}\Big)
+\;=\; \bm n_j\!\cdot\!\Big(\bm D[j,j]\,\bm x_j^{(1)} - \sum_l \bm M[j,l]\,\bm x_l^{(2)}\Big),
+\label{eq:wgap_pos}
+\end{equation}
+wobei die zweite Gleichheit gilt, weil $\bm D$ bei dualer Basis diagonal wird
+(Abschnitt~\ref{sec:dual}). Genau diese Form steht im Code (\file{mortarcontact.py:\allowbreak{}785--795},
+Bezeichner \code{C} für $\bm M$).
+
+\medskip
+\noindent\textbf{Warum schwach/nodal statt punktweise?} Der gewichtete Spalt ist ein volumetrisches
+(integrales) Maß, das dennoch als knotenweises Näherungsmaß verwendet wird
+(\citealp{farah}: \emph{``The discrete weighted gap $\tilde g_{n,j}$ represents a volumetric measure
+\ldots\ Nevertheless, it is utilized as node-wise measure''}). Der tiefere Grund für die schwache
+Auswertung liegt in der Ungleichungsnatur der Nichtdurchdringung in Kombination mit
+Formfunktionen höherer Ordnung: eine punktweise (starke) Durchsetzung ist damit nicht konsistent
+behandelbar~\cite[S.~B429]{popp2012}. Die knotenweisen HSM-Bedingungen lauten dann
+$\tilde g_{n,j}\ge0,\; \lambda_{n,j}\ge0,\; \lambda_{n,j}\tilde g_{n,j}=0$
+(\citealp[Gl.~(3.7)]{popp2012}; \citealp[Gl.~(3.41)]{farah}) -- die diskrete Fassung von \eqref{eq:kkt}.
+
+\subsection{Zeilensummen-Identität und Impulserhaltung}
+Eine zentrale Konsistenzeigenschaft ist die Zeilensummen-Identität
+\begin{equation}
+\sum_k \bm D[j,k] \;=\; \sum_l \bm M[j,l] \qquad \forall\, j
+\label{eq:rowsum}
+\end{equation}
+\citep[Gl.~(4.99)]{farah}. Sie folgt aus der Erhaltung des linearen Impulses
+$\bm f_\lambda^{(1)}-\bm f_\lambda^{(2)}=\bm 0$: mit der Partition-of-Unity der Formfunktionen
+$\sum_k N_k^{(1)}=\sum_l N_l^{(2)}=1$ \citep[Gl.~(4.97)]{farah} reduziert sich die Differenz der
+Zeilensummen auf $\int\Phi_j\,\mathrm d\gamma - \int\Phi_j\,\mathrm d\gamma = 0$, was
+\emph{immer} erfüllt ist, sofern $\bm D$ und $\bm M$ über \emph{dasselbe} diskrete Gebiet integriert
+werden (\citealp[Gl.~(4.100)--(4.101)]{farah}; identisch \citealt{popp2010} und \citealt{puso2004}). Physikalisch
+sichert \eqref{eq:rowsum} die Translationsinvarianz des Spalts (eine starre Translation beider Körper
+erzeugt keinen künstlichen Gap) und ist Voraussetzung für das Bestehen des Kontakt-Patch-Tests. Genau
+deshalb müssen $\bm D$ und $\bm M$ im Code über \emph{dieselben} Integrationszellen summiert werden
+(die konsistente Randbehandlung, Abschnitt~\ref{sec:subcells}, stellt das auch für partiell
+überdeckte Elemente sicher).
+
+% =====================================================================
+\section{Duale Lagrange-Multiplikatoren und Biorthogonalität}
+\label{sec:dual}
+
+\subsection{Definition und Motivation}
+Die dualen Formfunktionen $\Phi_j$ sind durch die \emph{Biorthogonalität} zu den
+Slave-Formfunktionen definiert (\citealp[Gl.~(3.5)]{wohlmuth2000}; \citealp[Gl.~(4.1)]{popp2012};
+\citealp[Gl.~(30)]{poppgeewall2009}; \citealp[Gl.~(3.46)]{farah}):
+\begin{equation}
+\int_{\gamma_{c,h}^{(1)}} \Phi_j\, N_k^{(1)}\,\mathrm d\gamma
+\;=\; \delta_{jk}\int_{\gamma_{c,h}^{(1)}} N_k^{(1)}\,\mathrm d\gamma .
+\label{eq:biorth}
+\end{equation}
+\citet{wohlmuth2000} führte diese dualen Räume ein, um bei gleicher \emph{Optimalität}
+(inf-sup/LBB-Stabilität mit $h$-unabhängiger Konstante, optimale a-priori-Fehlerabschätzung der
+Ordnung $\mathcal O(h)$ in der Energienorm) lokal getragene Multiplikator-Basisfunktionen zu erhalten:
+\begin{quote}
+\small ``this Lagrange multiplier space is replaced by a dual space without losing the optimality of
+the method \ldots\ all the basis functions of the new method are supported in a few elements. The
+mortar map can be represented by a diagonal matrix; in the standard mortar method a linear system of
+equations must be solved.'' \hfill \citep[Abstract]{wohlmuth2000}
+\end{quote}
+
+\subsection{Diagonalisierung von $\bm D$}
+Setzt man \eqref{eq:biorth} in die Definition~\eqref{eq:DM} von $\bm D$ ein, verschwinden alle
+Außerdiagonalterme:
+\begin{equation}
+D_{jk} = \int \Phi_j N_k^{(1)}\,\mathrm d\gamma = \delta_{jk}\int N_k^{(1)}\,\mathrm d\gamma,
+\qquad\Longrightarrow\qquad \bm D = \operatorname{diag}\!\Big(\textstyle\int N_k^{(1)}\,\mathrm d\gamma\Big).
+\end{equation}
+Die gesamte algebraische Struktur nimmt damit die Gestalt eines Knoten-auf-Segment-Kontakts an, und
+$\bm D$ ist trivial invertierbar (\citealp[Abschn.~3.4.1.2, S.~33]{farah}: \emph{``the algebraic form of the slave
+side mortar matrix D \ldots\ becomes a diagonal matrix''}). Auf diese Diagonalität stützt sich der
+Projektionsoperator $\bm P = \bm D^{-1}\bm M$ \citep[Gl.~(3.65)]{farah} -- die algebraische Grundlage
+jeder späteren Kondensation. \emph{Anmerkung:} Diese statische Kondensation ist auf Branch
+\code{0\_mortarcontact} bewusst \emph{nicht} aktiviert (Sattelpunkt-Formulierung); die Diagonalität
+von $\tilde{\bm D}$ wird hier nur für die Normierung im NCP-Indikator (Abschnitt~\ref{sec:ncp}) genutzt.
+
+\subsection{Elementlokale Konstruktion}
+Bei Elementen mit nicht-konstanter Jacobi-Determinante werden die $\Phi_j$ als Linearkombination
+der Standard-Formfunktionen dargestellt, $\Phi_j = c_{jk}N_k$, mit der Koeffizientenmatrix
+(\citealp[Gl.~(3.53)--(3.56)]{farah})
+\begin{equation}
+\bm A_e \;=\; \bm D_e\,\bm M_e^{-1},
+\qquad
+(\bm D_e)_{jk} = \delta_{jk}\!\int_e N_k\,J\,\mathrm de,
+\qquad
+(\bm M_e)_{jk} = \int_e N_j N_k\,J\,\mathrm de .
+\label{eq:Ae}
+\end{equation}
+Hier sind $\bm D_e,\bm M_e$ \emph{lokale Hilfs-Massenmatrizen} zur Konstruktion der dualen Basis --
+nicht zu verwechseln mit den globalen Koppelmatrizen $\bm D,\bm M$ (Farah unterscheidet sie im
+Symbolverzeichnis). Im Code ist \eqref{eq:Ae} zweifach umgesetzt: als Referenz-Fallback in
+\file{element.py:\allowbreak{}470--508} (\code{A\_e = D\_e @ inv(M\_e) @ T\_e}) und -- bevorzugt -- zur Laufzeit
+über die \emph{echte} Segmentquadratur (\file{mortarcontact.py:\allowbreak{}650--673}), sodass die Biorthogonalität
+auf dem tatsächlichen Integrationsgebiet erfüllt ist (konsistente Randbehandlung nach
+\citet{cichosz}, Abschnitt~\ref{sec:subcells}). Der Zusatzfaktor $\bm T_e$ ist die
+Basistransformation für quadratische Elemente (Abschnitt~\ref{sec:basistrafo}); für lineare Elemente
+ist $\bm T_e=\bm I$.
+
+% =====================================================================
+\section{Duale Basis für quadratische Elemente: die Basistransformation $\bm T_e$}
+\label{sec:basistrafo}
+
+Für quadratische Kontaktelemente ist die direkte duale Basiskonstruktion aus
+Abschnitt~\ref{sec:dual} nicht unmittelbar brauchbar. Dieser Abschnitt begründet dies, leitet die
+Abhilfe -- eine Basistransformation -- her und diskutiert die Wahl des Transformationsparameters
+$\alpha$ einschließlich der begründeten Abweichung von der Literaturempfehlung
+(vgl.\ Präsentation, Folie~9).
+
+\subsection{Verlust der Integral-Positivität bei quadratischen Formfunktionen}
+An die Multiplikator-Formfunktionen wird die \emph{Integral-Positivität} gestellt
+(\citealp[Gl.~(4.2)]{popp2012}):
+\begin{equation}
+\int_{\text{ele}} \Phi_j\,\mathrm d\gamma \;>\; 0 .
+\label{eq:intpos}
+\end{equation}
+Der Grund ist direkt algorithmisch: Ist \eqref{eq:intpos} verletzt, kann ein physikalisch offener
+Spalt einen \emph{negativen} gewichteten Spalt ergeben (und umgekehrt); die Active-Set-Strategie
+behandelt dann aktive Knoten als inaktiv und umgekehrt und konvergiert nicht
+(\citealp{popp2012}: \emph{``the numerical algorithm will generate nonphysical gaps and penetrations \ldots\
+a nonconverging active set strategy''}).
+
+Genau das tritt bei quadratischen Formfunktionen auf. Das \emph{Eck}knoten-Integral ist nicht positiv
+(\citealp[Gl.~(4.3)/(4.4)]{popp2012}):
+\begin{equation}
+\int_{\text{ele}} N_1^{\text{quad8}}\,\mathrm d\gamma < 0,
+\qquad
+\int_{\text{ele}} N_1^{\text{tri6}}\,\mathrm d\gamma = 0 .
+\end{equation}
+Ein anschauliches, numerisch greifbares Beispiel liefert \citet[Gl.~(29)]{puso2008}:
+zwei ebene, \emph{nicht} durchdrungene Serendipity-Flächen im Abstand $l$ erzeugen am Eckknoten den
+gewichteten Spalt $g_A = A\,l/3 > 0$ -- also eine \emph{vorgetäuschte} Durchdringung, allein wegen
+der Nichtpositivität der quadratischen Funktion. (Ein wörtlicher Wert ``$-1/12$'' als negatives
+\emph{Gewicht} kommt in der Literatur nicht vor; der im Code-Docstring genannte Zahlenwert bezieht
+sich auf das negative Eckknoten-Integral im Sinne von \citet[Gl.~(4.3)]{popp2012}.)
+
+\subsection{Basistransformation der Formfunktionen}
+Statt der originalen Formfunktionen wird eine transformierte Basis verwendet
+(\citealp[Gl.~(4.5)]{popp2012}):
+\begin{equation}
+\tilde{\bm N} = \bm T_e\,\bm N,
+\end{equation}
+deren $\bm T_e$ jede \emph{Kantenmittelknoten}-Zeile mit dem Anteil $\alpha$ auf die beiden
+benachbarten Eckknoten umverteilt und $1-2\alpha$ auf sich behält; die Eckknotenzeilen bleiben die
+Identität. Für CONQUAD8 lautet die Matrix (mit $\alpha=\tfrac13$) explizit
+\begin{equation}
+\bm T_e=\begin{bmatrix}
+1&0&0&0&\tfrac13&0&0&\tfrac13\\
+0&1&0&0&\tfrac13&\tfrac13&0&0\\
+0&0&1&0&0&\tfrac13&\tfrac13&0\\
+0&0&0&1&0&0&\tfrac13&\tfrac13\\
+0&0&0&0&\tfrac13&0&0&0\\
+0&0&0&0&0&\tfrac13&0&0\\
+0&0&0&0&0&0&\tfrac13&0\\
+0&0&0&0&0&0&0&\tfrac13
+\end{bmatrix}
+\qquad (\text{\file{element.py:\allowbreak{}424--468}}).
+\end{equation}
+Die Transformation hat drei nachweisbare Eigenschaften (\citealp[S.~B431]{popp2012}): sie ist
+\emph{symmetrisch} (jeder Kantenknoten trägt gleich viel zu seinen beiden Eck-Nachbarn bei), sie
+erhält die \emph{Partition of Unity} ($\sum_j \tilde N_j = 1$), und sie ist durch
+$\alpha < \tfrac12$ nach oben beschränkt, damit auch die Kantenknoten-Integrale positiv bleiben. Aus
+der transformierten Basis werden dann -- wie bei linearen Elementen über \eqref{eq:Ae} -- die dualen
+Funktionen gebildet.
+
+Die Transformation wird nur auf die \emph{serendipity}-Typen mit nichtpositivem Eckintegral
+angewandt (CONQUAD8, CONTRI6; CONLINE3). Für das voll-Lagrange'sche CONQUAD9 (aus hex27) entfällt
+sie: dessen Eckknoten-Integrale sind bereits strikt positiv ($\tfrac19$ auf dem Referenzquadrat),
+und das Kanten-zu-Ecken-Schema erfasst den zusätzlichen Zentrumsknoten ohnehin nicht -- für CONQUAD9
+wird daher wie für lineare Typen die Identität verwendet (\file{element.py:\allowbreak{}454--462}).
+
+\subsection{Wahl des Transformationsparameters $\alpha$}
+\label{sec:alphachoice}
+Die \emph{Struktur} der Transformation (symmetrische Kanten-zu-Ecken-Umverteilung, Erhaltung der
+Partition of Unity, obere Schranke $\alpha<\tfrac12$) geht auf \citet{lamichhane2005}
+zurück, die die duale Basis für Elemente höherer Ordnung durch eine
+\emph{elementweise Umverteilung} von Kanten-Mittelknoten auf die Eckknoten konstruieren
+(\citealp[Gl.~(3.10)/(3.12)]{lamichhane2005}); \citet{popp2012} verallgemeinern dies auf die
+Finite-Deformation. Der \emph{Zahlenwert} von $\alpha$ ist damit noch nicht festgelegt; die Literatur
+bietet mehrere begründete Kandidaten:
+\begin{itemize}\itemsep2pt
+  \item \emph{Integral-Positivität} \eqref{eq:intpos} verlangt im unverzerrten Fall $\alpha>0$
+        (tri6) bzw.\ $\alpha>\tfrac18$ (quad8).
+  \item Die zusätzliche exakte Reproduktion linearer Polynome ($P_1$) im dualen Raum ergibt
+        (unverzerrt) $\alpha=\tfrac{1}{12}$ (tri6) bzw.\ $\alpha=\tfrac15$ (quad8). Genau diese Werte
+        leiten \citet{lamichhane2005} aus Biorthogonalität und $P_1$-Reproduktion her: den Faktor
+        $\tfrac{1}{12}$ für quadratische Tetraeder (Gl.~(3.10)) und $\tfrac15$ für die
+        Serendipity-Hexaeder, deren Facette gerade das quad8-Element ist (Gl.~(3.12)).
+  \item \citet{popp2012} empfehlen für quadratische \emph{Flächen}elemente
+        $\alpha=\tfrac15$, das nach ihrer Analyse die Integral-Positivität für alle praktisch
+        auftretenden Elementverzerrungen sichert (\citealp[S.~B431]{popp2012}).
+  \item \citet{farah} wählt für tet10-\emph{Volumen}elemente $\alpha_q=\tfrac13$
+        (\citealp[Gl.~(6.20), S.~164]{farah}), begründet durch die Schranke $\alpha_q<\tfrac12$,
+        Integral-Positivität und numerische Erfahrung.
+\end{itemize}
+Die vorliegende Implementierung verwendet $\alpha=\tfrac13$ (\file{element.py:\allowbreak{}451}) und weicht damit
+bewusst von Popps flächenspezifischer Empfehlung $\tfrac15$ ab. Diese Wahl ist nicht kosmetisch,
+sondern durch eine Eigenschaft der \emph{segmentbasierten} Auswertung begründet, die im Folgenden
+dargelegt wird.
+
+\paragraph{Integral-Positivität genügt bei partieller Überdeckung nicht.}
+Popps Garantie bezieht sich auf die Positivität des \emph{Voll-Element}-Integrals
+$\int_{\text{ele}}\tilde N_j\,\mathrm d\gamma$. In der segmentbasierten Formulierung
+(Abschnitt~\ref{sec:subcells}) werden die dualen Koeffizienten und die knotenweisen Gewichte
+$\tilde D_{jj}$ jedoch über die \emph{tatsächliche Überlappungsfläche} $\gamma_c^{\text{ovl}}\subseteq
+\text{ele}$ integriert (konsistente Randbehandlung nach \citet{cichosz}). Ist ein Slave-Element
+nur \emph{teilweise} in Kontakt, so ist das relevante Gewicht
+$\int_{\gamma_c^{\text{ovl}}}\tilde N_j\,\mathrm d\gamma$; dessen Positivität für \emph{beliebige}
+Teilgebiete ist genau dann gesichert, wenn die transformierte Formfunktion nicht nur ein positives
+Integral besitzt, sondern \emph{punktweise nichtnegativ} ist,
+\begin{equation}
+\tilde N_j(\boldsymbol\xi) \;\ge\; 0 \quad \forall\,\boldsymbol\xi\in\text{ele},
+\label{eq:pointwisepos}
+\end{equation}
+eine strikt stärkere Forderung als \eqref{eq:intpos}. Für die serendipity-Eckfunktion existiert eine
+Schwelle $\alpha^\ast$, oberhalb derer \eqref{eq:pointwisepos} gilt; sie liegt zwischen den beiden
+Literaturwerten $\tfrac15$ und $\tfrac13$.
+
+\paragraph{Numerischer Befund.}
+Dies ist im Verifikationslauf direkt belegt (Abschnitt~\ref{sec:verif}, Tests~05 und~08):
+\begin{itemize}\itemsep2pt
+  \item \textbf{Test~05 (partielle Überdeckung, CONQUAD8):} Bei um $0.3$ verschobenem Master
+        ($70\%$ Überdeckung) sind mit $\alpha=\tfrac13$ alle knotenweisen Gewichte strikt positiv;
+        mit $\alpha=\tfrac15$ wird ein Eckknoten-Gewicht \emph{negativ} ($\approx-0.0049$) --
+        $\tilde N_{\text{Ecke}}$ ist dort also nicht punktweise nichtnegativ.
+  \item \textbf{Test~08 (verzerrter hex20-Patch-Test):} Der übertragene Kontaktdruck weicht mit
+        $\alpha=\tfrac13$ punktuell um $14.3\%$ vom Sollwert ab (innerhalb der $20\%$-Toleranz für
+        verzerrte Netze), mit $\alpha=\tfrac15$ dagegen um $21.8\%$ (außerhalb der Toleranz). Die
+        übertragene \emph{Gesamtkraft} ist in beiden Fällen exakt.
+\end{itemize}
+Der Wert $\alpha=\tfrac13$ liegt mit größerem Abstand zur unteren Positivitätsschranke und macht die
+transformierten Eckfunktionen -- im untersuchten Bereich -- punktweise nichtnegativ, sodass die
+Gewichte auch bei Teilkontakt und Netzverzerrung positiv und die diskrete Signorini-Bedingung robust
+bleiben. Der Preis ist der Verzicht auf die exakte Reproduktion linearer Polynome, die $\alpha=\tfrac15$
+auf unverzerrten Elementen böte; für die Konsistenzordnung des Kontakts ist dies unkritisch, und die
+unverzerrten Patch-Tests werden mit beiden Werten exakt bestanden.
+
+\begin{quote}\small
+\textbf{Bemerkung.} Da im Zielanwendungsfall (Ausziehversuch eines Ankers im Betonblock)
+verzerrte Netze und über den Lastverlauf wechselnder Teilkontakt auftreten, ist die durch
+$\alpha=\tfrac13$ gesicherte punktweise Nichtnegativität hier die ausschlaggebende Eigenschaft --
+sie hat Vorrang vor der exakten Linearreproduktion von $\alpha=\tfrac15$. Dies deckt sich mit Farahs
+Begründung ``numerische Erfahrung'' (\citealp[Gl.~(6.20)]{farah}).
+\end{quote}
+
+\subsection{Auswirkung auf die Struktur von $\bm D$}
+Mit der Transformation ist die globale Matrix $\bm D$ \emph{nicht} mehr diagonal.
+\citet[Gl.~(4.12)]{popp2012} zeigen aber, dass sie sich exakt in zwei trivial invertierbare Faktoren spaltet:
+\begin{equation}
+\bm D = \tilde{\bm D}\,\bm T^{-1},
+\qquad \tilde D_{jk} = \int \Phi_j \tilde N_k\,\mathrm d\gamma \ \text{diagonal},
+\qquad \bm D^{-1} = \bm T\,\tilde{\bm D}^{-1}.
+\end{equation}
+Alle Vorteile der dualen Basis bleiben also erhalten, \emph{ohne} $\bm D$ zu ``lumpen'' (diagonal zu
+approximieren). Ein naives Lumping wäre hier falsch: es verletzte die Zeilensummen-Identität
+\eqref{eq:rowsum} bzw.\ die Konsistenzbedingung $\tilde D_{kk}=\sum_j M_{kj}$ und damit den
+Patch-Test (dieser Konsistenz-Zusammenhang ist bei \citet[Abschn.~4.1]{cichosz} belegt).
+Deshalb wird $\bm D$ im Code voll (nicht-gelumpt) assembliert (\file{mortarcontact.py:\allowbreak{}740--749}).
+
+% =====================================================================
+\section{Quadratische Facetten: lineare Sub-Cells}
+\label{sec:subcells}
+
+\subsection{Notwendigkeit der linearen Zerlegung}
+Der Clipping-Algorithmus (Abschnitt~\ref{sec:geometrie}) schneidet Polygone in einer \emph{ebenen}
+Hilfsfläche und ist nur für \emph{gerade} Kanten korrekt. Eine quadratische Facette (CONQUAD8/9,
+CONTRI6) ist im Allgemeinen gekrümmt und hat quadratisch interpolierte Kanten.
+\citet{puso2008} lösen das, indem die gekrümmte Facette in \emph{linear interpolierte} Sub-Segmente
+zerlegt wird, auf die der Schnitt-Algorithmus unverändert anwendbar ist:
+\begin{quote}
+\small ``our approach to geometrically approximate these quadratic surfaces will be to subdivide them
+into linearly interpolated contact sub-segments \ldots\ The algorithms described \ldots\ for
+intersection of linearly defined element surfaces can then be applied almost without modification. In
+so doing, we of course sacrifice any type of geometrically exact description of the quadratic
+contacting surfaces in defining the integration algorithm.'' \hfill \citep[S.~560--561]{puso2008}
+\end{quote}
+
+\subsection{Die konkrete Zerlegung}
+Die Zerlegung entspricht exakt \citet[Abb.~3]{puso2008}: das Serendipity-Element (quad8) wird in
+\emph{vier lineare Eck-Dreiecke und ein zentrales Quadrilateral} zerlegt (Abb.~3(e)/(f)), quad9 in
+vier Quads, tri6 in vier lineare Dreiecke (Abb.~3(c)/(d)). Im Code steht dies als \code{SUB\_CELL\_MAP}
+(\file{mortarcontact.py:\allowbreak{}156--183}):
+\begin{center}
+\small
+\begin{tabular}{ll}
+\toprule
+Elementtyp & Sub-Cells (lokale Knotenindizes) \\
+\midrule
+CONQUAD8 & $[0,4,7],\;[4,1,5],\;[5,2,6],\;[7,6,3]$ und Mittel-Quad $[4,5,6,7]$ \\
+CONQUAD9 & $[0,4,8,7],\;[4,1,5,8],\;[8,5,2,6],\;[7,8,6,3]$ \\
+CONTRI6  & $[0,3,5],\;[3,4,5],\;[3,1,4],\;[5,4,2]$ \\
+CONLINE3 & $[0,2],\;[2,1]$ (2D-Analogon) \\
+\bottomrule
+\end{tabular}
+\end{center}
+Die Knoten $4$--$7$ (bzw.\ $3$--$5$) sind die Kantenmittelknoten; die Sub-Cells werden über sie
+aufgespannt.
+
+\subsection{Wie die Krümmung dennoch eingeht}
+Wesentlich: die Zerlegung betrifft \emph{nur} das Integrationsgebiet (die Clip-Geometrie), \emph{nicht}
+die Feldinterpolation. Über affine Abbildungen zwischen Sub-Segment- und Eltern-Element-Parameterraum
+(\citealp[Gl.~(31)/(32)]{puso2008}) werden an den Gauß-Punkten weiterhin die \emph{vollen}
+quadratischen Formfunktionen ausgewertet:
+\begin{quote}
+\small ``it is possible to evaluate higher-order shape function products in the integrand of the
+mortar matrices and the weighted gap without any algorithmic changes. This approach only affects the
+integration domain itself, which is less accurate in terms of geometry.''
+\hfill (\citealp[Anh.~A.1.4, S.~215]{farah}; Verweis auf \citealt{puso2008})
+\end{quote}
+Die Krümmung geht also ausschließlich über die Formfunktions-Auswertung an den (per Newton
+rückabgebildeten) Gauß-Punkten ein, nie über die geraden Clip-Kanten. Dieses Vorgehen ist inhaltlich
+identisch zu MOOSEs \code{AutomaticMortarGeneration} (``Linearize secondary face elements''). Damit
+wird der hex20-Patch-Test exakt bestanden (Abschnitt~\ref{sec:verif}).
+
+% =====================================================================
+\section{Knotennormalen und eingefrorene Geometrie}
+\label{sec:normalen}
+
+\subsection{Flächengewichtete Knotennormale}
+Der gewichtete Spalt \eqref{eq:wgap_pos} und die Projektion benötigen eine eindeutige Normale pro
+Slave-Knoten. Sie wird als \emph{flächengewichtetes Mittel} der angrenzenden Facettennormalen gebildet
+und normiert (\file{mortarcontact.py:\allowbreak{}402--458}):
+\begin{equation}
+\bm n_I = \frac{\sum_{f\ni I}\bm n_f}{\big\|\sum_{f\ni I}\bm n_f\big\|},
+\qquad
+\bm n_f = \tfrac12(\bm v_1-\bm v_0)\times(\bm v_2-\bm v_0)
+\end{equation}
+(im 2D: $\bm n=[t_y,-t_x]$ aus der Kantentangente). Diese gemittelte Normale garantiert ein
+stetiges Normalenfeld über Facettengrenzen hinweg, was für die Konsistenz des Kontakts an
+Elementkanten nötig ist.
+
+\subsection{Eingefrorene Geometrie (staggered update)}
+Normalen $\bm n_I$ und Koppelmatrizen $\bm D,\bm M$ werden \emph{einmal} zu Increment-Beginn in der
+aktuellen (deformierten) Konfiguration berechnet und dann für alle Newton-Iterationen des Increments
+festgehalten (\file{mortarcontact.py:\allowbreak{}738}). Dadurch ist die assemblierte Steifigkeit die
+\emph{exakte} Jacobi-Matrix des Residuums bei fixierter Geometrie -- Voraussetzung für die
+Newton-Konvergenz (Abschnitt~\ref{sec:solve}). Der Preis ist eine gestaffelte (staggered)
+Behandlung der Geometrienichtlinearität, die durch hinreichend kleine Lastschritte kontrolliert
+wird.
+
+\medskip
+\noindent\textit{Bekannte Einschränkung.} An \emph{scharfen} Kanten (z.\,B.\ Übergang
+Ankerschaft$\to$Ankerkopf im hex20-Netz) ist die gemittelte Knotennormale mehrdeutig
+($\sim45^\circ$), was die Projektion dort verschlechtern kann. Für die hier betrachteten glatten
+Kontaktflächen ist das unkritisch.
+
+% =====================================================================
+\section{Signorini als semismooth NCP}
+\label{sec:ncp}
+
+Die diskreten Kontaktbedingungen \eqref{eq:kkt} sind Ungleichungen mit Fallunterscheidung
+(Kontakt / offen). Dieser Abschnitt fasst sie in \emph{eine} nichtglatte Gleichung -- die
+NCP-Funktion (Folie~11) -- und begründet ihre Lösung per Active-Set/semismooth Newton.
+
+\subsection{Von den KKT-Bedingungen zur NCP-Funktion}
+Die knotenweisen Hertz--Signorini--Moreau-Bedingungen
+$\tilde g_{j}\ge0,\; \lambda_{n,j}\ge0,\; \lambda_{n,j}\tilde g_{j}=0$
+(\citealp[Gl.~(3.41)]{farah}; \citealp[Gl.~(38)]{gitterle}) lassen sich mit einem beliebigen
+$c_n>0$ äquivalent als \emph{eine} nichtglatte Komplementaritätsfunktion (NCP) schreiben. Die Urform
+stammt aus \citet[Gl.~(3.9)]{hueber2005}; in der Kontakt-Notation lautet sie
+(\citealp[Gl.~(55)]{gitterle}; \citealp[Gl.~(3.58)]{farah})
+\begin{equation}
+C_{n,j}\big(\lambda_{n,j},\bm d\big) \;=\; \lambda_{n,j} - \max\!\big(0,\; \lambda_{n,j} - c_n\,\tilde g_{j}\big) \;=\; 0,
+\qquad c_n>0 .
+\label{eq:ncp}
+\end{equation}
+\textbf{Äquivalenz zur KKT-Form.} Mit der elementaren Identität
+$a - \max(0, a-b) = \min(a,b)$ ist \eqref{eq:ncp} genau die \emph{min}-NCP-Funktion
+\begin{equation}
+C_{n,j}=0 \;\Longleftrightarrow\; \min\!\big(\lambda_{n,j},\; c_n\,\tilde g_{j}\big)=0
+\;\Longleftrightarrow\; \big[\,\lambda_{n,j}\ge0,\;\ \tilde g_{j}\ge0,\;\ \lambda_{n,j}\,\tilde g_{j}=0\,\big],
+\end{equation}
+also exakt die drei KKT-Bedingungen -- und zwar \emph{unabhängig} vom Wert $c_n$
+(\citealp[Gl.~(56)]{gitterle}: erfüllt (38) \emph{``independently of the choice of the parameter $c_n$''}). (Die
+min/max-Identität ist Standard; eine Fischer--Burmeister-Formulierung wird in den Quellen nicht
+verwendet und hier nicht benötigt.)
+
+\medskip
+\noindent\textbf{Wer und warum.} Die Normal-NCP wurde für Kleindeformation von
+\citet{hueber2005} eingeführt und von \citet{poppgeewall2009} auf
+finite Deformation übertragen -- dort erscheint sie im reibungsfreien Fall in genau dieser Form
+(\citealp[Gl.~(56)]{poppgeewall2009}); \citet{gitterle} fassen dies in Gl.~(55) zusammen. Die
+mathematische Wurzel der später genutzten Äquivalenz ``Active-Set $=$ semismooth Newton'' ist
+\citet{hik2002} (Satz~3.1: lokal superlineare, bei starker
+Semismoothness sogar $q$-quadratische Konvergenz).
+
+\subsection{Der Aktivierungsindikator und die Codeform}
+Aktiv/inaktiv wird über das Vorzeichen des Arguments der $\max$-Funktion entschieden
+(\citealt[Gl.~(3.13)]{hueber2005} bzw.\ \citealt[Gl.~(70)]{gitterle} -- letztere äquivalent als komplementäre \emph{Inaktiv}-Menge mit $\le 0$ geschrieben):
+\begin{equation}
+\text{Knoten } j \text{ aktiv} \iff s_{n,j} := \lambda_{n,j} - c_n\,\tilde g_{j} > 0 .
+\label{eq:indicator}
+\end{equation}
+Im Code steht diese Bedingung mit einer \emph{zusätzlichen Normierung} mit $\tilde D_{jj}^{-1}$
+(\file{mortarcontact.py:\allowbreak{}797--839}):
+\begin{equation}
+s_{n,j} = p_{n,j} - c_n\,\tilde D_{jj}^{-1}\,\tilde g_{j},
+\qquad \text{aktiv} \iff s_{n,j}>0,
+\label{eq:indicator_code}
+\end{equation}
+mit dem physikalischen Druck $p_{n,j}=-\lambda_j\,\mathrm{sgn}(D)$. \emph{Bemerkung:} der
+Faktor $\tilde D_{jj}^{-1}$ ist \emph{nicht} Teil der Originalgleichung~(55)/(3.58) -- dort steht
+$c_n\tilde g_j$ mit dem \emph{gewichteten} Spalt direkt. Da $\tilde g_j$ ein volumetrisches,
+über $\tilde D_{jj}$ skaliertes Maß ist (Abschnitt~\ref{sec:koppelmatrizen}), macht die Division
+durch $\tilde D_{jj}$ den Term $c_n\tilde D_{jj}^{-1}\tilde g_j$ \emph{druckartig} und damit
+dimensionell vergleichbar mit $p_{n,j}$. Es ist eine bewusste, dimensionell konsistente
+\emph{Normierungsentscheidung} der Implementierung (im Einklang mit der $D^{-1}$-Skalierung der
+dualen Mortar-Methode), kein Wortzitat aus Gitterle. Die Struktur der NCP und der
+Aktivierungsindikator \eqref{eq:indicator} sind dadurch unberührt.
+
+\subsection{Der Parameter $c_n$}
+$c_n>0$ ist ein rein \emph{algorithmischer} Parameter: bei Konvergenz ist entweder $\tilde g_j=0$
+(aktiv) oder $\lambda_{n,j}=0$ (inaktiv), sodass $c_n$ aus $\min(\lambda_{n,j},c_n\tilde g_j)$
+herausfällt -- er beeinflusst \emph{die Lösung nicht}, nur das Konvergenzverhalten
+(\citealp[S.~565]{gitterle}: \emph{``purely algorithmic parameters with no influence on the accuracy of
+results''}; \citealp[S.~38]{farah}). Für die Größenordnung wird
+\begin{equation}
+c_n \sim \mathcal O(E)
+\end{equation}
+empfohlen (\citealp[S.~1367]{poppgeewall2009}: \emph{``$c_{\mathrm n}$ is suggested to be at the order
+of Young's modulus $E$ of the contacting bodies''}; \citealp[S.~38]{farah}; \citealp[S.~565]{gitterle}:
+Parameter ``in the range of material parameters''). Der Grund ist eine Skalenbalance: $\lambda_{n,j}$
+ist druckartig ($\sim E\cdot$Dehnung), $\tilde g_j$ längen-/volumenartig; $c_n\sim E$ (bzw.\ nach der
+Normierung \eqref{eq:indicator_code} $c_n/\tilde D_{jj}\sim E$) bringt beide auf dieselbe Skala. Zu
+\emph{großes} $c_n$ destabilisiert dagegen die Active-Set-Iteration: \citet[Tab.~I, S.~565]{gitterle}
+zeigt für $c_n\in\{10^5,10^6\}$ mehrfache Aktiv-Mengen-Wechsel (\emph{Chattering}, dort mit $^*$
+markiert) bis hin zur Nichtkonvergenz, während ein breites mittleres Band robust in wenigen Schritten
+konvergiert. Im Code ist $c_n$ mit $\tilde D_{jj}$ normiert und in der Größenordnung von $E$ gewählt
+(\file{mortarcontact.py:\allowbreak{}92--108}), mit demselben Chattering-Argument im Kommentar.
+
+\subsection{PDASS als semismooth Newton}
+Die $\max$-Funktion in \eqref{eq:ncp} ist \emph{semismooth}; ihre verallgemeinerte Ableitung ist
+$\partial_x\max(a,x)=\{0 \text{ falls } x\le a,\ 1 \text{ falls } x>a\}$ (\citealp[Gl.~(64)]{gitterle}).
+Damit ist die Primal-Dual Active Set Strategy (PDASS) ein \emph{semismooth Newton-Verfahren}: das
+Active Set wird in jeder Iteration aus \eqref{eq:indicator} neu bestimmt, das resultierende lineare
+System (bei fixiertem Set glatt) gelöst, und iteriert, bis sich das Set nicht mehr ändert
+(Stopp-Kriterium, \citealp[S.~3153]{hueber2005}; \citealp[Abschn.~3.5.2]{farah}, ``re-interpreted as a
+semi-smooth Newton method''). Die abstrakte Grundlage dieser Interpretation und Konvergenz liefert
+\citet{hik2002} (Satz~3.1); den ersten \emph{konsistent} linearisierten
+Newton-Ansatz für den dualen Mortar-Kontakt mit PDASS setzte \citet[Gl.~(65)/(67)]{poppgeewall2009} um. Die beobachtete Konvergenz ist charakteristisch: solange das
+Set noch wechselt, sinkt das Residuum nur langsam; \emph{sobald das Set fixiert ist, konvergiert das
+Verfahren quadratisch} -- als Folge der konsistenten Linearisierung (\citealp[S.~560]{gitterle};
+\citealp[Tab.~4.1]{farah}, mit Residuenabfall $\sim10^{-3}\!\to\!10^{-8}\!\to\!10^{-11}$ nach Fixierung). Die
+Implementierung bestätigt das Set-Stabilitäts-Kriterium und sichert es zusätzlich per Anti-Cycling
+(Bland-Regel) gegen Zustandswiederholung ab (\file{mortarcontact.py:\allowbreak{}841--867}; siehe
+Abschnitt~\ref{sec:solve}).
+
+% =====================================================================
+\section{Lösungsstrategie: Newton-Ablauf und Active-Set}
+\label{sec:solve}
+
+\subsection{Sattelpunkt-Struktur}
+Auf Branch \code{0\_mortarcontact} sind die Lagrange-Multiplikatoren \emph{explizite} zusätzliche
+Unbekannte (ein skalarer Normalmultiplikator pro Slave-Knoten,
+\file{mortarcontact.py:\allowbreak{}348--351}). Das globale System ist damit ein \emph{Sattelpunkt}-System
+\begin{equation}
+\begin{bmatrix} \bm K & \bm B^\top \\ \bm B & \bm 0 \end{bmatrix}
+\begin{bmatrix} \Delta\bm d \\ \Delta\bm\lambda \end{bmatrix}
+= -\begin{bmatrix} \bm r_d \\ \bm r_\lambda \end{bmatrix},
+\qquad \bm B = [\,\bm D\ \ -\bm M\ \ \bm 0\,],
+\end{equation}
+mit den Kontaktkräften aus \eqref{eq:DM}. Eine statische Kondensation der Multiplikatoren
+($\bm P=\bm D^{-1}\bm M$) ist auf diesem Branch bewusst nicht aktiviert.
+
+\subsection{Ein Newton pro Increment mit eingefrorener Geometrie}
+Material-, Geometrie- und Kontaktnichtlinearität werden in \emph{einem} Newton-Verfahren pro
+Lastschritt gelöst. Wie in Abschnitt~\ref{sec:normalen} beschrieben, werden Normalen und $\bm D,\bm M$
+zu Increment-Beginn eingefroren; die assemblierte Tangente ist dann die exakte Jacobi-Matrix des
+Residuums, was die (nach Fixierung des Active Set) quadratische Konvergenz ermöglicht. Die
+konsistente Tangente ist per Finite-Differenzen zu $\sim10^{-10}$ verifiziert
+(Abschnitt~\ref{sec:verif}).
+
+\subsection{Active-Set-Iteration und Anti-Cycling}
+Das Active Set wird in \emph{jeder} Newton-Iteration aus dem Indikator \eqref{eq:indicator_code} neu
+bestimmt (\file{mortarcontact.py:\allowbreak{}797--839}). Pro Knoten gibt es zwei Zweige:
+\begin{itemize}\itemsep2pt
+  \item \textbf{aktiv} ($s_{n,j}>0$): Constraint-Residuum $\text{PExt}[\lambda]\!-\!\!=\!\tilde g_j$;
+        Slave-Kräfte $+\lambda_j\bm D[j,k]\bm n_j$, Master-Kräfte $-\lambda_j\bm M[j,l]\bm n_j$;
+  \item \textbf{inaktiv} ($s_{n,j}\le0$): $\lambda_j$ wird zu null gezwungen
+        ($\text{PExt}[\lambda]\!-\!\!=\!\lambda_j$, $K[\lambda,\lambda]\!+\!\!=\!1$).
+\end{itemize}
+Die äußere Iteration ist konvergiert, sobald sich das Set nicht mehr ändert (PDASS-Kriterium,
+\citealp{hueber2005}). Gegen \emph{Zyklen} (abwechselnde Active-Set-Zustände) sichert eine
+Anti-Cycling-Regel im Sinne von Bland: bei erneutem Besuch eines bereits gesehenen Zustands wird das
+Set eingefroren (\file{mortarcontact.py:\allowbreak{}841--867}); eine harte Obergrenze von 20 Iterationen dient als
+Sicherheitsnetz.
+
+% =====================================================================
+\section{Verifikation}
+\label{sec:verif}
+
+Die Implementierung ist durch eine Testsuite unter \file{testfiles/mortar\_tests/} abgesichert; die
+folgenden Bausteine belegen die Korrektheit der obigen Herleitungen.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{lX}
+\toprule
+Eigenschaft & Prüfung \\
+\midrule
+\textbf{Polygon-Clipping} & Schnitt-/Triangulierungsgeometrie gegen analytische Überlappungen (\file{02\_polygon\_clipping}). \\
+\textbf{Koppelmatrizen} & $\bm D,\bm M$ und Zeilensummen-Identität \eqref{eq:rowsum} numerisch (\file{03\_coupling\_matrices}). \\
+\textbf{Biorthogonalität} & \eqref{eq:biorth} numerisch verifiziert (\file{04\_dual\_biorthogonality}). \\
+\textbf{Quadratische Segmentierung} & Sub-Cell-Zerlegung + Segmentquadratur für CONQUAD8/9, CONTRI6 (\file{05\_quadratic\_segmentation}). \\
+\textbf{Active-Set / PDASS} & Aktivierung bei Durchdringung, Freeze/Anti-Cycling (\file{06\_active\_set\_pdass}). \\
+\textbf{Patch-Test 2D} & konstanter Druck exakt übertragen, CPE4/CPE8, konform + nichtkonform (\file{07\_patch\_test\_2d}). \\
+\textbf{Patch-Test hex20} & 3D-Patch-Test mit CONQUAD8 exakt bestanden (\file{08\_patch\_test\_hex20}). \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent Ergänzend gilt:
+\begin{itemize}\itemsep2pt
+  \item \textbf{Kontakt-Patch-Test} (konstanter Druck exakt übertragen) in 2D (CPE4/CPE8) und 3D
+        (hex8/hex20), konform \emph{und} nichtkonform. Das bestätigt zugleich die
+        Zeilensummen-Identität \eqref{eq:rowsum} und die korrekte Behandlung quadratischer Elemente
+        (Basistransformation, Sub-Cells).
+  \item \textbf{Konsistente Tangente} per Finite-Differenzen bestätigt ($\sim10^{-10}$) -- die
+        Voraussetzung für die quadratische Newton-Konvergenz nach Fixierung des Active Set.
+  \item \textbf{Zwei-Block-Referenztests} (\file{Control\_Tests/README.md}): verschiebungs- und
+        lastgesteuerte Blöcke, konform und nichtkonform, mit Abgleich von Verschiebungsfeld,
+        Spannungen und Kontaktbedingungen.
+\end{itemize}
+Der reibungsfreie Mortar-Kontakt rechnet damit stabil -- Increment für Increment bei vollem
+Lastschritt.
+
+% =====================================================================
+\section{Forschung: Warum ist \code{hex20} im Ausziehversuch steifer als \code{hex8}?}
+\label{sec:forschung}
+
+Der Ausziehversuch eines Kopfbolzendübels aus einem Betonquader (\file{testfiles/mortar\_tests/\allowbreak POT\_Dejori})
+wird mit demselben Modell einmal mit \emph{linearen} Elementen (\code{hex8}: Beton \code{GC3D8},
+Kontakt \code{CONQUAD4}) und einmal mit \emph{quadratischen} Elementen (\code{hex20}: Beton
+\code{GC3D20R}, Kontakt \code{CONQUAD8}) gerechnet. Beide Netze sind bis auf die zusätzlichen
+Kantenmittelknoten identisch (gleiche Elementzahl, dieselben sechs Kontaktflächen), das Material
+(gradientenerweiterte Schädigungsplastizität, \code{GCDP}) ist dasselbe, und beide Rechnungen sind
+verschiebungsgesteuert. Dennoch liefern sie deutlich verschiedene Kraft-Weg-Kurven. Da die
+Verifikation (Abschnitt~\ref{sec:verif}) die Korrektheit der Implementierung für lineare \emph{und}
+quadratische Elemente belegt, stellt sich die Frage: Wie kann dieser Unterschied zustande kommen?
+
+\subsection{Beobachtung}
+Der Unterschied ist in erster Linie eine \emph{Steifigkeitsdifferenz}, und sie ist bereits im
+nahezu elastischen Bereich vollständig vorhanden -- die Sekantensteifigkeit ist über die ersten
+$0{,}03$~mm praktisch konstant, also \emph{bevor} nennenswerte Schädigung eintritt und \emph{bevor}
+das Active-Set aktiv wird.
+
+\begin{center}
+\small
+\begin{tabular}{lcc}
+\toprule
+ & \code{hex8} (linear) & \code{hex20} (quadratisch) \\
+\midrule
+Sekantensteifigkeit ($u\le 0{,}03$~mm) & $\approx 117$~kN/mm & $\approx 197$~kN/mm \\
+Peak-Last                              & $22{,}6$~kN         & $19{,}9$~kN \\
+Weg beim Peak                          & $0{,}22$~mm         & $0{,}12$~mm \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Im Vergleich mit den drei Laborversuchen trifft \code{hex20} sowohl die Anfangssteifigkeit
+als auch die Höhe des Peaks, während \code{hex8} zu weich ist und den Peak überschätzt. Es ist also
+nicht so, dass \code{hex20} \emph{zu steif} wäre; vielmehr ist \code{hex8} \emph{zu weich}, und genau
+das ist zu erklären. Weil die Differenz elastisch (vor Schädigung, vor Active-Set) auftritt, ist sie
+weder eine Frage des Schädigungsmodells noch der Kontakt-Aktivierung.
+
+\subsection{Der entscheidende Hinweis: die Steifigkeit bestimmt der Kontakt, nicht das Volumenelement}
+Bei einem \emph{reinen} verschiebungsbasierten Finite-Elemente-Ansatz ist die diskrete Steifigkeit
+eine obere Schranke der wahren Steifigkeit, und ein reicherer Ansatzraum senkt sie: quadratische
+Elemente sind dort stets \emph{weicher} und genauer als lineare. Wäre also allein der Betonkörper
+maßgeblich, müsste \code{hex20} weicher sein als \code{hex8} -- niemals steifer. Auch die konkrete
+Integration der Volumenelemente zeigt in dieselbe Richtung: \code{GC3D8} ist voll integriert (und
+damit eher zu steif, versteifungsanfällig), \code{GC3D20R} ist reduziert integriert (und damit eher
+weicher). Beide Effekte auf der Volumenebene sagen \code{hex8}~$\ge$~\code{hex20} voraus; beobachtet
+wird das Gegenteil.
+
+Daraus folgt: Die zusätzliche Steifigkeit von \code{hex20} stammt aus der \emph{Kontakt}-Lasteinleitung,
+nicht aus dem Volumenelement. Der Mortar-Kontakt ist eine \emph{gemischte} (Lagrange-)Formulierung, in
+der die Monotonie ``reicherer Raum $=$ weicher'' gerade nicht gilt; und das grobe lineare Netz ist an
+der Lasteinleitung erkennbar noch nicht konvergiert.
+
+\subsection{Der physikalische Mechanismus: Lasteinleitung am Bolzenkopf}
+Physikalisch ist der Ausziehversuch ein Lasteinleitungs- bzw.\ Stempelproblem: Der steife
+Stahl\emph{kopf} presst sich gegen den Beton, und die Steifigkeit der Antwort hängt fast
+ausschließlich davon ab, wie gut diese \emph{konzentrierte} Lasteinleitung am Kopf aufgelöst wird. Die
+lineare Diskretisierung versagt dabei an zwei Stellen gleichzeitig:
+\begin{itemize}\itemsep2pt
+  \item \textbf{Randkonzentration des Kontaktdrucks.} Unter einem steifen Stempel steigt der
+        Kontaktdruck zu den Rändern der Kontaktfläche hin stark an. Der lineare Mortar-Kontakt
+        (diagonale $\bm D$, Multiplikatoren nur an Eckknoten) kann diesen Randanstieg nicht
+        darstellen und verschmiert den Druck; die Grenzfläche gibt dort zu leicht nach -- die
+        Antwort wird künstlich weich. Der quadratische Mortar-Kontakt (volle, nicht gelumpte
+        $\bm D$, zusätzliche Kantenmittelknoten, transformierte duale Basis nach
+        Abschnitt~\ref{sec:basistrafo}; \citealp{popp2012}) löst die Druckverteilung samt
+        Randkonzentration deutlich besser auf.
+  \item \textbf{Dehnungsgradient im Beton am Kopf.} Direkt am Kopf herrscht ein steiler
+        Dehnungsgradient (hohe Pressung unter dem Kopf, rasch abklingend nach außen). Lineare
+        Elemente verschmieren diesen Gradienten über das Element und mischen das hoch beanspruchte,
+        steife Material am Kopf mit dem weicheren daneben zu einer zu nachgiebigen Mittelung;
+        quadratische Elemente bilden den Gradienten ab.
+\end{itemize}
+Beides macht \code{hex8} zu weich und erklärt zugleich den überschätzten Peak: Weil die lineare
+Diskretisierung die lokale Spannungsspitze am Kopf unterschätzt, erreicht der Beton seine Festigkeit
+erst später; die Schädigung setzt verspätet ein, der Anker wird weiter gezogen, und die Kurve läuft
+auf einen höheren, späteren Peak. Die quadratische Diskretisierung erfasst die lokale Spitze korrekt,
+sodass die Schädigung bei der realen Last einsetzt und Peak-Höhe wie Peak-Lage zu den Versuchen passen.
+
+\subsection{Abgleich mit der Verifikation}
+Dies steht nicht im Widerspruch zu den bestandenen Patch- und Referenztests
+(Abschnitt~\ref{sec:verif}). Diese prüfen gleichförmige Spannungs- bzw.\ Dehnungszustände an glatten
+Grenzflächen unter Verschiebungssteuerung -- also gerade \emph{ohne} Konzentration. In diesem Regime
+ist die Lösung elementordnungs\emph{unabhängig} und der Mortar-Kontakt exakt, für lineare wie für
+quadratische Elemente. Der Ausziehversuch ist das gegenteilige Regime: Er ist
+konzentrationsdominiert, und genau dann entscheidet die Elementordnung. Beide Diskretisierungen sind
+korrekt; sie sind lediglich unterschiedlich gut aufgelöste Näherungen desselben, ordnungsempfindlichen
+Problems.
+
+\subsection{Schlussfolgerung}
+\code{hex20} ist die genauere, nahezu konvergierte Lösung und trifft die Laborversuche; \code{hex8}
+löst die konzentrierte Lasteinleitung am Bolzenkopf zu grob auf und ist deshalb künstlich weich, mit
+überschätztem Peak. Der große Unterschied zwischen den beiden Kurven ist damit ein
+Diskretisierungs- bzw.\ Elementordnungseffekt an der Lasteinleitung -- kein Implementierungsfehler.
+
+% =====================================================================
+\section{Zusammenfassung}
+\label{sec:zusammenfassung}
+
+Der auf Branch \code{0\_mortarcontact} implementierte reibungsfreie Mortar-Kontakt überträgt Kräfte
+zwischen nichtkonformen Netzen über eine schwach (im integralen Mittel) durchgesetzte
+Nichtdurchdringungsbedingung. Die tragenden Bausteine sind:
+\begin{itemize}\itemsep2pt
+  \item eine \textbf{segmentbasierte Integration} mit BVH-Nachbarsuche, Hilfsebenen-Projektion,
+        Sutherland--Hodgman-Clipping und Grad-5-Quadratur (7-Punkt-Dreiecksregel nach \citealt{dunavant1985}),
+        wobei der erhöhte Grad die nichtlineare Projektion auffängt (\citealp{farah2015});
+  \item \textbf{duale Lagrange-Multiplikatoren} (\citealp{wohlmuth2000}), die $\bm D$ diagonalisieren und die
+        Koppelmatrizen $\bm D,\bm M$ samt gewichtetem Spalt $\tilde g_j$ liefern, mit garantierter
+        Zeilensummen-Identität (Impulserhaltung);
+  \item eine \textbf{Basistransformation} für quadratische Elemente (\citealp{popp2012}; im Code der
+        Farah-Wert $\alpha=\tfrac13$) zur Sicherung positiver dualer Gewichte, plus lineare
+        \textbf{Sub-Cells} fürs Clipping (\citealp{puso2008});
+  \item die \textbf{semiglatte NCP-Formulierung} der Signorini-Bedingung (\citealp[Gl.~(55)]{gitterle})
+        gelöst per \textbf{PDASS}/semismooth Newton (\citealp{hueber2005}).
+\end{itemize}
+Die Formulierung besteht die Kontakt-Patch-Tests in 2D und 3D (linear und quadratisch, konform und
+nichtkonform) und rechnet stabil bis in den entfestigenden Bereich des Betonmaterials. Reibung und
+statische Kondensation sind nicht Teil dieses Branches und wurden hier bewusst ausgeklammert.
+
+% =====================================================================
+\section{Anwendungsanleitung: Kontaktspezifikation in der Input-Datei}
+\label{sec:inputfile}
+
+\subsection{Syntax-Struktur des Mortar-Constraint-Blocks}
+
+Der Kontakt wird im Modell-Header unter \code{*constraint} definiert. Auf Branch
+\code{0\_mortarcontact} kennt der Constraint vier Argumente (\file{mortarcontact.py:\allowbreak{}89--108}): die
+beiden Pflicht-Oberflächen, das Feld und den NCP-Parameter \code{cn}:
+
+\begin{lstlisting}[language=bash,caption={Mortar-Kontakt-Block (reibungsfrei) in der EdelweissFE Input-Datei}]
+*constraint, type=mortarcontact, name=mein_kontakt_name
+nonMortarSurface=slave_surface_name
+mortarSurface=master_surface_name
+field=displacement
+cn=30000.0
+\end{lstlisting}
+
+Der Wert von \code{cn} sollte in der Größenordnung des Elastizitätsmoduls des weicheren
+Kontaktpartners liegen (hier beispielhaft $\approx3\cdot10^4$ für Beton in MPa); die genaue
+Bedeutung und Begründung stehen in Abschnitt~\ref{sec:ncp}.
+
+\subsection{Schlüsselwörter}
+
+\begin{table}[h]
+\centering
+\begin{tabularx}{\linewidth}{lX}
+\toprule
+\textbf{Schlüsselwort} & \textbf{Beschreibung} \\
+\midrule
+\code{type=mortarcontact} & Pflichtangabe. Aktiviert den segmentbasierten Mortar-Kontakt-Constraint (2D und 3D). \\
+\code{name=\path{<string>}} & Eindeutiger Name des Kontaktpaars. \\
+\code{nonMortarSurface=\path{<string>}} & Pflicht. Name der \textbf{Non-Mortar-Fläche (Slave)}. Trägt die Kontaktknoten, Normalen $\bm n_I$ und dualen Formfunktionen $\bm\Phi$. \\
+\code{mortarSurface=\path{<string>}} & Pflicht. Name der \textbf{Mortar-Fläche (Master)}, auf die der Spalt gemessen wird. \\
+\code{field=displacement} & Optional (Standard \code{displacement}). Verschiebungs-Vektorfeld, auf das der Kontakt wirkt. \\
+\code{cn=\path{<float>}} & Optional (Standard $10^6$). Komplementaritätsparameter $c_n$ der Normal-NCP (Abschnitt~\ref{sec:ncp}). \emph{Sollte} pro Problem in der Größenordnung $\mathcal O(E)$ des weicheren Kontaktpartners gesetzt werden; der Default ist nur ein Rückfallwert. \\
+\bottomrule
+\end{tabularx}
+\caption{Parameter des \code{mortarcontact}-Constraints auf Branch \code{0\_mortarcontact}.}
+\end{table}
+
+\subsection{Vorbereitung der Oberflächen und Kontaktelemente}
+
+Der Mortar-Kontakt basiert auf expliziten Overlay-Kontaktelementen (\code{CONLINE2/3} in 2D bzw.\
+\code{CONQUAD4/8/9}, \code{CONTRI3/6} in 3D). Beim Erzeugen aus Abaqus/Cubit-Netzen mit
+\code{prepare\_mortar\_mesh.py} gilt:
+\begin{itemize}
+    \item \textbf{Normalenorientierung:} Elementnormalen müssen aus dem Kontinuumskörper nach außen
+          weisen (\code{prepare\_mortar\_mesh.py} stellt dies automatisch sicher).
+    \item \textbf{Slave/Master-Wahl:} Als Slave-Seite (\code{nonMortarSurface}) das feinere Netz
+          bzw.\ das weichere Material wählen (Standardempfehlung der dualen Mortar-Methode).
+\end{itemize}
+
+% =====================================================================
+\clearpage
+\begin{thebibliography}{Hintermüller et al.(2002)}
+
+\bibitem[Cichosz \& Bischoff(2011)]{cichosz} T.~Cichosz, M.~Bischoff: \emph{Consistent treatment of boundaries with mortar contact formulations using dual Lagrange multipliers}, Computer Methods in Applied Mechanics and Engineering 200 (2011), 1317--1332. (Lokale Kopie: \path{meetings/literature/CichoszBischoff_2011_ConsistentTreatmentOfBoundariesWithMortarContactFormulationsUsingDualLagrangeMultipliers.pdf})
+
+\bibitem[Dunavant(1985)]{dunavant1985} D.~A.~Dunavant: \emph{High degree efficient symmetrical Gaussian quadrature rules for the triangle}, International Journal for Numerical Methods in Engineering 21 (1985), 1129--1148. (Lokale Kopie: \path{meetings/literature/Dunavant_1985_HighDegreeEfficientSymmetricalGaussianQuadratureRulesForTheTriangle.pdf})
+
+\bibitem[Ericson(2004)]{ericson2004} C.~Ericson: \emph{Real-Time Collision Detection}, Morgan Kaufmann, 2004. (Lokale Kopie: \path{meetings/literature/Ericson_2004_RealTimeCollisionDetection.pdf})
+
+\bibitem[Farah(2018)]{farah} P.~W.~Farah: \emph{Mortar Methods for Computational Contact Mechanics Including Wear and General Volume Coupled Problems}, Dissertation, TU M\"unchen, 2018. (Lokale Kopie: \path{meetings/literature/Farah_2018_MortarMethodsForComputationalContactMechanicsIncludingWearAndGeneralVolumeCoupledProblems.pdf})
+
+\bibitem[Farah et al.(2015)]{farah2015} P.~Farah, A.~Popp, W.~A.~Wall: \emph{Segment-based vs.\ element-based integration for mortar methods in computational contact mechanics}, Computational Mechanics 55 (2015), 209--228. (Lokale Kopie: \path{meetings/literature/FarahPoppWall_2015_SegmentBasedVSElementBasedIntegrationForMortarMethodsInComputationalContactMechanics.pdf})
+
+\bibitem[Gitterle et al.(2010)]{gitterle} M.~Gitterle, A.~Popp, M.~W.~Gee, W.~A.~Wall: \emph{Finite deformation frictional mortar contact using a semi-smooth Newton method with consistent linearization}, International Journal for Numerical Methods in Engineering 84 (2010), 543--571. (Lokale Kopie: \path{meetings/literature/GitterlePoppGeeWall_2010_FiniteDeformationFrictionalMortarContactUsingASemiSmoothNewtonMethodWithConsistentLinearization.pdf})
+
+\bibitem[Hintermüller et al.(2002)]{hik2002} M.~Hintermüller, K.~Ito, K.~Kunisch: \emph{The primal-dual active set strategy as a semismooth Newton method}, SIAM Journal on Optimization 13 (2002), 865--888. (Lokale Kopie: \path{meetings/literature/HintermuellerItoKunisch_2002_ThePrimalDualActiveSetStrategyAsASemismoothNewtonMethod.pdf})
+
+\bibitem[Hüeber \& Wohlmuth(2005)]{hueber2005} S.~H\"ueber, B.~I.~Wohlmuth: \emph{A primal-dual active set strategy for non-linear and contact problems}, Computer Methods in Applied Mechanics and Engineering 194 (2005), 3147--3166. (Lokale Kopie: \path{meetings/literature/HüeberWohlmuth_2005_APrimalDualActiveSetStrategyForNonLinearContactProblems.pdf})
+
+\bibitem[Lamichhane et al.(2005)]{lamichhane2005} B.~P.~Lamichhane, R.~P.~Stevenson, B.~I.~Wohlmuth: \emph{Higher order mortar finite element methods in 3D with dual Lagrange multiplier bases}, Numerische Mathematik 102 (2005), 93--121. (Lokale Kopie: \path{meetings/literature/LamichhaneStevensonWohlmuth_2005_HigherOrderMortarFiniteElementMethodsIn3DWithDualLagrangeMultiplierBases.pdf})
+
+\bibitem[Popp et al.(2009)]{poppgeewall2009} A.~Popp, M.~W.~Gee, W.~A.~Wall: \emph{A finite deformation mortar contact formulation using a primal--dual active set strategy}, International Journal for Numerical Methods in Engineering 79 (2009), 1354--1391. (Lokale Kopie: \path{meetings/literature/PoppGeeWall_2009_AFiniteDeformationMortarContactFormulationUsingAPrimalDualActiveSetStrategy.pdf})
+
+\bibitem[Popp et al.(2010)]{popp2010} A.~Popp, M.~W.~Gee, W.~A.~Wall: \emph{A dual mortar approach for 3D finite deformation contact with consistent linearization}, International Journal for Numerical Methods in Engineering 83 (2010), 1428--1465.
+
+\bibitem[Popp et al.(2012)]{popp2012} A.~Popp, B.~I.~Wohlmuth, M.~W.~Gee, W.~A.~Wall: \emph{Dual quadratic mortar finite element methods for 3D finite deformation contact}, SIAM Journal on Scientific Computing 34 (2012), B421--B446. (Lokale Kopie: \path{meetings/literature/PoppWohlmuthGeeWall_2012_DualQuadraticMortarFiniteElementMethodsFor3DFiniteDeformationContact.pdf})
+
+\bibitem[Puso \& Laursen(2004)]{puso2004} M.~A.~Puso, T.~A.~Laursen: \emph{A mortar segment-to-segment contact method for large deformation solid mechanics}, Computer Methods in Applied Mechanics and Engineering 193 (2004), 601--629. (Lokale Kopie: \path{meetings/literature/PusoLaursen_2004_AMortarSegmentToSegmentContactMethodForLargeDeformationSolidMechanics.pdf})
+
+\bibitem[Puso et al.(2008)]{puso2008} M.~A.~Puso, T.~A.~Laursen, J.~Solberg: \emph{A segment-to-segment mortar contact method for quadratic elements and large deformations}, Computer Methods in Applied Mechanics and Engineering 197 (2008), 555--566. (Lokale Kopie: \path{meetings/literature/PusoLaursenSolberg_2008_ASegmentToSegmentMortarContactMethodForQuadraticElementsAndLargeDeformations.pdf})
+
+\bibitem[Sutherland \& Hodgman(1974)]{sutherland1974} I.~E.~Sutherland, G.~W.~Hodgman: \emph{Reentrant polygon clipping}, Communications of the ACM 17 (1974), 32--42. (Lokale Kopie: \path{meetings/literature/SutherlandHodgam_1974_ReentrantPolygonClipping.pdf})
+
+\bibitem[Wohlmuth(2000)]{wohlmuth2000} B.~I.~Wohlmuth: \emph{A mortar finite element method using dual spaces for the Lagrange multiplier}, SIAM Journal on Numerical Analysis 38 (2000), 989--1012. (Lokale Kopie: \path{meetings/literature/Wohlmuth_2000_AMortarFiniteElementMethodUsingDualSpacesForTheLagrangeMutliplier.pdf})
+
+\bibitem[Wriggers(2006)]{wriggers} P.~Wriggers: \emph{Computational Contact Mechanics}, 2.~Aufl., Springer, 2006. (Lokale Kopie: \path{meetings/literature/Wriggers_2006_ComputationalContactMechanics.pdf})
+
+\end{thebibliography}
+
+\end{document}

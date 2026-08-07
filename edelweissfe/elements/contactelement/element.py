@@ -163,12 +163,6 @@ class ContactElement(BaseElement):
         coords = np.array([node.coordinates for node in self._nodes])
         return np.mean(coords, axis=0)
 
-    def getCoordinatesAtCenter(self) -> np.ndarray:
-        if not self._nodes:
-            return np.zeros(self.nSpatialDimensions)
-        coords = np.array([node.coordinates for node in self._nodes])
-        return np.mean(coords, axis=0)
-
     def getQuadraturePoints(self) -> tuple[list[np.ndarray], list[float]]:
         """Return the local coordinates and weights of the quadrature points."""
         el_type = self._elType.upper()
@@ -445,19 +439,26 @@ class ContactElement(BaseElement):
         This guarantees strictly positive integrals int(N_tilde_a) dGamma while
         preserving the partition of unity. For linear element types the identity
         matrix is returned.
+
+        CONQUAD9 (full-Lagrangian, from hex27) is deliberately excluded: its
+        corner-node integrals are already strictly positive (1/9 on the reference
+        square), so it needs no transformation, and the serendipity mid-to-corner
+        recipe does not even address its central node. The identity is returned
+        for it, as for all linear element types.
         """
         n = self._nNodes
         T_e = np.eye(n)
         alpha = 1.0 / 3.0
 
         el_type = self._elType.upper()
-        if el_type in ("CONQUAD8", "CONQUAD9"):
+        if el_type == "CONQUAD8":
             mid_to_corners = {4: (0, 1), 5: (1, 2), 6: (2, 3), 7: (3, 0)}
         elif el_type == "CONTRI6":
             mid_to_corners = {3: (0, 1), 4: (1, 2), 5: (2, 0)}
         elif el_type == "CONLINE3":
             mid_to_corners = {2: (0, 1)}
         else:
+            # linear types, plus full-Lagrangian CONQUAD9: no transformation
             return T_e
 
         for mid, (c1, c2) in mid_to_corners.items():
