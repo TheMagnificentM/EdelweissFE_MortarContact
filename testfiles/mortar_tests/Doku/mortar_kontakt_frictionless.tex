@@ -467,19 +467,22 @@ Die diskrete schwache Nichtdurchdringung wird pro Slave-Knoten $j$ zu einem \emp
 Setzt man $g_{n,h}$ über \eqref{eq:gap} ein und sortiert nach Knotenpositionen um, erhält man die
 Positionsform (\citealp[Gl.~(36) und~(50)]{gitterle}; \citealp[Gl.~(50)]{poppgeewall2009}):
 \begin{equation}
-\tilde g_{j} \;=\; \bm n_j\!\cdot\!\Big(\sum_k \bm D[j,k]\,\bm x_k^{(1)}
-- \sum_l \bm M[j,l]\,\bm x_l^{(2)}\Big).
+\tilde g_{j} \;=\; \bm n_j\!\cdot\!\Big(\sum_l \bm M[j,l]\,\bm x_l^{(2)}
+- \sum_k \bm D[j,k]\,\bm x_k^{(1)}\Big).
 \label{eq:wgap_pos}
 \end{equation}
 Genau diese \emph{allgemeine} Form -- mit der vollen Zeilensumme über alle Slave-Knoten~$k$ --
-steht im Code (\file{mortarcontact.py:\allowbreak{}785--795}, Bezeichner \code{C} für $\bm M$).
+steht im Code (\file{mortarcontact.py:\allowbreak{}785--789}, Bezeichner \code{C} für $\bm M$).
+Die Reihenfolge Master~$-$~Slave ist dabei nicht beliebig: sie ist die diskrete Entsprechung
+von \eqref{eq:gap}, also $\tilde g_j>0$ bei geöffnetem Kontakt. Das ist die Vorzeichen\-konvention,
+auf die sich der gesamte Active-Set-Test stützt (Abschnitt~\ref{sec:ncp}).
 
 \medskip
 \noindent\textbf{Wann sich die Summe auf einen Term reduziert.} Ist $\bm D$ diagonal, so
 vereinfacht sich \eqref{eq:wgap_pos} zu
 \begin{equation}
-\tilde g_{j} \;=\; \bm n_j\!\cdot\!\Big(\bm D[j,j]\,\bm x_j^{(1)}
-- \sum_l \bm M[j,l]\,\bm x_l^{(2)}\Big)
+\tilde g_{j} \;=\; \bm n_j\!\cdot\!\Big(\sum_l \bm M[j,l]\,\bm x_l^{(2)}
+- \bm D[j,j]\,\bm x_j^{(1)}\Big)
 \qquad\text{(nur falls } \bm D \text{ diagonal)} .
 \label{eq:wgap_pos_diag}
 \end{equation}
@@ -648,29 +651,9 @@ Funktionen gebildet.
 
 Die Transformation wird nur auf die \emph{serendipity}-Typen mit nichtpositivem Eckintegral
 angewandt (CONQUAD8, CONTRI6; CONLINE3). Für das voll-Lagrange'sche CONQUAD9 (aus hex27) entfällt
-sie: dessen Voll-Element-Eckknoten-Integrale sind bereits strikt positiv ($\tfrac19$ auf dem
-Referenzquadrat),
-und das Kanten-zu-Ecken-Schema erfasst den zusätzlichen Zentrumsknoten ohnehin nicht -- für CONQUAD9
-wird daher wie für lineare Typen die Identität verwendet (\file{element.py:\allowbreak{}454--462}).
-
-\begin{quote}\small
-\textbf{Einschränkung für CONQUAD9.} Das Argument des vorigen Absatzes trägt nur für das
-\emph{Voll-Element}-Integral. Wie in Abschnitt~\ref{sec:alphachoice} ausgeführt, ist in der
-segmentbasierten Formulierung aber das Integral über die \emph{tatsächliche Überlappungsfläche}
-maßgeblich, und dessen Positivität für beliebige Teilgebiete verlangt \emph{punktweise}
-Nichtnegativität \eqref{eq:pointwisepos}. Die Lagrange-Formfunktionen des CONQUAD9 erfüllen das
-nicht: die Eck- und Kantenfunktionen wechseln im Element das Vorzeichen. Für CONQUAD9 existiert
-also keine Absicherung analog zu $\alpha=\tfrac13$ beim CONQUAD8, und bei Teilüberdeckung können
-\emph{negative} Knotengewichte auftreten -- im Verifikationslauf (Test~05, Master um $0{,}3$
-verschoben) gemessen bis $-0{,}0109$ bei einem größten Gewicht von $0{,}25$.
-
-Praktisch bleibt das beherrschbar, weil der Code die Vorzeichen konsistent mitführt: mit
-$\mathrm{sgn}(\tilde D_{jj})$ (Abschnitt~\ref{sec:ncp}, \eqref{eq:indicator_code}) bleiben
-Druckvorzeichen \emph{und} Kraftrichtung auch bei negativem Knotengewicht korrekt
-(Abschnitt~\ref{sec:implnotes}). Der gewichtete Spalt verliert an einem solchen Knoten
-allerdings seine Deutung als Mittelwert. \textbf{Empfehlung:} für quadratische Flächen
-CONQUAD8 verwenden; CONQUAD9 nur bei voller Überdeckung des Slave-Elements.
-\end{quote}
+sie -- für CONQUAD9 wird wie für lineare Typen die Identität verwendet
+(\file{element.py:\allowbreak{}454--462}). Der folgende Abschnitt begründet das und benennt zugleich
+die Grenze dieser Begründung.
 
 \subsection{Wahl des Transformationsparameters $\alpha$}
 \label{sec:alphachoice}
@@ -745,6 +728,69 @@ $\alpha=\tfrac13$ gesicherte punktweise Nichtnegativität hier die ausschlaggebe
 sie hat Vorrang vor der exakten Linearreproduktion von $\alpha=\tfrac15$. Dies deckt sich mit Farahs
 Begründung ``numerische Erfahrung'' (\citealp[Gl.~(6.20)]{farah}).
 \end{quote}
+
+\subsection{Sonderfall CONQUAD9: warum die Literaturbegründung hier nicht ganz reicht}
+\label{sec:quad9}
+
+\paragraph{Was die Literatur sagt.} Für das biquadratische Lagrange-Element sind die
+Voll-Element-Integrale \emph{aller} Formfunktionen strikt positiv -- auf dem Referenzquadrat
+$\tfrac19$ am Eckknoten, $\tfrac49$ am Kantenmittelknoten und $\tfrac{16}9$ am Zentrumsknoten
+(Summe $4$ = Referenzfläche). Die Integral-Positivität \eqref{eq:intpos} ist also erfüllt, und
+\citet{popp2012} halten ausdrücklich fest:
+\begin{quote}
+\small ``For the sake of completeness, we mention that \textbf{no basis transformation is needed in
+the case of quad9 surfaces}, because the corresponding shape functions $N_j$ already satisfy
+(4.2).'' \hfill \citep[S.~B431]{popp2012}
+\end{quote}
+Nach diesem Kriterium ist für CONQUAD9 nichts zu tun -- und genau so ist es implementiert.
+
+\paragraph{Warum das hier nicht die ganze Geschichte ist.} Die Bedingung \eqref{eq:intpos} bezieht
+sich auf das Integral über das \emph{ganze} Element. In der segmentbasierten Formulierung dieses
+Codes wird aber über die \emph{tatsächliche Überlappungsfläche} integriert (konsistente
+Randbehandlung, Abschnitt~\ref{sec:alphachoice}); maßgeblich ist dann
+$\int_{\gamma_c^{\text{ovl}}}\tilde N_j\,\mathrm d\gamma$ für ein beliebiges Teilgebiet. Dessen
+Positivität folgt aus \eqref{eq:intpos} \emph{nicht} -- sie verlangt die strengere punktweise
+Nichtnegativität \eqref{eq:pointwisepos}.
+
+Die Q2-Formfunktionen erfüllen diese strengere Bedingung nicht: sie wechseln im Element das
+Vorzeichen. Die Eckfunktion $N=\ell_0(\xi)\,\ell_0(\eta)$ erreicht ein Minimum von $-\tfrac18$
+(bei $\xi=\tfrac12,\ \eta=-1$). Über das ganze Element hebt sich das gegen die positiven Anteile
+mehr als auf -- über einen Ausschnitt aber nicht notwendig. Ist ein CONQUAD9-Slave-Element also nur
+\emph{teilweise} überdeckt, so können einzelne Knotengewichte $\tilde D_{jj}$ \textbf{negativ}
+werden. Gemessen (Test~05, Master um $0{,}3$ verschoben, entspricht $70\,\%$ Überdeckung):
+$\tilde D_{jj}=-0{,}0109$ bei einem größten Gewicht von $0{,}35$; bei $50\,\%$ Überdeckung
+$-0{,}0278$.
+
+Für CONQUAD8 tritt das nicht auf: dort macht gerade die Transformation mit $\alpha=\tfrac13$ die
+Basis punktweise nichtnegativ -- das war die Begründung in Abschnitt~\ref{sec:alphachoice}. Für
+CONQUAD9 gibt es in diesem Code keine entsprechende Absicherung.
+
+\paragraph{Konsequenz.} Ein negatives $\tilde D_{jj}$ dreht die Vorzeichenkonventionen des
+Kontakts um. Der Code fängt das ab (Abschnitt~\ref{sec:sgnd}); die Vorzeichen von Druck, Spalt und
+Kraftrichtung bleiben dadurch korrekt. Was sich nicht reparieren lässt, ist die \emph{Bedeutung}
+des gewichteten Spalts an einem solchen Knoten: er ist dort ein Mittel mit teilweise negativen
+Gewichten und kann positiv sein, während Teile der Facette durchdringen -- also genau die
+``nonphysical gaps and penetrations'', vor denen \citet[Abschn.~4.3]{popp2012} warnen.
+
+\medskip
+\noindent\textbf{Empfehlung:} für quadratische Flächen \textbf{CONQUAD8} verwenden. CONQUAD9 ist
+unbedenklich, solange die Slave-Elemente voll überdeckt sind (dann sind alle Gewichte positiv,
+Test~05 belegt es); bei Teilüberdeckung ist es die schlechtere Wahl.
+
+\medskip
+\noindent\textit{Möglicher Ausweg (nicht implementiert).} Die quad9-Facette ist ein
+\emph{Tensorprodukt} zweier eindimensionaler quadratischer Ansätze, und für solche Räume weisen
+\citet[S.~109]{lamichhane2005} den Weg: ``In case of piecewise tensor product polynomial
+approximation on the slave domain, dual Lagrange multiplier bases can simply be made by taking
+tensor products of such bases on one-dimensional interfaces.'' Bildet man die
+CONLINE3-Transformation ($\alpha=\tfrac13$) tensoriell in beiden Richtungen, so erhält jeder
+Eckknoten zusätzlich $\alpha$ von seinen beiden Kantennachbarn und $\alpha^2$ vom Zentrumsknoten.
+Eine Erprobung dieser Variante ergab eine punktweise nichtnegative Basis und bei allen geprüften
+Überdeckungen von $100\,\%$ bis $10\,\%$ ausschließlich positive Gewichte, bei erhaltener Partition
+of Unity und Zeilensummen-Identität. Die konkrete Matrix für quad9 steht in keiner der
+herangezogenen Quellen; die Konstruktion ist eine naheliegende Übertragung, keine Literaturangabe.
+Umgesetzt ist sie bewusst nicht -- sie wäre eine Verhaltensänderung für CONQUAD9 mit eigenem
+Validierungsaufwand, und der Anwendungsfall dieses Projekts nutzt CONQUAD4 und CONQUAD8.
 
 \subsection{Auswirkung auf die Struktur von $\bm D$}
 Mit der Transformation ist die globale Matrix $\bm D$ \emph{nicht} mehr diagonal.
@@ -958,13 +1004,16 @@ Aktiv/inaktiv wird über das Vorzeichen des Arguments der $\max$-Funktion entsch
 \label{eq:indicator}
 \end{equation}
 Im Code steht diese Bedingung mit einer \emph{zusätzlichen Normierung} mit $\tilde D_{jj}^{-1}$
-(\file{mortarcontact.py:\allowbreak{}797--839}):
+(\file{mortarcontact.py:\allowbreak{}810--838}):
 \begin{equation}
 s_{n,j} = p_{n,j} - c_n\,\tilde D_{jj}^{-1}\,\tilde g_{j},
 \qquad \text{aktiv} \iff s_{n,j}>0,
 \label{eq:indicator_code}
 \end{equation}
-mit dem physikalischen Druck $p_{n,j}=-\lambda_j\,\mathrm{sgn}(D)$. \emph{Bemerkung:} der
+mit dem physikalischen Druck $p_{n,j}=-\lambda_j\,\mathrm{sgn}(\tilde D_{jj})$. Beide Faktoren sind
+\emph{vorzeichenbehaftet} zu lesen: $\tilde D_{jj}^{-1}$ ist der Kehrwert des \emph{signierten}
+Gewichts, nicht sein Betrag. Warum das so sein muss und warum ausgerechnet hier ein Vorzeichenfehler
+naheliegt, steht in Abschnitt~\ref{sec:sgnd}. \emph{Bemerkung:} der
 Faktor $\tilde D_{jj}^{-1}$ ist \emph{nicht} Teil der Originalgleichung~(55)/(3.58) -- dort steht
 $c_n\tilde g_j$ mit dem \emph{gewichteten} Spalt direkt. Da $\tilde g_j$ ein volumetrisches,
 über $\tilde D_{jj}$ skaliertes Maß ist (Abschnitt~\ref{sec:koppelmatrizen}), macht die Division
@@ -1070,26 +1119,97 @@ Dieser Abschnitt sammelt Bausteine, die für das Verständnis des Codes wesentli
 keinem der Theorieabschnitte zuordnen lassen -- Vorzeichenbehandlung, Rückfallpfade und implizite
 Annahmen. Sie sind hier vollständig benannt, damit klar ist, worauf man sich verlässt.
 
-\subsection{Vorzeichenbehandlung: der \code{sgn\_D}-Guard}
-Alle Vorzeichenfragen des Kontakts hängen daran, dass das knotenweise Gewicht
-$\tilde D_{jj}=\sum_k D_{jk}$ positiv ist. Das ist der Normalfall
-(Abschnitt~\ref{sec:basistrafo}), aber für CONQUAD9 bei Teilüberdeckung nicht garantiert. Der Code
-führt deshalb $s_j := \mathrm{sgn}(\tilde D_{jj})$ mit
-(\file{mortarcontact.py:\allowbreak{}791--795}) und definiert
+\subsection{Vorzeichenbehandlung bei negativem Knotengewicht}
+\label{sec:sgnd}
+
+\paragraph{Wofür dieser Code da ist -- in einem Satz.}
+Im Aktivierungstest steht an mehreren Stellen der Faktor $\mathrm{sgn}(\tilde D_{jj})$ bzw.\ eine
+Division durch $\tilde D_{jj}$. Wer den Code liest, ohne den Hintergrund zu kennen, hält das
+leicht für überflüssig, denn $\tilde D_{jj}$ ist normalerweise positiv. Der Grund: \textbf{bei
+genau einem der unterstützten Elementtypen -- CONQUAD9 -- kann das knotenweise Gewicht
+$\tilde D_{jj}$ negativ werden} (Abschnitt~\ref{sec:quad9}), und dann kehren sich beide
+Vorzeichenkonventionen des Kontakts um. Ohne diese Behandlung würde ein solcher Knoten unter Druck
+fälschlich freigegeben oder -- schlimmer -- bei offenem Spalt aktiv gehalten und die Flächen
+verkleben, sodass der ``Kontakt'' Zug überträgt. Für alle anderen Elementtypen ist
+$\mathrm{sgn}(\tilde D_{jj})=+1$ und der gesamte Abschnitt wirkungslos.
+
+\paragraph{Warum die Vorzeichen überhaupt am Gewicht hängen.}
+Der Active-Set-Test \eqref{eq:indicator_code} vergleicht zwei Größen, deren Vorzeichen jeweils eine
+physikalische Bedeutung tragen: $p_{n,j}\ge0$ heißt Druck, $g_{\text{sep},j}>0$ heißt offener
+Spalt. Beide Zuordnungen sind über $\tilde D_{jj}=\sum_k D_{jk}=\int\Phi_j\,\mathrm d\gamma$
+vermittelt -- die Kontaktkraft ist $\lambda_j\tilde D_{jj}$, und der gewichtete Spalt skaliert
+ebenfalls mit $\tilde D_{jj}$ (beides gleich im Detail). Genau deshalb fordert die Literatur die
+Integral-Positivität \eqref{eq:intpos}; \citet[Abschn.~4.3]{popp2012} benennen die dahinterliegende
+Anforderung direkt:
+\begin{quote}
+\small ``the discrete nonpenetration condition \ldots\ should yield a positive weighted gap
+$\tilde g_{n,j}$ if the value of the unweighted physical gap function evaluated at slave node $j$
+is positive and vice versa. Otherwise, the numerical algorithm will generate nonphysical gaps and
+penetrations, which leads to either unacceptable errors in the solution or a nonconverging active
+set strategy.'' \hfill \citep[Abschn.~4.3]{popp2012}
+\end{quote}
+Für CONQUAD4/8, CONTRI3/6 und CONLINE2/3 ist $\tilde D_{jj}>0$ durch die Basistransformation
+gesichert (Abschnitt~\ref{sec:basistrafo}); für das voll-Lagrange'sche CONQUAD9 bei
+Teilüberdeckung ist es das \emph{nicht} (Abschnitt~\ref{sec:quad9}). Der Code muss den Fall daher
+abfangen. Die folgende Herleitung zeigt, wie -- und wo dabei ein Vorzeichenfehler naheliegt, der in
+einer früheren Fassung tatsächlich vorhanden war.
+
+\paragraph{Die beiden Vorzeichenregeln.}
+Sei $s_j:=\mathrm{sgn}(\tilde D_{jj})$. Zwei Beobachtungen legen die Umrechnung fest.
+
+\emph{Druck.} Die auf den Slave-Knoten in Normalenrichtung wirkende Kontaktkraft ist
+$\lambda_j\sum_k D_{jk}=\lambda_j\tilde D_{jj}$. Druck bedeutet, dass sie entgegen $\bm n_j$ zeigt,
+also $\lambda_j\tilde D_{jj}<0$. Mit
 \begin{equation}
-p_{n,j} = -\lambda_j\,s_j, \qquad g_{\text{sep},j} = \tilde g_j\,s_j ,
+p_{n,j} := -\lambda_j\,s_j
+\label{eq:pn}
 \end{equation}
-also Druck und Trennspalt so, dass $p_{n,j}\ge0$ stets Druck und $g_{\text{sep},j}>0$ stets einen
-offenen Spalt bedeutet. Entscheidend ist, dass damit auch die \emph{Kraftrichtung} korrekt bleibt:
-die auf den Slave-Knoten wirkende Normalkraft ist
+ist $p_{n,j}\ge0$ genau dann Druck -- für \emph{beide} Vorzeichen von $\tilde D_{jj}$. Die
+Kraftrichtung stimmt dann automatisch:
 \begin{equation}
-\lambda_j \sum_k D_{jk} = \lambda_j \tilde D_{jj} = -p_{n,j}\,s_j\,\tilde D_{jj}
-= -p_{n,j}\,\big|\tilde D_{jj}\big| \;\le\; 0 \quad\text{für } p_{n,j}\ge0,
+\lambda_j\,\tilde D_{jj} \;=\; -p_{n,j}\,s_j\,\tilde D_{jj} \;=\; -p_{n,j}\,\big|\tilde D_{jj}\big|
+\;\le\;0 \qquad\text{für } p_{n,j}\ge0 .
 \end{equation}
-also unabhängig vom Vorzeichen von $\tilde D_{jj}$ stets \emph{drückend} (entgegen $\bm n_j$, vom
-Master weg). Der Guard hält Druck-, Spalt- und Kraftvorzeichen konsistent; was er \emph{nicht}
-leisten kann, ist dem gewichteten Spalt an einem Knoten mit $\tilde D_{jj}<0$ seine Deutung als
-Mittelwert zurückzugeben.
+
+\emph{Spalt.} Verschiebt man den Master-Körper starr um $a\,\bm n_j$, so ändert sich der gewichtete
+Spalt \eqref{eq:wgap_pos} um
+\begin{equation}
+\Delta\tilde g_j \;=\; \Big(\sum_l M_{jl}\Big)\,a \;=\; \tilde D_{jj}\,a ,
+\label{eq:gapscale}
+\end{equation}
+wobei die zweite Gleichheit die Zeilensummen-Identität \eqref{eq:rowsum} ist. Der gewichtete Spalt
+skaliert also mit $\tilde D_{jj}$: bei $\tilde D_{jj}<0$ bedeutet ein \emph{offener} Spalt
+$\tilde g_j<0$. Die physikalische Knotenöffnung ist folglich
+\begin{equation}
+g_{\text{sep},j} \;=\; \frac{\tilde g_j}{\tilde D_{jj}} ,
+\label{eq:gsep}
+\end{equation}
+und diese Division durch das \emph{vorzeichenbehaftete} $\tilde D_{jj}$ stellt genau die von
+\citet{popp2012} geforderte Eigenschaft her -- $g_{\text{sep},j}>0$ bei physikalisch offenem Spalt,
+unabhängig vom Vorzeichen des Gewichts. Sie ist zugleich die in Abschnitt~\ref{sec:ncp} beschriebene
+Normierung, die $c_n\,g_{\text{sep},j}$ druckartig macht.
+
+\paragraph{Nur eine der beiden Größen wird umgerechnet.}
+Das ist der Punkt, an dem man sich leicht vertut: \eqref{eq:pn} braucht den Faktor $s_j$,
+\eqref{eq:gsep} braucht ihn \emph{nicht} -- er steckt bereits in $\tilde D_{jj}$. Multipliziert man
+zusätzlich mit $s_j$, so erhält man $\tilde g_j/|\tilde D_{jj}|$, das Vorzeichen ist doppelt
+gedreht, und ein offener Knoten wird als durchdringend gelesen. Genau dieser Fehler steckte in
+einer früheren Fassung des Codes; er wurde behoben und ist seither durch einen Regressionstest
+abgesichert (Abschnitt~\ref{sec:verif}, \file{06\_active\_set\_pdass}): ein CONQUAD9 mit
+$70\,\%$ Überdeckung erzeugt drei Knoten mit $\tilde D_{jj}<0$ (bis $-0{,}0109$); wird der Master
+um bis zu $0{,}2$ von der Slave-Fläche weggezogen, müssen sie bei $\lambda_j=0$ \emph{inaktiv}
+sein, bei Durchdringung dagegen aktiv werden. Vor der Korrektur blieben sie durchgehend aktiv,
+erzwangen dort $\tilde g_j=0$ und verklebten die Flächen -- der Kontakt konnte Zug übertragen.
+Für $\tilde D_{jj}>0$ ist der korrigierte Indikator mit dem vorherigen identisch, weshalb sich an
+allen übrigen Ergebnissen nichts ändert.
+
+\paragraph{Was die Umrechnung nicht leistet.}
+Sie stellt die Vorzeichen richtig, sie macht $\tilde D_{jj}<0$ aber nicht ungeschehen. Der
+gewichtete Spalt bleibt an einem solchen Knoten ein Mittel mit teilweise negativen Gewichten und
+verliert damit seine Deutung als mittlere Öffnung; er kann positiv sein, während Teile der Facette
+durchdringen. Die Vorzeichenbehandlung ist also eine Absicherung, kein Ersatz für die
+Integral-Positivität. Die praktische Konsequenz steht in Abschnitt~\ref{sec:basistrafo}: für
+quadratische Flächen CONQUAD8 verwenden, CONQUAD9 nur bei voller Überdeckung.
 
 \subsection{Rückfallpfad für entartete Überlappungen}
 Die dualen Koeffizienten werden auf dem tatsächlichen Integrationsgebiet gebildet
@@ -1140,7 +1260,7 @@ Eigenschaft & Prüfung \\
 \textbf{Koppelmatrizen} & $\bm D,\bm M$, Zeilensummen-Identität \eqref{eq:rowsum} ($<10^{-14}$) und Überlappungsfläche gegen den analytischen Wert (\file{03\_coupling\_matrices}). \\
 \textbf{Biorthogonalität} & \eqref{eq:biorth} numerisch verifiziert (\file{04\_dual\_biorthogonality}). \\
 \textbf{Quadratische Segmentierung} & Sub-Cell-Zerlegung + Segmentquadratur für CONQUAD8/9, CONTRI6 (\file{05\_quadratic\_segmentation}). \\
-\textbf{Active-Set / PDASS} & Aktivierung bei Durchdringung, Freeze/Anti-Cycling (\file{06\_active\_set\_pdass}). \\
+\textbf{Active-Set / PDASS} & Aktivierung bei Durchdringung, Freeze/Anti-Cycling sowie Vorzeichenbehandlung bei negativem Knotengewicht (\file{06\_active\_set\_pdass}). \\
 \textbf{Patch-Test 2D} & Bausteine \emph{und} Löser-Patch-Test: CPE4/CONLINE2 und CPE8/CONLINE3, je konform und nichtkonform (\file{07\_patch\_test\_2d}). \\
 \textbf{Patch-Test hex20} & 3D-Patch-Test mit CONQUAD8, vier Netz-/Ordnungskombinationen mit geraden Kanten plus eine verzerrte Variante (\file{08\_patch\_test\_hex20}). \\
 \textbf{Konsistente Tangente} & $\bm K$ gegen zentrale Differenzen des Residuums, alle Freiheitsgrade, beide NCP-Zweige (\file{09\_consistent\_tangent}). \\
@@ -1172,6 +1292,12 @@ Eigenschaft & Prüfung \\
         \eqref{eq:fdcheck} mit $\sim10^{-11}$ über flache, geneigte und gekrümmte Interfaces.
         Derselbe Test misst auch die \emph{weggelassenen} geometrischen Terme
         ($0{,}27\ldots2{,}0$ von $\max|\bm K|$) -- siehe Abschnitt~\ref{sec:frozen}.
+  \item \textbf{Vorzeichen bei negativem Knotengewicht.} Ein CONQUAD9 mit $70\,\%$ Überdeckung
+        erzeugt drei Knoten mit $\tilde D_{jj}<0$ (bis $-0{,}0109$). Der Regressionstest in
+        \file{06\_active\_set\_pdass} prüft, dass diese Knoten bei $\lambda_j=0$ und einer Öffnung
+        bis $0{,}2$ \emph{inaktiv} bleiben und bei Durchdringung aktiv werden -- die von
+        \citet[Abschn.~4.3]{popp2012} geforderte Vorzeichentreue des gewichteten Spalts
+        (Abschnitt~\ref{sec:sgnd}).
   \item \textbf{Zwei-Block-Referenztests} (\file{Control\_Tests/README.md}): verschiebungs- und
         lastgesteuerte Blöcke, konform und nichtkonform, mit Abgleich von Verschiebungsfeld,
         Spannungen und Kontaktbedingungen; dort sind auch die beobachteten Grenzen des

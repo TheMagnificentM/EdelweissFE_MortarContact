@@ -270,6 +270,132 @@ def test_active_set_pdass_termination():
     assert np.all(constraint.active_set), "penetration must be detected again"
     print("[PASS] PDASS Termination Test Successful!")
 
+def build_quad9_partial_overlap(shift_x=0.3, cn=1000.0):
+    """CONQUAD9 slave against a CONQUAD9 master shifted in x -> partial coverage.
+
+    This is the one configuration in which the nodal weight D_II = int(Phi_I) turns
+    NEGATIVE: the full-Lagrangian CONQUAD9 shape functions are not pointwise
+    non-negative, so integral positivity (Popp et al. 2012, Eq. (4.2)) is not
+    guaranteed once only part of the slave facet is covered. Both facets lie in the
+    z = 0 plane, so the slave nodal normal is +e_z and the master can be opened by
+    simply translating it in +z.
+    """
+    def quad9(sx, z=0.0):
+        return [
+            [0.0 + sx, 0.0, z], [1.0 + sx, 0.0, z], [1.0 + sx, 1.0, z], [0.0 + sx, 1.0, z],
+            [0.5 + sx, 0.0, z], [1.0 + sx, 0.5, z], [0.5 + sx, 1.0, z], [0.0 + sx, 0.5, z],
+            [0.5 + sx, 0.5, z],
+        ]
+
+    model = FEModel(dimension=3)
+    ConClass = getElementClass("CONQUAD9", "edelweiss")
+    slave_nodes = [Node(1 + i, np.array(p, dtype=float)) for i, p in enumerate(quad9(0.0))]
+    master_nodes = [Node(100 + i, np.array(p, dtype=float)) for i, p in enumerate(quad9(shift_x))]
+    for nd in slave_nodes + master_nodes:
+        model.nodes[nd.label] = nd
+
+    s_con = ConClass("CONQUAD9", 1)
+    s_con.setNodes(slave_nodes)
+    model.elements[1] = s_con
+    m_con = ConClass("CONQUAD9", 2)
+    m_con.setNodes(master_nodes)
+    model.elements[2] = m_con
+
+    model.surfaces = {"slave_surf": {1: [s_con]}, "master_surf": {1: [m_con]}}
+    for nd in model.nodes.values():
+        nd.fields["displacement"] = FieldVariable(nd, "displacement")
+
+    constraint = MortarContact(
+        "contact_constraint", model,
+        nonMortarSurface="slave_surf", mortarSurface="master_surf",
+        field="displacement", cn=cn,
+    )
+    nDof = constraint.nDof
+    return constraint, np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), np.zeros((nDof, nDof))
+
+
+def test_negative_nodal_weight_opens_correctly():
+    """A node with NEGATIVE D_II must still deactivate when the gap is open.
+
+    Regression test for a sign bug in the active-set indicator. With D_II < 0 both
+    sign conventions flip: compression means lambda*D_II < 0, and translating the
+    master away by a changes the weak gap by D_II*a, i.e. an OPEN gap gives
+    g_weak < 0. The indicator therefore has to use the opening normalized by the
+    SIGNED weight, g_sep = g_weak/D_II, which is positive-when-open for either sign.
+    The earlier implementation multiplied by sgn(D_II) on top of dividing by D_II,
+    which flipped the gap sign back: a wide open node was reported as penetrating,
+    stayed active, and glued the surfaces (transmitting tension).
+
+    Popp et al. (2012), Sec. 4.3, state the requirement this enforces: the discrete
+    condition "should yield a positive weighted gap if the value of the unweighted
+    physical gap function evaluated at slave node j is positive and vice versa.
+    Otherwise, the numerical algorithm will generate nonphysical gaps and
+    penetrations".
+    """
+    print("\n--- Running Negative Nodal Weight Test (CONQUAD9, partial overlap) ---")
+    constraint, U_np, dU, PExt, K = build_quad9_partial_overlap()
+
+    def evaluate(offset, increment):
+        """Translate the whole master facet by offset*n_I and re-evaluate the set.
+
+        Every configuration gets its OWN increment number. That matters twice: the
+        semi-smooth loop freezes the set once it has settled (so re-using one
+        increment would silently stop updating after two stable iterations), and a
+        new increment re-evaluates the frozen geometry at the current state - which
+        is exactly what the solver does. Translating along the slave normal leaves
+        the auxiliary-plane overlap unchanged, so D and C (and hence the negative
+        weights) are the same in every configuration.
+        """
+        U_np[:] = 0.0
+        for nd in constraint.mortar_nodes:
+            idx = constraint.node_to_global_idx[nd]
+            U_np[constraint.sizeField * idx : constraint.sizeField * idx + 3] = offset * n_I
+        PExt.fill(0.0)
+        K.fill(0.0)
+        constraint.applyConstraint(U_np, dU, PExt, K, TimeStep(increment, 0.0, 0.0, 0.0, 0.0, 0.0))
+        return constraint.active_set.copy()
+
+    constraint.applyConstraint(U_np, dU, PExt, K, TimeStep(1, 0.0, 0.0, 0.0, 0.0, 0.0))
+    rowsum = constraint.current_D_rowsum
+    negative = np.flatnonzero(rowsum < 0.0)
+    print(f"  Nodal weights D_II: {np.round(rowsum, 5)}")
+    print(f"  Nodes with NEGATIVE weight: {list(negative)} -> {np.round(rowsum[negative], 6)}")
+    assert len(negative) > 0, (
+        "This configuration is supposed to produce negative nodal weights - "
+        "without them the test cannot exercise the sign handling."
+    )
+
+    n_I = constraint.current_normals[0]
+    assert abs(n_I[2]) > 0.99, f"expected a +/-z slave normal, got {n_I}"
+
+    # Open the gap by translating the master away from the slave. lambda stays zero,
+    # so the decision rests entirely on the gap term of the indicator.
+    for k, opening in enumerate((0.01, 0.05, 0.2)):
+        active = evaluate(+opening, 10 + k)
+        print(f"  opening     = {opening:.2f}, lambda = 0 -> active set {active.astype(int)}")
+        if np.any(active[negative]):
+            print(
+                f"  [FAIL] Node(s) {list(negative[active[negative]])} with D_II < 0 are ACTIVE "
+                f"although the gap is open by {opening} - the indicator reads the gap sign wrong!"
+            )
+            sys.exit(1)
+        assert not np.any(active), (
+            f"no node may be active at an open gap with lambda = 0, got {active.astype(int)}"
+        )
+
+    # Counter-check: pushing the master INTO the slave must activate the very same
+    # nodes. Without this a test that simply never activates anything would pass.
+    for k, penetration in enumerate((0.01, 0.05)):
+        active = evaluate(-penetration, 20 + k)
+        print(f"  penetration = {penetration:.2f}, lambda = 0 -> active set {active.astype(int)}")
+        assert np.all(active[negative]), (
+            f"nodes {list(negative)} with D_II < 0 must activate on penetration, got {active.astype(int)}"
+        )
+        assert np.all(active), f"all nodes must activate on a uniform penetration, got {active.astype(int)}"
+
+    print("[PASS] Negative Nodal Weight Test Successful!")
+
+
 def test_bvh_search_correctness():
     print("\n--- Running BVH Search Correctness Test ---")
     model = FEModel(dimension=3)
@@ -339,6 +465,7 @@ def test_bvh_search_correctness():
 if __name__ == '__main__':
     run_active_set_test()
     test_ncp_indicator()
+    test_negative_nodal_weight_opens_correctly()
     test_active_set_reevaluated_every_iteration()
     test_active_set_pdass_termination()
     test_bvh_search_correctness()

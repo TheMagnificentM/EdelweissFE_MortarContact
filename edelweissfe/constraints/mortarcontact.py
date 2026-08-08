@@ -92,10 +92,11 @@ module.addOptionalArg("field", "The field this constraint acts on (e.g. displace
 module.addOptionalArg(
     "cn",
     "Semi-smooth-Newton complementarity parameter c_n (> 0) of the normal contact "
-    "NCP. It enters the semi-smooth active-set indicator s_n = p_n - c_n*inv_D*g_sep "
+    "NCP. It enters the semi-smooth active-set indicator s_n = p_n - c_n*g_sep "
     "(active iff s_n > 0; Gitterle et al. 2010 Eq. 55; Hueber & Wohlmuth 2005; MOOSE "
-    "ComputeWeightedGapLMMechanicalContact). It is normalized by the nodal mortar "
-    "weight D_II so that c_n*inv_D*g_sep is a pressure directly comparable to p_n. "
+    "ComputeWeightedGapLMMechanicalContact), where g_sep = g_weak/D_II is the weak gap "
+    "normalized by the nodal mortar weight D_II, i.e. the physical nodal opening, so "
+    "that c_n*g_sep is a pressure directly comparable to p_n. "
     "Purely algorithmic - no effect on the converged solution (g_sep -> 0 there), so "
     "the converged normal-contact result is identical to any admissible active-set "
     "rule. It MUST be chosen at the order of Young's modulus of the softer contacting "
@@ -788,31 +789,53 @@ class Constraint(ConstraintBase):
             if len(nzC):
                 g_I_weak += C[I, nzC] @ (x_master[nzC] @ n_I)
 
-            sgn_D = np.sign(self.current_D_rowsum[I])
+            # Sign-consistent contact measures, valid for BOTH signs of the nodal
+            # weight D_II = int(Phi_I). D_II is positive by construction for
+            # CONQUAD4/8, CONTRI3/6 and CONLINE2/3, but NOT guaranteed for the
+            # full-Lagrangian CONQUAD9 under partial coverage: its shape functions
+            # are not pointwise non-negative, so the integral positivity required by
+            # Popp et al. (2012), Eq. (4.2), can be violated there.
+            #
+            #   pressure  The nodal contact force along n_I is lambda_I * D_II, so
+            #             compression means lambda_I * D_II < 0. Hence p_n = -lambda_I
+            #             * sgn(D_II) is >= 0 in compression for either sign of D_II.
+            #   opening   Translating the master by a * n_I changes the weak gap by
+            #             D_II * a (row-sum identity sum_K D_IK = sum_J C_IJ). The
+            #             physical nodal opening is therefore g_weak / D_II. Dividing
+            #             by the SIGNED D_II already restores exactly the property
+            #             Popp et al. (2012), Sec. 4.3, demand - "a positive weighted
+            #             gap if the physical gap is positive". Multiplying by
+            #             sgn(D_II) on top of that flips the sign back and makes an
+            #             open node look like a penetrating one; that is a bug this
+            #             code carried until it was caught by the negative-weight
+            #             regression test in 06_active_set_pdass.
             D_II = self.current_D_rowsum[I]
+            sgn_D = np.sign(D_II)
             inv_D = 1.0 / D_II if abs(D_II) > 1e-30 else 0.0
             p_n = -lambda_I * sgn_D   # physical normal pressure (>= 0 in contact)
-            g_sep = g_I_weak * sgn_D  # separation gap (>0 open, <0 penetrating)
+            g_sep = g_I_weak * inv_D  # physical opening (>0 open, <0 penetrating)
 
             if self.use_active_set and not self.active_set_frozen:
                 # Semi-smooth normal complementarity (Gitterle et al. 2010 Eq. 55;
                 # Hueber & Wohlmuth 2005; MOOSE ComputeWeightedGapLMMechanical
                 # Contact): the Signorini KKT conditions p_n >= 0, g_sep >= 0,
                 # p_n*g_sep = 0 are written as the single non-smooth function
-                #   C_n = p_n - max(0, p_n - c_n*inv_D*g_sep) = 0,
+                #   C_n = p_n - max(0, p_n - c_n*g_sep) = 0,
                 # whose two branches are
                 #   active   (s_n > 0):  constraint  g_weak = 0,
                 #   inactive (s_n <= 0): constraint  lambda = 0,
-                # with the augmented indicator s_n = p_n - c_n*inv_D*g_sep. It is
+                # with the augmented indicator s_n = p_n - c_n*g_sep. It is
                 # re-evaluated EVERY Newton iteration - this is the literature-
                 # standard PDASS = semi-smooth-Newton formulation with local
                 # superlinear convergence. c_n is purely algorithmic: at
                 # convergence g_sep -> 0, so the converged result is c_n-
                 # independent and identical to any admissible active-set rule;
-                # c_n ~ O(E) of the softer body (Farah 2018 Sec. 3.5.2). The
-                # D_II-normalization makes c_n*inv_D*g_sep a pressure directly
-                # comparable to p_n.
-                s_n = p_n - self.c_n * inv_D * g_sep
+                # c_n ~ O(E) of the softer body (Farah 2018 Sec. 3.5.2). Note that
+                # g_sep is the D_II-normalized (i.e. length-valued) opening, not the
+                # weighted gap itself; that normalization makes c_n*g_sep a pressure
+                # directly comparable to p_n and is a deliberate deviation from the
+                # literature form c_n*g_weak.
+                s_n = p_n - self.c_n * g_sep
                 self.active_set[I] = bool(s_n > 0.0)
 
             self.recovered_lambdas[I] = lambda_I if self.active_set[I] else 0.0
