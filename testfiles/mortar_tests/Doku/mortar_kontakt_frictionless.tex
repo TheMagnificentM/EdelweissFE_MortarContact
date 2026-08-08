@@ -765,6 +765,49 @@ Für CONQUAD8 tritt das nicht auf: dort macht gerade die Transformation mit $\al
 Basis punktweise nichtnegativ -- das war die Begründung in Abschnitt~\ref{sec:alphachoice}. Für
 CONQUAD9 gibt es in diesem Code keine entsprechende Absicherung.
 
+\paragraph{Was ``voll überdeckt'' genau heißt.} Maßgeblich ist die \emph{Vereinigung aller}
+Überlappungssegmente einer Slave-Facette, nicht die Zuordnung zu einem einzelnen Master-Element.
+Deckt diese Vereinigung die Facette vollständig, so ist $\int_{\gamma_c^{\text{ovl}}}\tilde N_j
+= \int_{\text{ele}}\tilde N_j$ -- also das Voll-Element-Integral und damit positiv, \emph{gleich
+wie viele Master-Facetten daran beteiligt sind und wie diese vernetzt sind}. Nachgemessen an einem
+CONQUAD9-Slave auf dem Einheitsquadrat: bei einem deckungsgleichen Master, bei vier kleineren
+($2\times2$), bei zwei Mastern mit Naht bei $x=0{,}37$, bei drei größeren und versetzten sowie bei
+neun unregelmäßigen ergibt sich \emph{jedes Mal dasselbe} kleinste Gewicht $+0{,}0278$.
+Nichtkonforme Netze sind für diese Frage also unerheblich.
+
+Kritisch ist allein, dass ein Teil der Slave-Facette \emph{keinem} Master gegenübersteht -- also der
+\textbf{Rand der Kontaktzone}, wo das Slave-Netz über das Master-Netz hinausragt. Dabei ist
+Teilüberdeckung \emph{notwendig, aber nicht hinreichend}: es kommt darauf an, \emph{wo} die
+unüberdeckte Fläche liegt. Wird die eigene Umgebung eines Knotens freigelegt, bleibt überwiegend die
+negative Keule seiner Formfunktion übrig, und das Gewicht kippt; im obigen $70\,\%$-Fall traf es
+genau die drei Knoten auf der freiliegenden Kante. Eine Lücke in der \emph{Elementmitte} entfernt
+dagegen negative Anteile und vergrößert die Gewichte sogar -- bei $80\,\%$ Überdeckung mit einer
+mittigen Lücke bleibt das kleinste Gewicht bei $+0{,}0276$.
+
+\paragraph{Warum die konsistente Randbehandlung das nicht löst.} Naheliegender Einwand: es ist doch
+gerade eine konsistente Randbehandlung nach \citet{cichosz} implementiert
+(Abschnitt~\ref{sec:dual}), die die dualen Koeffizienten auf dem tatsächlichen Überlappungsgebiet
+aufbaut. Sie leistet auch genau das, wofür sie gedacht ist: die Biorthogonalität gilt dort, wo
+wirklich integriert wird, und die Zeilensummen-Identität \eqref{eq:rowsum} bleibt bei
+Teilüberdeckung exakt erhalten ($10^{-16}$ in allen geprüften Fällen) -- die Voraussetzung für
+Impulserhaltung und für das Bestehen des Patch-Tests am Kontaktrand. Sie mildert das
+Vorzeichenproblem sogar deutlich: im $70\,\%$-Fall ergibt sie $-0{,}0109$ gegenüber $-0{,}0389$ mit
+den Referenzelement-Koeffizienten.
+
+Beseitigen kann sie es aber prinzipiell nicht. Aus der Biorthogonalität \eqref{eq:biorth} auf dem
+Überlappungsgebiet und der Partition of Unity $\sum_k\tilde N_k=1$ folgt nämlich zwingend
+\begin{equation}
+\tilde D_{jj} \;=\; \int_{\gamma_c^{\text{ovl}}}\Phi_j\,\mathrm d\gamma
+\;=\; \int_{\gamma_c^{\text{ovl}}}\tilde N_j\,\mathrm d\gamma .
+\label{eq:weightisprimal}
+\end{equation}
+Das Knotengewicht ist also das Integral der \emph{primalen} transformierten Formfunktion über den
+überdeckten Bereich -- unabhängig davon, wie die dualen Koeffizienten konstruiert werden. Wechselt
+$\tilde N_j$ im Element das Vorzeichen, kann dieser Wert negativ werden, und keine Wahl von
+$\bm A_e$ ändert daran etwas. Es bleiben genau zwei Auswege: $\tilde N_j$ punktweise nichtnegativ
+machen (das leistet die Basistransformation bei CONQUAD8) oder das Vorzeichen konsistent behandeln
+(Abschnitt~\ref{sec:sgnd}). Für CONQUAD9 greift derzeit nur der zweite.
+
 \paragraph{Konsequenz.} Ein negatives $\tilde D_{jj}$ dreht die Vorzeichenkonventionen des
 Kontakts um. Der Code fängt das ab (Abschnitt~\ref{sec:sgnd}); die Vorzeichen von Druck, Spalt und
 Kraftrichtung bleiben dadurch korrekt. Was sich nicht reparieren lässt, ist die \emph{Bedeutung}
@@ -774,8 +817,11 @@ Gewichten und kann positiv sein, während Teile der Facette durchdringen -- also
 
 \medskip
 \noindent\textbf{Empfehlung:} für quadratische Flächen \textbf{CONQUAD8} verwenden. CONQUAD9 ist
-unbedenklich, solange die Slave-Elemente voll überdeckt sind (dann sind alle Gewichte positiv,
-Test~05 belegt es); bei Teilüberdeckung ist es die schlechtere Wahl.
+unbedenklich, solange jede Slave-Facette vollständig einem Master gegenübersteht -- unabhängig
+davon, wie fein oder grob die Master-Seite dort vernetzt ist. Problematisch wird es dort, wo das
+Slave-Netz über den Rand des Master-Netzes hinausragt; ragt der Kontaktbereich weit über die
+erwartete Kontaktzone hinaus (wie es bei sich öffnendem Kontakt der Normalfall ist), ist CONQUAD8
+die robustere Wahl.
 
 \medskip
 \noindent\textit{Möglicher Ausweg (nicht implementiert).} Die quad9-Facette ist ein
