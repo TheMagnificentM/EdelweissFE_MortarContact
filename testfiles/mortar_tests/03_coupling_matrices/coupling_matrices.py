@@ -6,10 +6,22 @@ Test 3: Assembly and Verification of Mortar Coupling Matrices D and C
 
 This script sets up a multi-element quad mesh setup, instantiates the Mortar
 constraint, calculates the global D and C matrices via polygon projection,
-clipping, sub-triangulation, and Gauss quadrature, and prints the result properties:
-1. Matrix dimensions check.
-2. D matrix diagonal dominance / properties.
-3. Row sums conservation (sum of D_row matches sum of C_row for flat patches).
+clipping, sub-triangulation, and Gauss quadrature, and verifies:
+1. Matrix dimensions (D is n_slave x n_slave, C is n_slave x n_master).
+2. Row sum conservation sum_K D_IK = sum_J C_IJ for every slave node.
+   This is the momentum conservation / translational invariance identity
+   (Farah 2018, Eq. (4.99)); it holds because D and C are integrated over the
+   SAME clipped cells, so it must be satisfied even though the master facet
+   only partially covers the slave facet in this setup.
+3. sum(D) = sum(C) = the analytically known overlap area. The dual shape
+   functions form a partition of unity, hence sum(D) integrates 1 over the
+   overlap. Slave facet [0,1]x[0,1] against master facet [0.5,1.5]x[0.2,1.2]
+   overlaps on [0.5,1]x[0.2,1] -> area 0.5 * 0.8 = 0.4.
+4. Strictly positive nodal weights sum_K D_IK > 0 (integral positivity,
+   Popp et al. 2012, Eq. (4.2)) - here for a linear CONQUAD4 slave facet.
+
+The numeric matrices are additionally written to coupling_assembly_results.txt
+for inspection; the checks above decide whether the test passes.
 """
 
 import sys
@@ -124,7 +136,49 @@ def run_coupling_assembly_test():
     
     # 3. Assemble coupling matrices D and C
     D, C = constraint.compute_mortar_coupling_matrices()
-    
+
+    # ------------------------------------------------------------------
+    # Verification
+    # ------------------------------------------------------------------
+    n_slave = constraint.nNonMortarNodes
+    n_master = constraint.nMortarNodes
+    # Slave facet [0,1]x[0,1] vs. master facet [0.5,1.5]x[0.2,1.2]
+    # -> overlap [0.5,1]x[0.2,1] -> 0.5 * 0.8
+    OVERLAP_AREA = 0.4
+
+    ok = True
+
+    if D.shape != (n_slave, n_slave):
+        print(f"  [FAIL] D has shape {D.shape}, expected {(n_slave, n_slave)}")
+        ok = False
+    if C.shape != (n_slave, n_master):
+        print(f"  [FAIL] C has shape {C.shape}, expected {(n_slave, n_master)}")
+        ok = False
+
+    rowsum_D = np.sum(D, axis=1)
+    rowsum_C = np.sum(C, axis=1)
+
+    # Row sum identity: momentum conservation / translational invariance.
+    rowsum_err = float(np.max(np.abs(rowsum_D - rowsum_C)))
+    print(f"  max|sum_K D_IK - sum_J C_IJ| = {rowsum_err:.3e}  (tolerance 1e-14)")
+    if rowsum_err > 1e-14:
+        print("  [FAIL] Row sum identity violated - D and C are not integrated over the same cells!")
+        ok = False
+
+    # Partition of unity of the dual basis: the total weight is the overlap area.
+    for label, total in (("sum(D)", float(np.sum(D))), ("sum(C)", float(np.sum(C)))):
+        err = abs(total - OVERLAP_AREA)
+        print(f"  {label} = {total:.12f}, expected {OVERLAP_AREA:.12f} (diff {err:.3e})")
+        if err > 1e-12:
+            print(f"  [FAIL] {label} does not match the analytical overlap area!")
+            ok = False
+
+    # Integral positivity of the nodal weights (linear facet: no transformation needed).
+    print(f"  min_I sum_K D_IK = {rowsum_D.min():.12f}")
+    if np.any(rowsum_D <= 0.0):
+        print(f"  [FAIL] Nodal dual weights not strictly positive: {rowsum_D}")
+        ok = False
+
     # Write output to test results log
     # Next to this script, independent of the current working directory (a
     # relative path created a stray nested testfiles/ tree when run from here).
@@ -153,5 +207,13 @@ def run_coupling_assembly_test():
             
     print(f"Saved coupling assembly verification logs to: {out_path}")
 
+    if not ok:
+        print("\n[FAIL] MORTAR COUPLING ASSEMBLY TEST FAILED!")
+        return False
+
+    print("\n[PASS] MORTAR COUPLING ASSEMBLY TEST SUCCESSFUL!")
+    return True
+
 if __name__ == '__main__':
-    run_coupling_assembly_test()
+    if not run_coupling_assembly_test():
+        sys.exit(1)

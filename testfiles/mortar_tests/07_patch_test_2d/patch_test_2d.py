@@ -1,24 +1,52 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Test 7: 2D Mortar Contact Implementation Test
-============================================
+Test 7: 2D-Mortar-Kontakt
+=========================
 
-This test verifies 2D Mortar contact mechanics in EdelweissFE for both linear
-(CONLINE2) and quadratic (CONLINE3) contact line elements:
+Prüft den 2D-Mortar-Kontakt für lineare (CONLINE2) und quadratische (CONLINE3)
+Kontakt-Linienelemente auf zwei Ebenen: erst die Bausteine einzeln, dann den
+vollständigen Patch-Test durch den Löser.
 
-1. 2D Node Normals:
-   Correct unit normal vector calculation n = (t_y, -t_x).
-2. 2D Biorthogonality & Positive Dual Weights:
-   Validates basis transformation T_e (alpha=1/3) for CONLINE3, guaranteeing
-   strictly positive weights D_II > 0.
-3. 2D Segment Coupling Matrices:
-   - Full length coverage sum(D) = length (Partition of Unity).
-   - Row-sum conservation sum_K D_IK = sum_J C_IJ (Translational Invariance).
-   - Analytical node weights for CONLINE3 (corners 1/6, mid-node 2/3).
-4. Solver-Based 2D Contact Patch Test:
-   - 2D Two-Block Compression (QUAD4 / CONLINE2 and QUAD8 / CONLINE3).
-   - Verifies uniform displacement field and pressure transmission in machine precision.
+Teil A -- Bausteine (ohne Löser)
+--------------------------------
+1. Knotennormalen: n = (t_y, -t_x) aus der Kantentangente.
+2. Koppelmatrizen einer Einzelfacette:
+   - Volle Überdeckung: sum(D) = sum(C) = Kantenlänge (Partition der Eins).
+   - Zeilensummen-Identität sum_K D_IK = sum_J C_IJ (Translationsinvarianz).
+   - Analytische Knotengewichte für CONLINE3 MIT Basistransformation
+     (alpha = 1/3, Popp et al. 2012): Ecken 7/18, Mittelknoten 2/9. Ohne die
+     Transformation wären es 1/6 bzw. 2/3 -- die Transformation verschiebt
+     alpha * int(N_mid) von jedem Mittelknoten auf seine beiden Eckknoten,
+     also 1/6 + (1/3)(2/3) = 7/18 bzw. (1/3)(2/3) = 2/9.
+3. Teilüberdeckung (Master um 50 % verschoben): sum(D) = sum(C) = 0.5.
+
+Teil B -- Kontakt-Patch-Test durch den Löser
+--------------------------------------------
+Zwei linear-elastische Blöcke (E = 1000, nu = 0) werden über ein nicht
+notwendigerweise passendes Interface gegeneinander gepresst. Block A liegt in
+y in [0, 1], Block B in y in [1, 2]; die Oberseite von B wird um u_y = -0.02
+verschoben, die Unterseite von A in y gehalten. Exakte Lösung:
+sigma_yy = -p = -10 überall, u_y(y) = -p*y/E, u_x = 0, Kontaktdruck = p.
+
+Geprüfte Varianten:
+  1. CPE4 / CONLINE2, passend      (2 gegen 2 Elemente)
+  2. CPE4 / CONLINE2, nicht-passend (2 gegen 3)
+  3. CPE8 / CONLINE3, passend      (2 gegen 2)
+  4. CPE8 / CONLINE3, nicht-passend (2 gegen 3)
+
+Alle Facetten haben gerade Kanten, die segmentbasierte Integration ist damit
+exakt -- der Patch-Test muss in Maschinengenauigkeit bestehen.
+
+WICHTIG -- u_x bleibt frei: Anders als beim 3D-Patch-Test (08_patch_test_hex20),
+der u_x = u_z = 0 auf ALLEN Knoten vorschreibt, wird hier u_x nur auf der linken
+Kante gehalten (Symmetriebedingung, mit der exakten Lösung vereinbar, da nu = 0).
+Dort ist die Kontrolle max|u_x| ~ 0 deshalb zwangsläufig erfüllt und damit leer;
+hier sind die Interface-Knoten in x tatsächlich frei, sodass ein fälschlich
+tangential klemmender Kontakt als u_x != 0 sichtbar würde.
+
+Das Zwei-Block-Netz wird explizit aufgebaut (two_block_mesh_2d.py) und nicht mit
+dem planeRectQuad-Generator -- Begründung im Docstring jenes Moduls.
 """
 
 import os
@@ -26,15 +54,27 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+TESTDIR = os.path.abspath(os.path.dirname(__file__))
+sys.path.insert(0, os.path.abspath(os.path.join(TESTDIR, "../..")))
 
 from edelweissfe.config.elementlibrary import getElementClass
 from edelweissfe.constraints.mortarcontact import Constraint as MortarContact
+from edelweissfe.drivers.inputfiledrivensimulation import finiteElementSimulation
 from edelweissfe.models.femodel import FEModel
 from edelweissfe.points.node import Node
+from edelweissfe.utils.inputfileparser import parseInputFile
 from edelweissfe.variables.fieldvariable import FieldVariable
 
 TOL = 1e-12
+
+E_MOD = 1000.0
+PRESSURE = 10.0
+BLOCK_HEIGHT = 1.0
+
+
+# ===========================================================================
+# Teil A: Bausteine
+# ===========================================================================
 
 
 def make_nodes_2d(model, start_id, points):
@@ -92,43 +132,38 @@ def check(name, value, expected, tol=TOL):
 
 
 def test_2d_line2():
-    print("\n=== Test 2D CONLINE2 (Linear Line Element) ===")
+    print("\n=== Test 2D CONLINE2 (lineares Linienelement) ===")
     mc = build_2d_contact_model("CONLINE2", line2_points(0.0, 0.0), line2_points(0.0, 0.0))
 
-    # Test Normals
     n = mc.compute_normals()
-    print(f"Normals: {n}")
-    # Normal to horizontal segment (1,0) pointing down (0,-1) or up (0,1)
-    assert np.allclose(np.abs(n[:, 1]), 1.0), "Normals should be vertical"
+    print(f"Normalen: {n}")
+    assert np.allclose(np.abs(n[:, 1]), 1.0), "Normalen muessen vertikal sein"
 
-    # Test Coupling Matrices
     D, C = mc.compute_mortar_coupling_matrices()
-    print(f"D matrix:\n{D}")
-    print(f"C matrix:\n{C}")
+    print(f"D:\n{D}")
+    print(f"C:\n{C}")
 
     all_ok = True
     all_ok &= check("sum(D)", float(np.sum(D)), 1.0)
     all_ok &= check("sum(C)", float(np.sum(C)), 1.0)
     all_ok &= check("rowsum diff D vs C", float(np.max(np.abs(np.sum(D, axis=1) - np.sum(C, axis=1)))), 0.0)
-    all_ok &= check("node 0 weight", D[0, 0], 0.5)
-    all_ok &= check("node 1 weight", D[1, 1], 0.5)
+    all_ok &= check("Gewicht Knoten 0", D[0, 0], 0.5)
+    all_ok &= check("Gewicht Knoten 1", D[1, 1], 0.5)
 
-    assert all_ok, "CONLINE2 test failed"
+    assert all_ok, "CONLINE2-Test fehlgeschlagen"
 
 
 def test_2d_line3():
-    print("\n=== Test 2D CONLINE3 (Quadratic Line Element) ===")
+    print("\n=== Test 2D CONLINE3 (quadratisches Linienelement) ===")
     mc = build_2d_contact_model("CONLINE3", line3_points(0.0, 0.0), line3_points(0.0, 0.0))
 
-    # Test Normals
     n = mc.compute_normals()
-    print(f"Normals:\n{n}")
-    assert np.allclose(np.abs(n[:, 1]), 1.0), "Normals should be vertical"
+    print(f"Normalen:\n{n}")
+    assert np.allclose(np.abs(n[:, 1]), 1.0), "Normalen muessen vertikal sein"
 
-    # Test Coupling Matrices
     D, C = mc.compute_mortar_coupling_matrices()
-    print(f"D matrix:\n{D}")
-    print(f"C matrix:\n{C}")
+    print(f"D:\n{D}")
+    print(f"C:\n{C}")
 
     rowsum_D = np.sum(D, axis=1)
     rowsum_C = np.sum(C, axis=1)
@@ -138,18 +173,17 @@ def test_2d_line3():
     all_ok &= check("sum(C)", float(np.sum(C)), 1.0)
     all_ok &= check("rowsum diff D vs C", float(np.max(np.abs(rowsum_D - rowsum_C))), 0.0)
 
-    # Check positive dual weights (analytical with T_e alpha=1/3: corners 7/18 = 0.388888888889, mid-node 2/9 = 0.222222222222)
-    all_ok &= check("corner 0 weight", rowsum_D[0], 7.0 / 18.0)
-    all_ok &= check("corner 1 weight", rowsum_D[1], 7.0 / 18.0)
-    all_ok &= check("mid-node 2 weight", rowsum_D[2], 2.0 / 9.0)
+    # Mit Basistransformation T_e (alpha = 1/3): Ecken 7/18, Mittelknoten 2/9.
+    all_ok &= check("Gewicht Ecke 0 (7/18)", rowsum_D[0], 7.0 / 18.0)
+    all_ok &= check("Gewicht Ecke 1 (7/18)", rowsum_D[1], 7.0 / 18.0)
+    all_ok &= check("Gewicht Mittelknoten 2 (2/9)", rowsum_D[2], 2.0 / 9.0)
 
-    assert np.all(rowsum_D > 0), "All dual node weights must be strictly positive"
-    assert all_ok, "CONLINE3 test failed"
+    assert np.all(rowsum_D > 0), "Alle dualen Knotengewichte muessen strikt positiv sein"
+    assert all_ok, "CONLINE3-Test fehlgeschlagen"
 
 
 def test_2d_partial_overlap():
-    print("\n=== Test 2D Partial Overlap (50% Shift) ===")
-    # Shift master line segment by +0.5 x
+    print("\n=== Test 2D Teilüberdeckung (50 % Verschiebung) ===")
     mc = build_2d_contact_model("CONLINE2", line2_points(0.0, 0.0), line2_points(0.5, 0.0))
     D, C = mc.compute_mortar_coupling_matrices()
 
@@ -161,14 +195,149 @@ def test_2d_partial_overlap():
     all_ok &= check("sum(C)", float(np.sum(C)), 0.5)
     all_ok &= check("rowsum diff D vs C", float(np.max(np.abs(rowsum_D - rowsum_C))), 0.0)
 
-    assert all_ok, "Partial overlap test failed"
+    assert all_ok, "Teilüberdeckungstest fehlgeschlagen"
+
+
+# ===========================================================================
+# Teil B: Kontakt-Patch-Test durch den Löser
+# ===========================================================================
+
+INP_TEMPLATE = """*modelGenerator, generator=executePythonCode, name=meshgen
+import generated_setup_{name} as vs
+vs.setup(model)
+
+*material, name=LinearElastic, id=mat
+{E}, 0.0
+
+*section, name=secA, thickness=1.0, material=mat, type=plane
+solids_a
+*section, name=secB, thickness=1.0, material=mat, type=plane
+solids_b
+
+** cn: Komplementaritaetsparameter c_n der Normalkontakt-NCP, rein algorithmisch
+** und ~ O(E) des weicheren Koerpers zu waehlen (Farah 2018, Abschn. 3.5.2).
+*constraint, type=mortarcontact, name=contact
+nonMortarSurface=con_slave
+mortarSurface=con_master
+cn={E}
+
+*job, name=patch2djob, domain=2d
+*solver, name=theSolver, solver=NISTParallel
+
+*step, solver=theSolver
+maxInc=0.5, minInc=1e-3, maxNumInc=100, maxIter=25, stepLength=1
+>>dirichlet, name=bot,  nSet=fixed_bottom, field=displacement, 2=0.0
+>>dirichlet, name=top,  nSet=load_top,     field=displacement, 2={utop}
+>>dirichlet, name=symm, nSet=symm_x,       field=displacement, 1=0.0
+"""
+
+SETUP_TEMPLATE = """import sys
+sys.path.insert(0, r'{testdir}')
+import two_block_mesh_2d as tb
+import make_contact_elements_2d as mce
+
+
+def setup(model):
+    tb.build(model, '{el_type}', {nx_a}, {nx_b}, height={height})
+    mce.apply(model, 'surf_a_top', 'con_slave', '{con_type}', (0.0, 1.0))
+    mce.apply(model, 'surf_b_bottom', 'con_master', '{con_type}', (0.0, -1.0))
+"""
+
+
+def run_patch_variant(name, el_type, con_type, nx_a, nx_b, tol=1e-8):
+    print(f"\n* Variante: {name}")
+
+    setup_path = os.path.join(TESTDIR, f"generated_setup_{name}.py")
+    with open(setup_path, "w") as f:
+        f.write(
+            SETUP_TEMPLATE.format(
+                testdir=TESTDIR, el_type=el_type, con_type=con_type,
+                nx_a=nx_a, nx_b=nx_b, height=BLOCK_HEIGHT,
+            )
+        )
+
+    if TESTDIR not in sys.path:
+        sys.path.insert(0, TESTDIR)
+
+    inp_path = os.path.join(TESTDIR, f"generated_{name}.inp")
+    with open(inp_path, "w") as f:
+        f.write(
+            INP_TEMPLATE.format(
+                name=name, E=E_MOD, utop=-2.0 * BLOCK_HEIGHT * PRESSURE / E_MOD,
+            )
+        )
+
+    model, _ = finiteElementSimulation(parseInputFile(inp_path), verbose=False, suppressPlots=True)
+
+    # --- Kontrolle 1: Verschiebungsfeld gleich der exakten Loesung ---
+    nf = model.nodeFields["displacement"]
+    U = nf["U"]
+    u_ref = 2.0 * BLOCK_HEIGHT * PRESSURE / E_MOD  # |u_y| an der Oberseite
+
+    max_err_ux = 0.0
+    max_err_uy = 0.0
+    for node, u in zip(nf.nodes, U):
+        y = node.coordinates[1]
+        max_err_ux = max(max_err_ux, abs(u[0]))
+        max_err_uy = max(max_err_uy, abs(u[1] - (-PRESSURE * y / E_MOD)))
+
+    print(f"  max|u_x|             = {max_err_ux:.3e}  (Toleranz {tol * u_ref:.1e}, x ist FREI)")
+    print(f"  max|u_y - u_y_exakt| = {max_err_uy:.3e}  (Toleranz {tol * u_ref:.1e})")
+    if max_err_ux > tol * u_ref or max_err_uy > tol * u_ref:
+        print("  [FAIL] Verschiebungsfeld weicht von der exakten Patch-Loesung ab!")
+        return False
+
+    # --- Kontrolle 2: konstanter Kontaktdruck ---
+    lambdas = np.array([v.value for v in model.scalarVariables.values()]).flatten()
+    if len(lambdas) == 0:
+        print("  [FAIL] Keine Kontakt-Multiplikatoren im Modell gefunden!")
+        return False
+
+    lam_err = np.max(np.abs(np.abs(lambdas) - PRESSURE)) / PRESSURE
+    same_sign = np.all(lambdas > 0) or np.all(lambdas < 0)
+    print(f"  Multiplikatoren: n = {len(lambdas)}, max. rel. Abweichung von p = {lam_err:.3e}")
+
+    # Uebertragene Gesamtkraft: mit den dualen Gewichten (Zeilensummen von D)
+    # gewichtetes Mittel der Multiplikatoren.
+    rowsum = model.constraints["contact"].current_D_rowsum
+    lam_mean = np.sum(lambdas * rowsum) / np.sum(rowsum)
+    lam_mean_err = abs(abs(lam_mean) - PRESSURE) / PRESSURE
+    print(f"  Gewichtetes Mittel (Gesamtkraft/Laenge): {lam_mean:.9f}, rel. Fehler = {lam_mean_err:.3e}")
+
+    if not same_sign:
+        print("  [FAIL] Kontaktdruck oszilliert (unterschiedliche Vorzeichen)!")
+        return False
+    if lam_err > tol:
+        print("  [FAIL] Kontaktdruck nicht konstant = p!")
+        return False
+    if lam_mean_err > tol:
+        print("  [FAIL] Uebertragene Gesamtkraft weicht von p*L ab!")
+        return False
+
+    print(f"  [PASS] Variante '{name}' erfolgreich!")
+    os.remove(inp_path)
+    os.remove(setup_path)
+    return True
+
+
+def test_2d_solver_patch_tests():
+    print("\n=== Kontakt-Patch-Test durch den Loeser (2D) ===")
+    variants = [
+        ("cpe4_matching", "CPE4", "CONLINE2", 2, 2),
+        ("cpe4_nonmatching", "CPE4", "CONLINE2", 2, 3),
+        ("cpe8_matching", "CPE8", "CONLINE3", 2, 2),
+        ("cpe8_nonmatching", "CPE8", "CONLINE3", 2, 3),
+    ]
+    results = [run_patch_variant(*v) for v in variants]
+    assert all(results), f"{results.count(False)} von {len(results)} 2D-Patch-Test-Varianten fehlgeschlagen"
 
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("RUNNING 2D MORTAR CONTACT SUITE")
+    print("2D-MORTAR-KONTAKT-TESTREIHE")
     print("=" * 60)
     test_2d_line2()
     test_2d_line3()
     test_2d_partial_overlap()
-    print("\n[SUCCESS] All 2D Mortar contact tests passed successfully!")
+    test_2d_solver_patch_tests()
+    print("\n[SUCCESS] Alle 2D-Mortar-Kontakt-Tests erfolgreich bestanden!")
