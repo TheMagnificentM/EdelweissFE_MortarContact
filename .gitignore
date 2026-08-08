@@ -19,3 +19,14 @@ build
 EdelweissFE.egg-info
 docs
 edelweissfe/built_extensions.log
+
+# LaTeX-Build-Artefakte der Mortar-Doku: latexmk erzeugt sie bei jedem Lauf neu
+# (Zeitstempel, absolute Pfade), sie erzeugen sonst bei jedem Bauen Diffs.
+# Zum Reproduzieren genuegen die .tex und die eingebundene Abbildung.
+# Bewusst pfadgebunden, damit z.B. testfiles/.../test.log nicht mitgefangen wird.
+testfiles/mortar_tests/Doku/*.aux
+testfiles/mortar_tests/Doku/*.fdb_latexmk
+testfiles/mortar_tests/Doku/*.fls
+testfiles/mortar_tests/Doku/*.log
+testfiles/mortar_tests/Doku/*.out
+testfiles/mortar_tests/Doku/*.toc

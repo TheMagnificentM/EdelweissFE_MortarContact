@@ -10,6 +10,7 @@
 \usepackage{tabularx}
 \usepackage{array}
 \usepackage{listings}
+\usepackage{graphicx}
 \usepackage{xcolor}
 \usepackage{xurl}
 \usepackage[round,authoryear]{natbib}
@@ -467,13 +468,28 @@ Setzt man $g_{n,h}$ über \eqref{eq:gap} ein und sortiert nach Knotenpositionen 
 Positionsform (\citealp[Gl.~(36) und~(50)]{gitterle}; \citealp[Gl.~(50)]{poppgeewall2009}):
 \begin{equation}
 \tilde g_{j} \;=\; \bm n_j\!\cdot\!\Big(\sum_k \bm D[j,k]\,\bm x_k^{(1)}
-- \sum_l \bm M[j,l]\,\bm x_l^{(2)}\Big)
-\;=\; \bm n_j\!\cdot\!\Big(\bm D[j,j]\,\bm x_j^{(1)} - \sum_l \bm M[j,l]\,\bm x_l^{(2)}\Big),
+- \sum_l \bm M[j,l]\,\bm x_l^{(2)}\Big).
 \label{eq:wgap_pos}
 \end{equation}
-wobei die zweite Gleichheit gilt, weil $\bm D$ bei dualer Basis diagonal wird
-(Abschnitt~\ref{sec:dual}). Genau diese Form steht im Code (\file{mortarcontact.py:\allowbreak{}785--795},
-Bezeichner \code{C} für $\bm M$).
+Genau diese \emph{allgemeine} Form -- mit der vollen Zeilensumme über alle Slave-Knoten~$k$ --
+steht im Code (\file{mortarcontact.py:\allowbreak{}785--795}, Bezeichner \code{C} für $\bm M$).
+
+\medskip
+\noindent\textbf{Wann sich die Summe auf einen Term reduziert.} Ist $\bm D$ diagonal, so
+vereinfacht sich \eqref{eq:wgap_pos} zu
+\begin{equation}
+\tilde g_{j} \;=\; \bm n_j\!\cdot\!\Big(\bm D[j,j]\,\bm x_j^{(1)}
+- \sum_l \bm M[j,l]\,\bm x_l^{(2)}\Big)
+\qquad\text{(nur falls } \bm D \text{ diagonal)} .
+\label{eq:wgap_pos_diag}
+\end{equation}
+Das ist bei dualer Basis auf \emph{linearen} Elementen der Fall ($\bm T_e=\bm I$,
+Abschnitt~\ref{sec:dual}). Für \emph{quadratische} Elemente ist $\bm D$ wegen der
+Basistransformation $\bm T_e$ gerade \emph{nicht} diagonal (Abschnitt~\ref{sec:basistrafo}):
+biorthogonal ist dort $\tilde{\bm D}$ bezüglich $\tilde{\bm N}$, während
+$\bm D=\tilde{\bm D}\bm T^{-1}$ Nebendiagonalterme innerhalb eines Elements besitzt. Der Code
+implementiert deshalb durchgehend \eqref{eq:wgap_pos} und nicht \eqref{eq:wgap_pos_diag} --
+er summiert über alle Einträge der Zeile~$j$ mit $|D_{jk}|>10^{-14}$.
 
 \medskip
 \noindent\textbf{Warum schwach/nodal statt punktweise?} Der gewichtete Spalt ist ein volumetrisches
@@ -632,9 +648,29 @@ Funktionen gebildet.
 
 Die Transformation wird nur auf die \emph{serendipity}-Typen mit nichtpositivem Eckintegral
 angewandt (CONQUAD8, CONTRI6; CONLINE3). Für das voll-Lagrange'sche CONQUAD9 (aus hex27) entfällt
-sie: dessen Eckknoten-Integrale sind bereits strikt positiv ($\tfrac19$ auf dem Referenzquadrat),
+sie: dessen Voll-Element-Eckknoten-Integrale sind bereits strikt positiv ($\tfrac19$ auf dem
+Referenzquadrat),
 und das Kanten-zu-Ecken-Schema erfasst den zusätzlichen Zentrumsknoten ohnehin nicht -- für CONQUAD9
 wird daher wie für lineare Typen die Identität verwendet (\file{element.py:\allowbreak{}454--462}).
+
+\begin{quote}\small
+\textbf{Einschränkung für CONQUAD9.} Das Argument des vorigen Absatzes trägt nur für das
+\emph{Voll-Element}-Integral. Wie in Abschnitt~\ref{sec:alphachoice} ausgeführt, ist in der
+segmentbasierten Formulierung aber das Integral über die \emph{tatsächliche Überlappungsfläche}
+maßgeblich, und dessen Positivität für beliebige Teilgebiete verlangt \emph{punktweise}
+Nichtnegativität \eqref{eq:pointwisepos}. Die Lagrange-Formfunktionen des CONQUAD9 erfüllen das
+nicht: die Eck- und Kantenfunktionen wechseln im Element das Vorzeichen. Für CONQUAD9 existiert
+also keine Absicherung analog zu $\alpha=\tfrac13$ beim CONQUAD8, und bei Teilüberdeckung können
+\emph{negative} Knotengewichte auftreten -- im Verifikationslauf (Test~05, Master um $0{,}3$
+verschoben) gemessen bis $-0{,}0109$ bei einem größten Gewicht von $0{,}25$.
+
+Praktisch bleibt das beherrschbar, weil der Code die Vorzeichen konsistent mitführt: mit
+$\mathrm{sgn}(\tilde D_{jj})$ (Abschnitt~\ref{sec:ncp}, \eqref{eq:indicator_code}) bleiben
+Druckvorzeichen \emph{und} Kraftrichtung auch bei negativem Knotengewicht korrekt
+(Abschnitt~\ref{sec:implnotes}). Der gewichtete Spalt verliert an einem solchen Knoten
+allerdings seine Deutung als Mittelwert. \textbf{Empfehlung:} für quadratische Flächen
+CONQUAD8 verwenden; CONQUAD9 nur bei voller Überdeckung des Slave-Elements.
+\end{quote}
 
 \subsection{Wahl des Transformationsparameters $\alpha$}
 \label{sec:alphachoice}
@@ -788,28 +824,91 @@ Der gewichtete Spalt \eqref{eq:wgap_pos} und die Projektion benötigen eine eind
 Slave-Knoten. Sie wird als \emph{flächengewichtetes Mittel} der angrenzenden Facettennormalen gebildet
 und normiert (\file{mortarcontact.py:\allowbreak{}402--458}):
 \begin{equation}
-\bm n_I = \frac{\sum_{f\ni I}\bm n_f}{\big\|\sum_{f\ni I}\bm n_f\big\|},
-\qquad
-\bm n_f = \tfrac12(\bm v_1-\bm v_0)\times(\bm v_2-\bm v_0)
+\bm n_I = \frac{\sum_{f\ni I}\bm n_f}{\big\|\sum_{f\ni I}\bm n_f\big\|} .
 \end{equation}
-(im 2D: $\bm n=[t_y,-t_x]$ aus der Kantentangente). Diese gemittelte Normale garantiert ein
-stetiges Normalenfeld über Facettengrenzen hinweg, was für die Konsistenz des Kontakts an
-Elementkanten nötig ist.
+Die Facettennormale $\bm n_f$ wird ausschließlich aus den \emph{Eck}knoten gebildet, in zwei
+Varianten je nach Facettenform:
+\begin{equation}
+\bm n_f^{\triangle} = \tfrac12(\bm v_1-\bm v_0)\times(\bm v_2-\bm v_0),
+\qquad
+\bm n_f^{\square} = \tfrac12(\bm v_2-\bm v_0)\times(\bm v_3-\bm v_1) .
+\label{eq:facetnormal}
+\end{equation}
+Die Dreiecksform gilt für CONTRI3/CONTRI6, die Quadform (Diagonalenkreuzprodukt) für
+CONQUAD4/8/9; beide liefern eine \emph{flächengewichtete} Normale, deren Länge der Facettenfläche
+entspricht -- daher die Gewichtung im Mittel oben. Mittelknoten gehen in $\bm n_f$ nicht ein, die
+Krümmung einer quadratischen Facette also auch nicht.
+
+Im 2D-Fall ist $\bm n_f=[t_y,-t_x]$ mit $\bm t=\bm x_{\text{letzt}}-\bm x_0$
+(\file{mortarcontact.py:\allowbreak{}442}). Zu beachten: bei \code{CONLINE3} ist der \emph{letzte}
+Knoten der Kantenmittelknoten (Reihenfolge Ende--Ende--Mitte), $\bm t$ also die halbe Sehne
+statt der ganzen. Auf geraden Kanten ist das unkritisch -- die Richtung stimmt, und der
+gemeinsame Faktor $\tfrac12$ kürzt sich in der Normierung heraus. Auf \emph{gekrümmten}
+Kanten ist $\bm t$ dagegen die Sehne der ersten Kantenhälfte und damit nicht die Tangente
+in Kantenmitte; der Fehler ist von der Ordnung der Kantenkrümmung.
+
+Die gemittelte Normale garantiert ein stetiges Normalenfeld über Facettengrenzen hinweg, was für
+die Konsistenz des Kontakts an Elementkanten nötig ist.
 
 \subsection{Eingefrorene Geometrie (staggered update)}
+\label{sec:frozen}
 Normalen $\bm n_I$ und Koppelmatrizen $\bm D,\bm M$ werden \emph{einmal} zu Increment-Beginn in der
 aktuellen (deformierten) Konfiguration berechnet und dann für alle Newton-Iterationen des Increments
-festgehalten (\file{mortarcontact.py:\allowbreak{}738}). Dadurch ist die assemblierte Steifigkeit die
-\emph{exakte} Jacobi-Matrix des Residuums bei fixierter Geometrie -- Voraussetzung für die
-Newton-Konvergenz (Abschnitt~\ref{sec:solve}). Der Preis ist eine gestaffelte (staggered)
-Behandlung der Geometrienichtlinearität, die durch hinreichend kleine Lastschritte kontrolliert
-wird.
+festgehalten (\file{mortarcontact.py:\allowbreak{}721--756}). Die Formulierung ist damit eine
+\emph{gestaffelte} (staggered) Behandlung der Geometrienichtlinearität. Das hat zwei
+Konsequenzen, die sauber auseinandergehalten werden müssen.
+
+\paragraph{(1) Die Tangente ist exakt -- für das eingefrorene Residuum.}
+Behandelt man $\bm n_I,\bm D,\bm M$ innerhalb des Increments als Konstanten, so ist die
+assemblierte Steifigkeit die \emph{exakte} Jacobi-Matrix des assemblierten Residuums. Das ist
+numerisch belegt: Test~09 (\file{09\_consistent\_tangent}) vergleicht $\bm K$ mit zentralen
+Differenzen des Residuums über \emph{alle} Freiheitsgrade -- Verschiebungen und Multiplikatoren --
+und erhält
+\begin{equation}
+\frac{\max|\bm K - \bm K_{\text{FD}}|}{\max|\bm K|} \;\approx\; 10^{-11}
+\label{eq:fdcheck}
+\end{equation}
+für flache, geneigte und gekrümmte Interfaces, für lineare und quadratische Elemente sowie für
+gemischt aktive/inaktive Active Sets (also beide Zweige der NCP gleichzeitig). Damit ist die
+Voraussetzung für die Newton-Konvergenz innerhalb des Increments erfüllt
+(Abschnitt~\ref{sec:solve}).
+
+\paragraph{(2) Die geometrische Linearisierung fehlt -- und sie ist nicht klein.}
+Die Ableitungen der Geometrie selbst, $\partial\bm D/\partial\bm x$,
+$\partial\bm M/\partial\bm x$ und $\partial\bm n_I/\partial\bm x$, sind in $\bm K$
+\textbf{nicht} enthalten. Ihre Größe lässt sich mit demselben Test messen: differenziert man
+das Residuum mit bei jeder Störung \emph{neu berechneter} Geometrie, so ergibt sich
+\begin{equation}
+\frac{\max|\bm K - \bm K_{\text{FD,voll}}|}{\max|\bm K|} \;=\; 0{,}27 \ldots 2{,}0 ,
+\end{equation}
+also dieselbe Größenordnung wie $\bm K$ selbst. Das ist strukturell zu erwarten: die
+Kontaktkraft ist $\lambda_I\bm D[I,K]\bm n_I$, folglich ist
+$\partial\bm f_c/\partial\bm x\sim\lambda\,\partial\bm D/\partial\bm x$ von der Ordnung
+$\bm D$ geteilt durch eine Elementlänge. Es handelt sich also \emph{nicht} um einen
+vernachlässigbaren Zusatzterm, sondern um eine bewusste Auslassung
+(Ausblick, Abschnitt~\ref{sec:ausblick}).
+
+\paragraph{Was das jeweils kostet.} Die beiden Punkte wirken sich unterschiedlich aus:
+\begin{itemize}\itemsep2pt
+  \item Fehlende Terme \emph{in $\bm K$} ändern das \textbf{Ergebnis nicht}. Konvergiert das
+        Newton-Verfahren, so ist das Residuum null -- unabhängig davon, mit welcher Matrix man
+        dorthin gelangt ist. Bezahlt wird ausschließlich mit Konvergenzrate und Robustheit:
+        statt der quadratischen Konvergenz einer konsistent linearisierten Formulierung bleibt
+        lineare bis superlineare Konvergenz, und der Konvergenzradius ist kleiner.
+  \item Die eingefrorene Geometrie \emph{im Residuum} ist dagegen ein
+        \textbf{Genauigkeitsfehler}: der konvergierte Zustand erfüllt
+        $\tilde g_j(\bm x;\bm D_{\text{alt}},\bm M_{\text{alt}},\bm n_{\text{alt}})=0$ mit den
+        Größen vom Increment-\emph{Beginn}, nicht mit denen der konvergierten Konfiguration.
+        Der Fehler ist von erster Ordnung in der Increment-Größe und wird über die Schrittweite
+        kontrolliert.
+\end{itemize}
 
 \medskip
-\noindent\textit{Bekannte Einschränkung.} An \emph{scharfen} Kanten (z.\,B.\ Übergang
-Ankerschaft$\to$Ankerkopf im hex20-Netz) ist die gemittelte Knotennormale mehrdeutig
-($\sim45^\circ$), was die Projektion dort verschlechtern kann. Für die hier betrachteten glatten
-Kontaktflächen ist das unkritisch.
+\noindent\textit{Bekannte Einschränkung.} An \emph{scharfen} Kanten ist die gemittelte
+Knotennormale mehrdeutig ($\sim45^\circ$), was die Projektion dort verschlechtern kann. Werden die
+beiden aneinanderstoßenden Flächen als \emph{getrennte} Constraints definiert, entfällt das
+Problem: jeder Constraint mittelt nur über seine eigenen Facetten und erhält dort die
+flächeneigene Normale. Für glatte Kontaktflächen ist es ohnehin unkritisch.
 
 % =====================================================================
 \section{Signorini als semismooth NCP}
@@ -904,13 +1003,21 @@ System (bei fixiertem Set glatt) gelöst, und iteriert, bis sich das Set nicht m
 (Stopp-Kriterium, \citealp[S.~3153]{hueber2005}; \citealp[Abschn.~3.5.2]{farah}, ``re-interpreted as a
 semi-smooth Newton method''). Die abstrakte Grundlage dieser Interpretation und Konvergenz liefert
 \citet{hik2002} (Satz~3.1); den ersten \emph{konsistent} linearisierten
-Newton-Ansatz für den dualen Mortar-Kontakt mit PDASS setzte \citet[Gl.~(65)/(67)]{poppgeewall2009} um. Die beobachtete Konvergenz ist charakteristisch: solange das
-Set noch wechselt, sinkt das Residuum nur langsam; \emph{sobald das Set fixiert ist, konvergiert das
-Verfahren quadratisch} -- als Folge der konsistenten Linearisierung (\citealp[S.~560]{gitterle};
-\citealp[Tab.~4.1]{farah}, mit Residuenabfall $\sim10^{-3}\!\to\!10^{-8}\!\to\!10^{-11}$ nach Fixierung). Die
-Implementierung bestätigt das Set-Stabilitäts-Kriterium und sichert es zusätzlich per Anti-Cycling
-(Bland-Regel) gegen Zustandswiederholung ab (\file{mortarcontact.py:\allowbreak{}841--867}; siehe
-Abschnitt~\ref{sec:solve}).
+Newton-Ansatz für den dualen Mortar-Kontakt mit PDASS setzte \citet[Gl.~(65)/(67)]{poppgeewall2009} um.
+
+\medskip
+\noindent\textbf{Konvergenzverhalten -- Literatur und dieser Code.} In der \emph{Literatur} ist die
+beobachtete Konvergenz charakteristisch: solange das Set noch wechselt, sinkt das Residuum nur
+langsam; sobald das Set fixiert ist, konvergiert das Verfahren \emph{quadratisch}
+(\citealp[S.~560]{gitterle}; \citealp[Tab.~4.1]{farah}, mit Residuenabfall
+$\sim10^{-3}\!\to\!10^{-8}\!\to\!10^{-11}$ nach Fixierung). Dort ist das die Folge der
+\emph{konsistenten Linearisierung}. Diese Erklärung ist auf die vorliegende Implementierung
+\textbf{nicht} übertragbar: die geometrischen Ableitungen fehlen hier
+(Abschnitt~\ref{sec:frozen}), sodass nach Fixierung des Sets nur lineare bis superlineare
+Konvergenz zu erwarten ist. Was hier exakt ist, ist die Tangente des \emph{eingefrorenen}
+Residuums (\eqref{eq:fdcheck}). Das Set-Stabilitäts-Kriterium selbst ist umgesetzt und
+zusätzlich per Anti-Cycling (Bland-Regel) gegen Zustandswiederholung abgesichert
+(\file{mortarcontact.py:\allowbreak{}841--867}; siehe Abschnitt~\ref{sec:solve}).
 
 % =====================================================================
 \section{Lösungsstrategie: Newton-Ablauf und Active-Set}
@@ -931,11 +1038,14 @@ mit den Kontaktkräften aus \eqref{eq:DM}. Eine statische Kondensation der Multi
 
 \subsection{Ein Newton pro Increment mit eingefrorener Geometrie}
 Material-, Geometrie- und Kontaktnichtlinearität werden in \emph{einem} Newton-Verfahren pro
-Lastschritt gelöst. Wie in Abschnitt~\ref{sec:normalen} beschrieben, werden Normalen und $\bm D,\bm M$
-zu Increment-Beginn eingefroren; die assemblierte Tangente ist dann die exakte Jacobi-Matrix des
-Residuums, was die (nach Fixierung des Active Set) quadratische Konvergenz ermöglicht. Die
-konsistente Tangente ist per Finite-Differenzen zu $\sim10^{-10}$ verifiziert
-(Abschnitt~\ref{sec:verif}).
+Lastschritt gelöst. Wie in Abschnitt~\ref{sec:frozen} beschrieben, werden Normalen und
+$\bm D,\bm M$ zu Increment-Beginn eingefroren; die assemblierte Tangente ist die exakte
+Jacobi-Matrix des so entstehenden Residuums, per Finite-Differenzen zu $\sim10^{-11}$
+verifiziert (\eqref{eq:fdcheck}, Test~09). Die geometrischen Ableitungen
+$\partial\bm D/\partial\bm x$, $\partial\bm M/\partial\bm x$, $\partial\bm n_I/\partial\bm x$
+sind darin nicht enthalten; die Formulierung ist damit \emph{nicht} konsistent linearisiert im
+Sinne von \citet{popp2010} bzw.\ \citet[Kap.~4]{farah}. Was das für die Konvergenz bedeutet, steht
+in Abschnitt~\ref{sec:frozen}.
 
 \subsection{Active-Set-Iteration und Anti-Cycling}
 Das Active Set wird in \emph{jeder} Newton-Iteration aus dem Indikator \eqref{eq:indicator_code} neu
@@ -953,6 +1063,67 @@ Set eingefroren (\file{mortarcontact.py:\allowbreak{}841--867}); eine harte Ober
 Sicherheitsnetz.
 
 % =====================================================================
+\section{Implementierungsdetails und bekannte Einschränkungen}
+\label{sec:implnotes}
+
+Dieser Abschnitt sammelt Bausteine, die für das Verständnis des Codes wesentlich sind, sich aber
+keinem der Theorieabschnitte zuordnen lassen -- Vorzeichenbehandlung, Rückfallpfade und implizite
+Annahmen. Sie sind hier vollständig benannt, damit klar ist, worauf man sich verlässt.
+
+\subsection{Vorzeichenbehandlung: der \code{sgn\_D}-Guard}
+Alle Vorzeichenfragen des Kontakts hängen daran, dass das knotenweise Gewicht
+$\tilde D_{jj}=\sum_k D_{jk}$ positiv ist. Das ist der Normalfall
+(Abschnitt~\ref{sec:basistrafo}), aber für CONQUAD9 bei Teilüberdeckung nicht garantiert. Der Code
+führt deshalb $s_j := \mathrm{sgn}(\tilde D_{jj})$ mit
+(\file{mortarcontact.py:\allowbreak{}791--795}) und definiert
+\begin{equation}
+p_{n,j} = -\lambda_j\,s_j, \qquad g_{\text{sep},j} = \tilde g_j\,s_j ,
+\end{equation}
+also Druck und Trennspalt so, dass $p_{n,j}\ge0$ stets Druck und $g_{\text{sep},j}>0$ stets einen
+offenen Spalt bedeutet. Entscheidend ist, dass damit auch die \emph{Kraftrichtung} korrekt bleibt:
+die auf den Slave-Knoten wirkende Normalkraft ist
+\begin{equation}
+\lambda_j \sum_k D_{jk} = \lambda_j \tilde D_{jj} = -p_{n,j}\,s_j\,\tilde D_{jj}
+= -p_{n,j}\,\big|\tilde D_{jj}\big| \;\le\; 0 \quad\text{für } p_{n,j}\ge0,
+\end{equation}
+also unabhängig vom Vorzeichen von $\tilde D_{jj}$ stets \emph{drückend} (entgegen $\bm n_j$, vom
+Master weg). Der Guard hält Druck-, Spalt- und Kraftvorzeichen konsistent; was er \emph{nicht}
+leisten kann, ist dem gewichteten Spalt an einem Knoten mit $\tilde D_{jj}<0$ seine Deutung als
+Mittelwert zurückzugeben.
+
+\subsection{Rückfallpfad für entartete Überlappungen}
+Die dualen Koeffizienten werden auf dem tatsächlichen Integrationsgebiet gebildet
+(Abschnitt~\ref{sec:dual}), also aus $\bm M_t$ und $\bm D_t$ der Segmentquadratur. Bei sehr
+schmalen Überlappungen (\emph{slivers}) wird $\bm M_t$ nahezu singulär und $\bm A_e$ unbrauchbar.
+Der Code prüft daher die Konditionszahl und fällt bei $\mathrm{cond}(\bm M_t)\ge10^{12}$ auf die
+\emph{Referenzelement}-Koeffizienten aus \eqref{eq:Ae} zurück
+(\file{mortarcontact.py:\allowbreak{}670--673}). Für diese Zellen gilt die Biorthogonalität dann
+nur auf dem Voll-Element, nicht auf der Überlappung.
+
+\subsection{Implizite Annahmen der Nachbarsuche}
+Der Sicherheitsrand der AABB in der BVH-Suche ist
+$\max(0{,}15\cdot\text{Ausdehnung},\,0{,}1)$ (\file{mortarcontact.py:\allowbreak{}531, 556}). Der
+zweite Term ist eine \emph{absolute} Länge in Modelleinheiten. Bei einem Modell, dessen
+Kontaktfacetten deutlich kleiner als $0{,}1$ Einheiten sind, dominiert er und vergrößert nur den
+Suchaufwand; bei Facetten weit darüber ist der relative Term maßgeblich. Die Suche ist damit
+konservativ (sie liefert höchstens zu viele Kandidaten, die das Clipping anschließend verwirft),
+aber die Konstante ist keine dimensionslose Größe.
+
+\subsection{Rückabbildung der Gauß-Punkte}
+Die Newton-Iteration, die einen Ebenenpunkt in die Naturkoordinaten von Slave und Master
+zurückabbildet (Abschnitt~\ref{sec:quadratur}), läuft mit höchstens zehn Iterationen und einer
+Toleranz von $10^{-12}$; bei Nichterreichen der Toleranz wird der letzte Iterationswert ohne
+Warnung zurückgegeben (\file{mortarcontact.py:\allowbreak{}113--153}). Für die auftretenden,
+gutartig konditionierten Abbildungen konvergiert sie in wenigen Schritten; eine Diagnose bei
+Fehlschlag existiert nicht.
+
+\subsection{Was der Constraint nicht prüft}
+Die Orientierung der Kontaktelement-Normalen wird \emph{nicht} verifiziert -- sie muss beim
+Erzeugen der Overlay-Elemente korrekt gesetzt werden (Abschnitt~\ref{sec:inputfile}). Zeigt eine
+Slave-Facettennormale in den eigenen Körper hinein, so kehren sich Spalt- und Druckvorzeichen um,
+und der Kontakt zieht statt zu drücken.
+
+% =====================================================================
 \section{Verifikation}
 \label{sec:verif}
 
@@ -966,126 +1137,194 @@ folgenden Bausteine belegen die Korrektheit der obigen Herleitungen.
 Eigenschaft & Prüfung \\
 \midrule
 \textbf{Polygon-Clipping} & Schnitt-/Triangulierungsgeometrie gegen analytische Überlappungen (\file{02\_polygon\_clipping}). \\
-\textbf{Koppelmatrizen} & $\bm D,\bm M$ und Zeilensummen-Identität \eqref{eq:rowsum} numerisch (\file{03\_coupling\_matrices}). \\
+\textbf{Koppelmatrizen} & $\bm D,\bm M$, Zeilensummen-Identität \eqref{eq:rowsum} ($<10^{-14}$) und Überlappungsfläche gegen den analytischen Wert (\file{03\_coupling\_matrices}). \\
 \textbf{Biorthogonalität} & \eqref{eq:biorth} numerisch verifiziert (\file{04\_dual\_biorthogonality}). \\
 \textbf{Quadratische Segmentierung} & Sub-Cell-Zerlegung + Segmentquadratur für CONQUAD8/9, CONTRI6 (\file{05\_quadratic\_segmentation}). \\
 \textbf{Active-Set / PDASS} & Aktivierung bei Durchdringung, Freeze/Anti-Cycling (\file{06\_active\_set\_pdass}). \\
-\textbf{Patch-Test 2D} & konstanter Druck exakt übertragen, CPE4/CPE8, konform + nichtkonform (\file{07\_patch\_test\_2d}). \\
-\textbf{Patch-Test hex20} & 3D-Patch-Test mit CONQUAD8 exakt bestanden (\file{08\_patch\_test\_hex20}). \\
+\textbf{Patch-Test 2D} & Bausteine \emph{und} Löser-Patch-Test: CPE4/CONLINE2 und CPE8/CONLINE3, je konform und nichtkonform (\file{07\_patch\_test\_2d}). \\
+\textbf{Patch-Test hex20} & 3D-Patch-Test mit CONQUAD8, vier Netz-/Ordnungskombinationen mit geraden Kanten plus eine verzerrte Variante (\file{08\_patch\_test\_hex20}). \\
+\textbf{Konsistente Tangente} & $\bm K$ gegen zentrale Differenzen des Residuums, alle Freiheitsgrade, beide NCP-Zweige (\file{09\_consistent\_tangent}). \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-\noindent Ergänzend gilt:
+\noindent Im Einzelnen:
 \begin{itemize}\itemsep2pt
-  \item \textbf{Kontakt-Patch-Test} (konstanter Druck exakt übertragen) in 2D (CPE4/CPE8) und 3D
-        (hex8/hex20), konform \emph{und} nichtkonform. Das bestätigt zugleich die
-        Zeilensummen-Identität \eqref{eq:rowsum} und die korrekte Behandlung quadratischer Elemente
-        (Basistransformation, Sub-Cells).
-  \item \textbf{Konsistente Tangente} per Finite-Differenzen bestätigt ($\sim10^{-10}$) -- die
-        Voraussetzung für die quadratische Newton-Konvergenz nach Fixierung des Active Set.
+  \item \textbf{Kontakt-Patch-Test, gerade Kanten: maschinengenau.} In 2D (CPE4/CONLINE2,
+        CPE8/CONLINE3) und 3D (hex20/hex20, hex20-Slave/hex8-Master, hex8-Slave/hex20-Master),
+        konform \emph{und} nichtkonform. Gemessen: Verschiebungsfehler $10^{-17}\ldots10^{-14}$,
+        Abweichung der Multiplikatoren von $p$ bei $10^{-15}\ldots10^{-13}$. Das bestätigt
+        zugleich die Zeilensummen-Identität \eqref{eq:rowsum} und die korrekte Behandlung
+        quadratischer Elemente (Basistransformation, Sub-Cells).
+
+        Im 2D-Test bleibt $u_x$ am Interface \emph{frei} (nur die linke Kante ist gehalten), die
+        Kontrolle $\max|u_x|\approx0$ ist dort also aussagekräftig; gemessen $10^{-19}\ldots10^{-16}$.
+        Der 3D-Test schreibt dagegen $u_x=u_z=0$ auf allen Knoten vor -- dort ist diese Kontrolle
+        zwangsläufig erfüllt und damit leer. Tangentialverhalten decken die
+        \file{Control\_Tests} 05 (Gleiten) und 06 (schiefes Interface) ab.
+  \item \textbf{Verzerrte Facetten (gekrümmte Elementkanten): nur näherungsweise.} Die
+        linearisierte Sub-Zellen-Segmentierung approximiert das Integrationsgebiet
+        (Abschnitt~\ref{sec:subcells}). In Variante~5 von Test~08 weicht der Kontaktdruck
+        punktuell um $14{,}3\,\%$ ab; die übertragene \emph{Gesamtkraft} bleibt mit einem
+        relativen Fehler von $3{,}2\cdot10^{-5}$ genau. Der Patch-Test ist hier also
+        \emph{nicht} exakt bestanden, sondern im dokumentierten Rahmen.
+  \item \textbf{Tangente des eingefrorenen Residuums: exakt.} Test~09 bestätigt
+        \eqref{eq:fdcheck} mit $\sim10^{-11}$ über flache, geneigte und gekrümmte Interfaces.
+        Derselbe Test misst auch die \emph{weggelassenen} geometrischen Terme
+        ($0{,}27\ldots2{,}0$ von $\max|\bm K|$) -- siehe Abschnitt~\ref{sec:frozen}.
   \item \textbf{Zwei-Block-Referenztests} (\file{Control\_Tests/README.md}): verschiebungs- und
         lastgesteuerte Blöcke, konform und nichtkonform, mit Abgleich von Verschiebungsfeld,
-        Spannungen und Kontaktbedingungen.
+        Spannungen und Kontaktbedingungen; dort sind auch die beobachteten Grenzen des
+        Konvergenzverhaltens dokumentiert.
 \end{itemize}
-Der reibungsfreie Mortar-Kontakt rechnet damit stabil -- Increment für Increment bei vollem
-Lastschritt.
 
 % =====================================================================
-\section{Forschung: Warum ist \code{hex20} im Ausziehversuch steifer als \code{hex8}?}
-\label{sec:forschung}
+\section{Testbeispiel: Ausziehversuch nach Dejori}
+\label{sec:testbeispiel}
 
-Der Ausziehversuch eines Kopfbolzendübels aus einem Betonquader (\file{testfiles/mortar\_tests/\allowbreak POT\_Dejori})
-wird mit demselben Modell einmal mit \emph{linearen} Elementen (\code{hex8}: Beton \code{GC3D8},
-Kontakt \code{CONQUAD4}) und einmal mit \emph{quadratischen} Elementen (\code{hex20}: Beton
-\code{GC3D20R}, Kontakt \code{CONQUAD8}) gerechnet. Beide Netze sind bis auf die zusätzlichen
-Kantenmittelknoten identisch (gleiche Elementzahl, dieselben sechs Kontaktflächen), das Material
-(gradientenerweiterte Schädigungsplastizität, \code{GCDP}) ist dasselbe, und beide Rechnungen sind
-verschiebungsgesteuert. Dennoch liefern sie deutlich verschiedene Kraft-Weg-Kurven. Da die
-Verifikation (Abschnitt~\ref{sec:verif}) die Korrektheit der Implementierung für lineare \emph{und}
-quadratische Elemente belegt, stellt sich die Frage: Wie kann dieser Unterschied zustande kommen?
+Als anwendungsnahes Testbeispiel wird der Ausziehversuch eines Kopfbolzendübels aus einem
+Betonquader nachgerechnet (Versuchsreihe VA1, Einbindetiefe 6\,cm). Er ist das eigentliche
+Zielproblem des Mortar-Kontakts in diesem Projekt: der Anker ist ein eigener Körper, der nur über
+den Kontakt Kräfte in den Beton einleitet, und die Netze beider Körper sind an der Kontaktfläche
+nichtkonform. Anders als die Patch- und Referenztests aus Abschnitt~\ref{sec:verif} ist dieses
+Beispiel weder analytisch lösbar noch spannungshomogen -- es zeigt, wie sich die Formulierung
+unter realen Bedingungen verhält, einschließlich ihrer Grenzen.
 
-\subsection{Beobachtung}
-Der Unterschied ist in erster Linie eine \emph{Steifigkeitsdifferenz}, und sie ist bereits im
-nahezu elastischen Bereich vollständig vorhanden -- die Sekantensteifigkeit ist über die ersten
-$0{,}03$~mm praktisch konstant, also \emph{bevor} nennenswerte Schädigung eintritt und \emph{bevor}
-das Active-Set aktiv wird.
+\subsection{Modell}
+Der Beton ist mit gradientenerweiterter Schädigungsplastizität (\code{GCDP}) modelliert, Anker und
+Auflager linear-elastisch ($E=210\,000$\,MPa). Das Modell ist ein 4\,mm dicker Scheibenschnitt; die
+ausgewertete Kraft wird mit dem Faktor 20 auf die reale Probenbreite von 80\,mm hochgerechnet. Der
+Anker wird verschiebungsgesteuert um bis zu 1{,}1\,mm nach oben gezogen. Der Kontakt zwischen Stahl
+und Beton ist in \textbf{sechs} getrennte Mortar-Constraints zerlegt (links und rechts, je
+Schaftflanke, Kopfunterseite und Kopfflanke); der Beton ist jeweils die Slave-Seite. Die Zerlegung
+ist bewusst so gewählt: an der 90$^\circ$-Kante zwischen Schaft und Kopf wäre eine gemeinsame
+Kontaktfläche mit mehrdeutiger, gemittelter Knotennormale behaftet
+(Abschnitt~\ref{sec:normalen}); getrennte Constraints erhalten dort die flächeneigene Normale.
+
+Gerechnet wird dasselbe Modell zweimal: einmal linear (\code{GC3D8} für den Beton, Kontaktelemente
+\code{CONQUAD4}) und einmal quadratisch (\code{GC3D20R}, \code{CONQUAD8}). Die beiden Netze sind
+\emph{geometrisch identisch} -- gleiche Elementzahl (9162 Betonelemente), gleiche sechs
+Kontaktflächen mit gleicher Facettenzahl, und die Eckknoten stimmen auf Maschinengenauigkeit
+überein; das quadratische Netz hat lediglich zusätzliche Kantenmittelknoten.
+
+\subsection{Kalibrierung der Auflagerbettung}
+\label{sec:bettung}
+Die Auflager sind nicht starr, sondern als elastische Bettung über
+\code{directionalspringpenalty} abgebildet. Dabei ist eine Eigenschaft dieses Constraints
+wesentlich: es setzt eine \emph{unabhängige Einzelfeder der Steifigkeit} \code{penalty}
+\emph{auf jeden Knoten} des Knotensets (\file{constraints/directionalspringpenalty.py:\allowbreak{}117--123}) --
+es wertet weder Koordinaten noch Facetten oder Flächen aus. Die Gesamtsteifigkeit einer
+Auflagerfläche ist damit
+\begin{equation}
+k_{\text{ges}} \;=\; \code{penalty}\cdot n_{\text{Knoten}} ,
+\label{eq:bettung}
+\end{equation}
+also \emph{netz- und elementordnungsabhängig}. Beim Übergang von hex8 auf hex20 wächst die
+Knotenzahl der Auflagerflächen von $10$ auf $23$ je Seite (die Kantenmittelknoten kommen hinzu).
+Wird derselbe Zahlenwert \code{penalty} übernommen, ist die Bettung des hex20-Modells um den Faktor
+$2{,}3$ steifer -- ein reiner Modellierungsartefakt, der nichts mit dem Kontakt oder der
+Elementformulierung zu tun hat.
+
+Damit beide Rechnungen dieselbe \emph{Gesamt}bettung besitzen, ist \code{penalty} entsprechend
+\eqref{eq:bettung} umzurechnen:
+\begin{center}
+\small
+\begin{tabular}{lccc}
+\toprule
+ & Knoten je Auflager & \code{penalty} & $k_{\text{ges}}$ je Auflager \\
+\midrule
+hex20 & 23 & 400 & 9200\,N/mm \\
+hex8  & 10 & 920 & 9200\,N/mm \\
+\bottomrule
+\end{tabular}
+\end{center}
+Alle folgenden Ergebnisse verwenden diese Werte. \emph{Ohne} diese Umrechnung erscheint die
+hex8-Kurve künstlich weich (Sekantensteifigkeit 117 statt 199\,kN/mm), ohne dass sich am Modell
+etwas geändert hätte.
+
+\subsection{Ergebnis}
+Abbildung~\ref{fig:pot} stellt beide Rechnungen den drei Laborversuchen gegenüber.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\linewidth]{force_disp_hex8_vs_hex20.pdf}
+\caption{Ausziehversuch nach Dejori: Kraft-Weg-Kurven der linearen (hex8) und der quadratischen
+(hex20) Diskretisierung gegen das Streuband der drei Laborversuche. Beide Rechnungen verwenden
+dieselbe Gesamt-Auflagerbettung (Abschnitt~\ref{sec:bettung}). Das Kreuz markiert jeweils das
+Ende der Rechnung. Erzeugt mit \file{POT\_Dejori/plot\_comparison.py}.}
+\label{fig:pot}
+\end{figure}
 
 \begin{center}
 \small
-\begin{tabular}{lcc}
+\begin{tabular}{lccc}
 \toprule
- & \code{hex8} (linear) & \code{hex20} (quadratisch) \\
+ & Sekantensteifigkeit ($u\le0{,}03$\,mm) & $F_{\max}$ & $u$ bei $F_{\max}$ \\
 \midrule
-Sekantensteifigkeit ($u\le 0{,}03$~mm) & $\approx 117$~kN/mm & $\approx 197$~kN/mm \\
-Peak-Last                              & $22{,}6$~kN         & $19{,}9$~kN \\
-Weg beim Peak                          & $0{,}22$~mm         & $0{,}12$~mm \\
+hex8 (\code{GC3D8}/\code{CONQUAD4})    & $199{,}1$\,kN/mm & $22{,}50$\,kN & $0{,}143$\,mm \\
+hex20 (\code{GC3D20R}/\code{CONQUAD8}) & $197{,}7$\,kN/mm & $19{,}85$\,kN & $0{,}121$\,mm \\
+\midrule
+Versuch 1 & --- & $19{,}53$\,kN & $0{,}087$\,mm \\
+Versuch 2 & --- & $16{,}63$\,kN & $0{,}133$\,mm \\
+Versuch 3 & --- & $17{,}63$\,kN & $0{,}082$\,mm \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\noindent Im Vergleich mit den drei Laborversuchen trifft \code{hex20} sowohl die Anfangssteifigkeit
-als auch die Höhe des Peaks, während \code{hex8} zu weich ist und den Peak überschätzt. Es ist also
-nicht so, dass \code{hex20} \emph{zu steif} wäre; vielmehr ist \code{hex8} \emph{zu weich}, und genau
-das ist zu erklären. Weil die Differenz elastisch (vor Schädigung, vor Active-Set) auftritt, ist sie
-weder eine Frage des Schädigungsmodells noch der Kontakt-Aktivierung.
+\paragraph{Anfangssteifigkeit: elementordnungsunabhängig.}
+Die Sekantensteifigkeiten stimmen auf $0{,}7\,\%$ überein. Das ist das erwartete Ergebnis: im
+nahezu elastischen Bereich, vor Einsetzen nennenswerter Schädigung, darf die Elementordnung die
+Systemsteifigkeit kaum beeinflussen, und der Mortar-Kontakt überträgt in beiden Fällen dieselbe
+Last. Es bestätigt zugleich die Referenztests aus \file{Control\_Tests}, in denen hex8, hex20 und
+hex20R exakt dieselbe Steifigkeit liefern. Für den verbleibenden Unterschied gilt: das
+quadratische, reduziert integrierte Modell ist geringfügig \emph{weicher} -- die theoretisch
+richtige Richtung, da der trilineare Ansatzraum im 20-Knoten-Serendipity-Raum enthalten ist und
+reduzierte Integration die Steifigkeit zusätzlich senkt.
 
-\subsection{Der entscheidende Hinweis: die Steifigkeit bestimmt der Kontakt, nicht das Volumenelement}
-Bei einem \emph{reinen} verschiebungsbasierten Finite-Elemente-Ansatz ist die diskrete Steifigkeit
-eine obere Schranke der wahren Steifigkeit, und ein reicherer Ansatzraum senkt sie: quadratische
-Elemente sind dort stets \emph{weicher} und genauer als lineare. Wäre also allein der Betonkörper
-maßgeblich, müsste \code{hex20} weicher sein als \code{hex8} -- niemals steifer. Auch die konkrete
-Integration der Volumenelemente zeigt in dieselbe Richtung: \code{GC3D8} ist voll integriert (und
-damit eher zu steif, versteifungsanfällig), \code{GC3D20R} ist reduziert integriert (und damit eher
-weicher). Beide Effekte auf der Volumenebene sagen \code{hex8}~$\ge$~\code{hex20} voraus; beobachtet
-wird das Gegenteil.
+\paragraph{Traglast: hier entscheidet die Diskretisierung.}
+Am Peak trennen sich die Kurven. Die quadratische Rechnung trifft mit $19{,}85$\,kN die Oberkante
+des Versuchsstreubands ($16{,}6\ldots19{,}5$\,kN), die lineare überschätzt mit $22{,}50$\,kN alle
+drei Versuche um $15$ bis $35\,\%$ und erreicht den Peak zudem später ($0{,}143$ statt
+$0{,}121$\,mm). Das ist ein echter Diskretisierungseffekt: der Ausziehversuch ist am Bolzenkopf
+lokalisierungsdominiert, und lineare Elemente verschmieren den dortigen Dehnungsgradienten über die
+Elementlänge. Die lokale Spannungsspitze wird dadurch unterschätzt, die Schädigung setzt verspätet
+ein, und die Kurve läuft auf einen höheren, späteren Peak. Im entfestigenden Ast liegt die lineare
+Rechnung durchgehend über der quadratischen und näher am Versuchsband -- bei einem
+lokalisierenden Material ist das kein Qualitätsmerkmal, sondern Ausdruck der gröberen Auflösung der
+Schädigungszone.
 
-Daraus folgt: Die zusätzliche Steifigkeit von \code{hex20} stammt aus der \emph{Kontakt}-Lasteinleitung,
-nicht aus dem Volumenelement. Der Mortar-Kontakt ist eine \emph{gemischte} (Lagrange-)Formulierung, in
-der die Monotonie ``reicherer Raum $=$ weicher'' gerade nicht gilt; und das grobe lineare Netz ist an
-der Lasteinleitung erkennbar noch nicht konvergiert.
+\subsection{Abbruchverhalten und Rechenaufwand}
+Die beiden Rechnungen enden aus \emph{unterschiedlichen} Gründen; das ist für die Bewertung der
+Kurven wesentlich.
 
-\subsection{Der physikalische Mechanismus: Lasteinleitung am Bolzenkopf}
-Physikalisch ist der Ausziehversuch ein Lasteinleitungs- bzw.\ Stempelproblem: Der steife
-Stahl\emph{kopf} presst sich gegen den Beton, und die Steifigkeit der Antwort hängt fast
-ausschließlich davon ab, wie gut diese \emph{konzentrierte} Lasteinleitung am Kopf aufgelöst wird. Die
-lineare Diskretisierung versagt dabei an zwei Stellen gleichzeitig:
-\begin{itemize}\itemsep2pt
-  \item \textbf{Randkonzentration des Kontaktdrucks.} Unter einem steifen Stempel steigt der
-        Kontaktdruck zu den Rändern der Kontaktfläche hin stark an. Der lineare Mortar-Kontakt
-        (diagonale $\bm D$, Multiplikatoren nur an Eckknoten) kann diesen Randanstieg nicht
-        darstellen und verschmiert den Druck; die Grenzfläche gibt dort zu leicht nach -- die
-        Antwort wird künstlich weich. Der quadratische Mortar-Kontakt (volle, nicht gelumpte
-        $\bm D$, zusätzliche Kantenmittelknoten, transformierte duale Basis nach
-        Abschnitt~\ref{sec:basistrafo}; \citealp{popp2012}) löst die Druckverteilung samt
-        Randkonzentration deutlich besser auf.
-  \item \textbf{Dehnungsgradient im Beton am Kopf.} Direkt am Kopf herrscht ein steiler
-        Dehnungsgradient (hohe Pressung unter dem Kopf, rasch abklingend nach außen). Lineare
-        Elemente verschmieren diesen Gradienten über das Element und mischen das hoch beanspruchte,
-        steife Material am Kopf mit dem weicheren daneben zu einer zu nachgiebigen Mittelung;
-        quadratische Elemente bilden den Gradienten ab.
-\end{itemize}
-Beides macht \code{hex8} zu weich und erklärt zugleich den überschätzten Peak: Weil die lineare
-Diskretisierung die lokale Spannungsspitze am Kopf unterschätzt, erreicht der Beton seine Festigkeit
-erst später; die Schädigung setzt verspätet ein, der Anker wird weiter gezogen, und die Kurve läuft
-auf einen höheren, späteren Peak. Die quadratische Diskretisierung erfasst die lokale Spitze korrekt,
-sodass die Schädigung bei der realen Last einsetzt und Peak-Höhe wie Peak-Lage zu den Versuchen passen.
+\paragraph{hex8 -- Materialversagen.}
+Die lineare Rechnung läuft bis $u=0{,}795$\,mm, also weit über den Peak hinaus, und bricht dort im
+entfestigenden Ast ab: die Kurve endet mit \emph{senkrechter Tangente}
+($\mathrm dF/\mathrm du\to-\infty$; über die letzten Inkremente $-452$\,kN/mm, während $u$ praktisch
+stehenbleibt). Der Beton kann der aufgezwungenen Verschiebung nicht mehr folgen -- das Material
+versagt. Der Löser meldet entsprechend, dass die Schrittweite nicht weiter reduziert werden kann.
+Die Kurve ist damit inhaltlich vollständig: Anstieg, Traglast und ein großer Teil des
+Nachbruchbereichs sind erfasst. Aufwand: $184$ Inkremente, $13$ Cutbacks, rund $1200$
+Newton-Iterationen, etwa $25$ Minuten Rechenzeit.
 
-\subsection{Abgleich mit der Verifikation}
-Dies steht nicht im Widerspruch zu den bestandenen Patch- und Referenztests
-(Abschnitt~\ref{sec:verif}). Diese prüfen gleichförmige Spannungs- bzw.\ Dehnungszustände an glatten
-Grenzflächen unter Verschiebungssteuerung -- also gerade \emph{ohne} Konzentration. In diesem Regime
-ist die Lösung elementordnungs\emph{unabhängig} und der Mortar-Kontakt exakt, für lineare wie für
-quadratische Elemente. Der Ausziehversuch ist das gegenteilige Regime: Er ist
-konzentrationsdominiert, und genau dann entscheidet die Elementordnung. Beide Diskretisierungen sind
-korrekt; sie sind lediglich unterschiedlich gut aufgelöste Näherungen desselben, ordnungsempfindlichen
-Problems.
+\paragraph{hex20 -- händischer Abbruch.}
+Die quadratische Rechnung versagt nicht, sie kommt nicht mehr voran. Nach $5902$ Inkrementen,
+$302$ Cutbacks und rund $34\,000$ Newton-Iterationen war sie erst bei $u=0{,}838$\,mm, also
+$76\,\%$ der vorgegebenen $1{,}1$\,mm -- bei einer Laufzeit von $49{,}5$ Stunden
+(gut zwei Tagen). Die Schrittweite war zu diesem Zeitpunkt auf etwa $10^{-4}$\,mm je Inkrement
+gefallen, bei nahezu waagrechter Kurve ($\mathrm dF/\mathrm du\approx-2$\,kN/mm). Hochgerechnet
+hätte allein der verbleibende Weg nochmals mehr als einen Tag benötigt, ohne dass ein qualitativ
+neues Ergebnis zu erwarten gewesen wäre. Die Rechnung wurde deshalb händisch abgebrochen; das
+Kreuz in Abbildung~\ref{fig:pot} markiert diesen Punkt, nicht ein Versagen.
 
-\subsection{Schlussfolgerung}
-\code{hex20} ist die genauere, nahezu konvergierte Lösung und trifft die Laborversuche; \code{hex8}
-löst die konzentrierte Lasteinleitung am Bolzenkopf zu grob auf und ist deshalb künstlich weich, mit
-überschätztem Peak. Der große Unterschied zwischen den beiden Kurven ist damit ein
-Diskretisierungs- bzw.\ Elementordnungseffekt an der Lasteinleitung -- kein Implementierungsfehler.
+\paragraph{Einordnung.}
+Der Aufwandsunterschied -- rund $29$-mal so viele Newton-Iterationen bei $3{,}5$-mal so vielen
+Knoten -- ist nicht allein Netzgröße. Er ist auch die praktische Auswirkung der fehlenden
+konsistenten Linearisierung (Abschnitt~\ref{sec:frozen}): ohne die geometrischen Ableitungen ist
+der Konvergenzradius kleiner, das Verfahren greift häufiger zu Cutbacks, und die Schrittweite
+erholt sich im entfestigenden Bereich nicht mehr. Genau hier läge der Gewinn einer konsistenten
+Linearisierung (Abschnitt~\ref{sec:ausblick}) -- nicht in der Genauigkeit der Kurve, sondern darin,
+sie überhaupt in vertretbarer Zeit zu Ende rechnen zu können.
 
 % =====================================================================
 \section{Zusammenfassung}
@@ -1108,8 +1347,42 @@ Nichtdurchdringungsbedingung. Die tragenden Bausteine sind:
         gelöst per \textbf{PDASS}/semismooth Newton (\citealp{hueber2005}).
 \end{itemize}
 Die Formulierung besteht die Kontakt-Patch-Tests in 2D und 3D (linear und quadratisch, konform und
-nichtkonform) und rechnet stabil bis in den entfestigenden Bereich des Betonmaterials. Reibung und
+nichtkonform) bei geraden Facettenkanten in Maschinengenauigkeit; bei gekrümmten Kanten gilt der
+Patch-Test im dokumentierten Näherungsrahmen (Abschnitt~\ref{sec:verif}). Reibung und
 statische Kondensation sind nicht Teil dieses Branches und wurden hier bewusst ausgeklammert.
+
+\medskip
+\noindent Die bewusst in Kauf genommenen Einschränkungen sind an ihren jeweiligen Stellen benannt:
+die fehlende geometrische Linearisierung und der Staffelungsfehler der eingefrorenen Geometrie
+(Abschnitt~\ref{sec:frozen}), die nur näherungsweise Integration über gekrümmte Facetten
+(Abschnitt~\ref{sec:subcells}), die möglichen negativen Knotengewichte des CONQUAD9 bei
+Teilüberdeckung (Abschnitt~\ref{sec:basistrafo}) sowie die impliziten Annahmen und Rückfallpfade
+der Implementierung (Abschnitt~\ref{sec:implnotes}).
+
+% =====================================================================
+\section{Ausblick: konsistente Linearisierung}
+\label{sec:ausblick}
+
+Der nächste substanzielle Entwicklungsschritt ist die \emph{konsistente Linearisierung} des
+Kontaktbeitrags. Wie in Abschnitt~\ref{sec:frozen} gezeigt, ist die assemblierte Tangente exakt
+für das Residuum bei eingefrorener Geometrie, enthält aber die Ableitungen der Geometrie selbst
+nicht -- $\partial\bm D/\partial\bm x$, $\partial\bm M/\partial\bm x$ und
+$\partial\bm n_I/\partial\bm x$ --, und diese Terme sind mit $0{,}27\ldots2{,}0$ von
+$\max|\bm K|$ nicht klein.
+
+Sie zu ergänzen ist kein Zusatzterm, sondern erfordert Ableitungen entlang der \emph{gesamten}
+Segmentierungskette: der Knotennormalen, der Hilfsebene, der geclippten Polygoneckpunkte, der
+Zell-Jacobi-Determinante und der Newton-Rückabbildung in beide Naturkoordinaten. Die vollständige
+Herleitung dafür findet sich bei \citet{popp2010} und \citet[Kap.~4]{farah}. Der Gewinn wäre
+nicht Genauigkeit -- die liefert bereits die Schrittweitensteuerung --, sondern
+\emph{Robustheit}: quadratische Konvergenz nach Fixierung des Active Set und ein größerer
+Konvergenzradius, also weniger Cutbacks und weniger Abbrüche bei anspruchsvollen Lastpfaden.
+
+Als kleinerer Zwischenschritt bliebe die Möglichkeit, die Geometrie \emph{nicht} einzufrieren,
+sondern $\bm n_I,\bm D,\bm M$ in jeder Newton-Iteration neu zu berechnen. Dann entfällt der
+Staffelungsfehler des Residuums, die konvergierte Lösung ist geometrisch exakt -- aber $\bm K$
+wäre keine Jacobi-Matrix mehr, mit entsprechend langsamerer Konvergenz. Ob das ein Nettogewinn
+ist, müsste gemessen werden; Test~09 stellt dafür bereits die passende Messung bereit.
 
 % =====================================================================
 \section{Anwendungsanleitung: Kontaktspezifikation in der Input-Datei}
