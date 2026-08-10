@@ -1564,13 +1564,39 @@ bestimmt (\file{mortarcontact.py:\allowbreak{}797--839}). Pro Knoten gibt es zwe
   \item \textbf{inaktiv} ($s_{n,j}\le0$): $\lambda_j$ wird zu null gezwungen
         ($\text{PExt}[\lambda]\!-\!\!=\!\lambda_j$, $K[\lambda,\lambda]\!+\!\!=\!1$).
 \end{itemize}
-Die äußere Iteration ist konvergiert, sobald sich das Set nicht mehr ändert (PDASS-Kriterium,
-\citealp{hueber2005}). Gegen \emph{Zyklen} (abwechselnde Active-Set-Zustände) sichert eine
-Anti-Cycling-Regel nach dem Vorbild der Bland'schen Pivotregel der linearen Optimierung: da es nur
-endlich viele Active-Set-Zustände gibt, ist der erneute Besuch eines bereits aufgetretenen Zustands
-nach einer Änderung der Nachweis eines Zyklus, und das Set wird eingefroren
-(\file{mortarcontact.py:\allowbreak{}841--867}). Als dritter, unbedingter Abbruch dient eine
-Obergrenze von $20$ Iterationen.
+Nach \citet{hueber2005} ist die äußere Iteration konvergiert, sobald sich das Set nicht mehr
+ändert. Das ist ein \emph{Abbruch}kriterium: die Iteration endet, und das Set ist damit Ergebnis,
+nicht Vorgabe.
+
+\paragraph{Was der Code stattdessen tut, und warum.}
+Ein Constraint kann die Newton-Iteration des Rahmenwerks nicht beenden -- über Abbruch und
+Schrittweite entscheidet der Löser anhand seiner Residuen, und er weiß vom Active Set nichts. An
+die Stelle des Abbruchs tritt deshalb ein \emph{Einfrieren}: sobald der Satz als gesetzt gilt,
+wird er festgehalten und die restlichen Newton-Iterationen des Increments laufen auf dem dann
+festen Set, das damit ein glattes Teilproblem ist. Konkret gilt der Satz als gesetzt, wenn er sich
+über \textbf{zwei} aufeinanderfolgende Iterationen nicht geändert hat und mindestens die
+\textbf{zweite} Iteration erreicht ist (\file{mortarcontact.py:\allowbreak{}1280}).
+
+\medskip
+\noindent\textbf{Beide Zahlen sind frei gewählt.} Sie folgen nicht aus \citet{hueber2005} und aus
+keiner anderen der herangezogenen Quellen; dort steht die Stabilität des Satzes als
+Konvergenzaussage, nicht als Schwelle mit einer Iterationszahl. Die Wahl ist eine
+Implementierungsentscheidung, die zwei Fehlerarten gegeneinander abwägt: eine zu kleine Schwelle
+friert einen Satz ein, der sich nur zufällig einmal wiederholt hat; eine zu große lässt die
+Aktiv-Menge während der ganzen Newton-Iteration wandern, was die Residuen nicht zur Ruhe kommen
+lässt. Was die Wahl kostet, ist damit nicht ausgeschlossen, sondern nachprüfbar gemacht -- siehe
+den folgenden Absatz zur Selbstkonsistenz.
+
+\paragraph{Zwei weitere Auslöser.}
+Gegen \emph{Zyklen} (abwechselnde Active-Set-Zustände) sichert eine Anti-Cycling-Regel nach dem
+Vorbild der Bland'schen Pivotregel der linearen Optimierung: da es nur endlich viele
+Active-Set-Zustände gibt, ist der erneute Besuch eines bereits aufgetretenen Zustands nach einer
+Änderung der Nachweis eines Zyklus, und das Set wird eingefroren
+(\file{mortarcontact.py:\allowbreak{}1270--1300}). Übertragen ist dabei die Idee, einen
+nachgewiesenen Zyklus zu unterbrechen; Blands Regel selbst betrifft die Pivotwahl im
+Simplex-Verfahren und ist nicht dieselbe Vorschrift. Als dritter, unbedingter Abbruch dient eine
+Obergrenze von $20$ Iterationen -- ebenfalls eine frei gewählte Zahl, die nur verhindern soll,
+dass ein pathologischer Fall unbegrenzt weiterläuft.
 
 \paragraph{Selbstkonsistenz des eingefrorenen Satzes.}
 Alle drei Auslöser frieren das Active Set \emph{während} der Newton-Iteration ein. Der Zustand,
