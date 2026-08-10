@@ -1,37 +1,7 @@
 ** ==============================================================================
 ** POT Dejori – Pull-Out Test with MortarContact3D
 ** ==============================================================================
-**
-** Physikalisches Modell:
-**   Ausziehversuch eines Kopfbolzenduebels (headed stud anchor) aus einem
-**   Betonquader. Der Bolzen (Schaft + Kopf) ist als eigener Koerper (steel_anchor)
-**   modelliert und durch MortarContact3D mit dem Beton verbunden.
-**
-** Unterschiede zu Konstantins Rechnung (konstantin_constraint/dejori_pull_out_NA.inp):
-**   1. Neues Mesh mit explizitem Anker-Block (steel_anchor) -> extra *section
-**   2. Kontakt: MortarContact3D statt NodeToRigidSurfacePenalty
-**   3. Aktuelle EdelweissFE-Syntax (>> fuer Block-Unterzeilen, *fieldOutput ohne create=)
-**   4. Materialsyntax mit provider=marmot fuer GCDP
-**
-** Mesh-Datei: Mesh_POTDejori_edelweissfe.inp
-**   Erzeugt mit:  flatten_mesh.py (generiert CONQUAD8-Kontaktelemente automatisch
-**   aus den Sidesets des Cubit-Exports)
-**
-** Verfuegbare ELSETs im Mesh:
-**   concrete        -- Betonquader (C3D20R)
-**   steel_supports  -- Stahlauflager links und rechts (C3D20R)
-**   steel_anchor    -- Headed stud Anker (Schaft + Kopf) (C3D20R)
-**
-** Kontaktflaechen (generiert von flatten_mesh.py, CONQUAD8-Elemente):
-**   Slave (Beton)            Master (Stahl)
-**   con_cont_surf_conc_l_stud_vert   con_cont_surf_stl_l_stud_vert
-**   con_cont_surf_conc_l_head_horiz  con_cont_surf_stl_l_head_horiz
-**   con_cont_surf_conc_l_head_vert   con_cont_surf_stl_l_head_vert
-**   con_cont_surf_conc_r_stud_vert   con_cont_surf_stl_r_stud_vert
-**   con_cont_surf_conc_r_head_horiz  con_cont_surf_stl_r_head_horiz
-**   con_cont_surf_conc_r_head_vert   con_cont_surf_stl_r_head_vert
-**
-** ==============================================================================
+
 
 *include, input=Mesh_POTDejori_edelweissfe.inp
 

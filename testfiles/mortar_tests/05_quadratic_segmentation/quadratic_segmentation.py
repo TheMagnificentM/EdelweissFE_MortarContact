@@ -21,17 +21,26 @@ Kontrollen für identische, flache Patches (Einheitsquadrat):
 - Zeilensummen von D und C müssen übereinstimmen (Partition der Eins /
   Translationsinvarianz, Farah 2018, Gl. (4.99)).
 Für teilweise überlappende Patches wird die exakte Überlappungsfläche geprüft.
+
+Zusätzlich wird die Voraussetzung des Verfahrens vermessen: Sutherland--Hodgman
+und die Fächer-Triangulierung verlangen KONVEXE Sub-Zellen (02_polygon_clipping
+hält den Verlust fest, der sonst entsteht). ``run_subcell_convexity_test``
+bestimmt, wie weit ein Mittel- bzw. Zentralknoten wandern muss, bis das
+Mittel-Quad des CONQUAD8 bzw. die Quads des CONQUAD9 nicht-konvex werden, und
+prüft, dass die integrierte Fläche bis dahin exakt bleibt.
 """
 
 import os
 import sys
+
+import warnings
 
 import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from edelweissfe.config.elementlibrary import getElementClass
-from edelweissfe.constraints.mortarcontact import Constraint as MortarContact
+from edelweissfe.constraints.mortarcontact import Constraint as MortarContact, get_sub_cells
 from edelweissfe.models.femodel import FEModel
 from edelweissfe.points.node import Node
 from edelweissfe.variables.fieldvariable import FieldVariable
@@ -74,7 +83,7 @@ def tri6_pair_points(shift_x=0.0, z=0.0):
     }
 
 
-def build_single_facet_model(el_type, slave_pts, master_pts):
+def build_single_facet_model(el_type, slave_pts, master_pts, master_el_type=None):
     model = FEModel(dimension=3)
     slave_nodes = make_nodes(model, 1, slave_pts)
     master_nodes = make_nodes(model, 100, master_pts)
@@ -84,7 +93,9 @@ def build_single_facet_model(el_type, slave_pts, master_pts):
     s_con.setNodes(slave_nodes)
     model.elements[1] = s_con
 
-    m_con = ConClass(el_type, 2)
+    master_el_type = master_el_type or el_type
+    MConClass = getElementClass(master_el_type, "edelweiss")
+    m_con = MConClass(master_el_type, 2)
     m_con.setNodes(master_nodes)
     model.elements[2] = m_con
 
@@ -151,6 +162,136 @@ def run_quad_test(el_type, points_func):
     print(f"  [PASS] {el_type} erfolgreich verifiziert!")
 
 
+COVERING_MASTER = [[-2.0, -2.0, 0.0], [3.0, -2.0, 0.0], [3.0, 3.0, 0.0], [-2.0, 3.0, 0.0]]
+
+
+def _shoelace(points):
+    p = np.asarray(points)[:, :2]
+    x, y = p[:, 0], p[:, 1]
+    return 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+
+
+def _is_convex(points):
+    """Konvex, wenn alle aufeinanderfolgenden Kantenkreuzprodukte dasselbe
+    Vorzeichen haben (numpy 2 kennt kein 2D-``cross`` mehr, daher explizit)."""
+    p = np.asarray(points)[:, :2]
+    n = len(p)
+    cr = []
+    for i in range(n):
+        a = p[(i + 1) % n] - p[i]
+        b = p[(i + 2) % n] - p[(i + 1) % n]
+        cr.append(a[0] * b[1] - a[1] * b[0])
+    return all(c > 0 for c in cr) or all(c < 0 for c in cr)
+
+
+def _integrated_vs_geometric_area(el_type, slave_pts):
+    """Integrierte Fläche (sum(D)) und geometrische Sub-Zellen-Fläche einer
+    vollständig überdeckten Facette.
+
+    Fängt zugleich die Laufzeitmeldung des Constraints ab, damit geprüft werden
+    kann, dass sie genau dann kommt, wenn eine Sub-Zelle nicht-konvex ist.
+    """
+    constraint = build_single_facet_model(el_type, slave_pts, COVERING_MASTER, master_el_type="CONQUAD4")
+    s_el = constraint.non_mortar_facets[0][0]
+    coords = np.array(slave_pts, dtype=float)
+    sub_cells = get_sub_cells(s_el)
+
+    geometric = sum(_shoelace(coords[sub]) for sub in sub_cells)
+    all_convex = all(_is_convex(coords[sub]) for sub in sub_cells)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        D, _ = constraint.compute_mortar_coupling_matrices()
+    warned = any("non-convex sub-cell" in str(w.message) for w in caught)
+    return float(np.sum(D)), geometric, all_convex, warned
+
+
+def run_subcell_convexity_test():
+    """Ab wann werden die Sub-Zellen nicht-konvex -- und was kostet es?
+
+    Sutherland--Hodgman und die Fächer-Triangulierung setzen konvexe Polygone
+    voraus (siehe 02_polygon_clipping). Dreiecke sind immer konvex; gefährdet
+    sind das Mittel-Quad [4,5,6,7] des CONQUAD8 und die vier Quads des CONQUAD9.
+    Der Test misst die Schwelle, statt sie zu behaupten:
+
+    CONQUAD8, unterer Mittelknoten von y = 0 nach y = t verschoben
+        Das Mittel-Quad ist konvex, solange t < 0.5 -- der Mittelknoten müsste
+        also über den ELEMENTMITTELPUNKT hinaus wandern. Bis dahin stimmt die
+        integrierte Fläche exakt; darüber geht sie still verloren
+        (t = 0.51: 1.3 %, t = 0.8: 12.5 %).
+
+    CONQUAD9, Zentralknoten von (0.5, 0.5) nach (s, s) verschoben
+        Die vier Quads sind konvex, solange s > 0.25 -- der Zentralknoten müsste
+        also bis auf ein Viertel an die Ecke heranrücken. Darüber hinaus fehlen
+        bis zu 4.3 %.
+
+    Beide Schwellen liegen weit jenseits jeder Verzerrung, die ein brauchbares
+    Volumenelement überlebt (die Jacobi-Determinante wäre längst negativ). Der
+    Befund ist deshalb: die Annahme trägt mit großem Abstand -- aber sie wird
+    zur Laufzeit NICHT geprüft, und ihre Verletzung ist lautlos.
+    """
+    print("\n* Teste Konvexität der Sub-Zellen (Flächenerhalt bei Verzerrung)...")
+
+    def quad8_with_mid_bottom(t):
+        return [
+            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+            [0.5, t, 0.0], [1.0, 0.5, 0.0], [0.5, 1.0, 0.0], [0.0, 0.5, 0.0],
+        ]
+
+    def quad9_with_center(s):
+        return quad8_with_mid_bottom(0.0) + [[s, s, 0.0]]
+
+    print("  CONQUAD8, unterer Mittelknoten auf y = t:")
+    for t, expect_convex in [(0.0, True), (0.2, True), (0.4, True), (0.49, True), (0.6, False)]:
+        integrated, geometric, convex, warned = _integrated_vs_geometric_area(
+            "CONQUAD8", quad8_with_mid_bottom(t)
+        )
+        loss = 1.0 - integrated / geometric
+        print(
+            f"    t = {t:.2f}: konvex = {str(convex):5s}  Fläche {integrated:.9f} von {geometric:.9f}"
+            f"  Verlust {100 * loss:6.2f} %  Meldung: {'ja' if warned else 'nein'}"
+        )
+        if warned == convex:
+            print(f"  [FAIL] Laufzeitmeldung bei t = {t} passt nicht zur Konvexität")
+            sys.exit(1)
+        if convex != expect_convex:
+            print(f"  [FAIL] Konvexität bei t = {t} anders als erwartet ({convex})")
+            sys.exit(1)
+        if convex and abs(loss) > 1e-10:
+            print(f"  [FAIL] Flächenverlust {loss:.3e} bei KONVEXEN Sub-Zellen (t = {t})!")
+            sys.exit(1)
+        if not convex and loss < 1e-3:
+            print(f"  [FAIL] Nicht-konvexe Sub-Zelle ohne messbaren Verlust bei t = {t} -- "
+                  "die dokumentierte Schwelle stimmt nicht mehr")
+            sys.exit(1)
+
+    print("  CONQUAD9, Zentralknoten auf (s, s):")
+    for s, expect_convex in [(0.5, True), (0.4, True), (0.3, True), (0.26, True), (0.15, False)]:
+        integrated, geometric, convex, warned = _integrated_vs_geometric_area(
+            "CONQUAD9", quad9_with_center(s)
+        )
+        loss = 1.0 - integrated / geometric
+        print(
+            f"    s = {s:.2f}: konvex = {str(convex):5s}  Fläche {integrated:.9f} von {geometric:.9f}"
+            f"  Verlust {100 * loss:6.2f} %  Meldung: {'ja' if warned else 'nein'}"
+        )
+        if warned == convex:
+            print(f"  [FAIL] Laufzeitmeldung bei s = {s} passt nicht zur Konvexität")
+            sys.exit(1)
+        if convex != expect_convex:
+            print(f"  [FAIL] Konvexität bei s = {s} anders als erwartet ({convex})")
+            sys.exit(1)
+        if convex and abs(loss) > 1e-10:
+            print(f"  [FAIL] Flächenverlust {loss:.3e} bei KONVEXEN Sub-Zellen (s = {s})!")
+            sys.exit(1)
+        if not convex and loss < 1e-3:
+            print(f"  [FAIL] Nicht-konvexe Sub-Zelle ohne messbaren Verlust bei s = {s} -- "
+                  "die dokumentierte Schwelle stimmt nicht mehr")
+            sys.exit(1)
+
+    print("  [PASS] Flächenerhalt exakt, solange die Sub-Zellen konvex sind; "
+          "Schwellen (CONQUAD8 t = 0.5, CONQUAD9 s = 0.25) bestätigt.")
+
+
 def run_tri6_test():
     print("\n* Teste CONTRI6: identische Patches (2 Dreiecke, Einheitsquadrat)...")
     model = FEModel(dimension=3)
@@ -192,6 +333,7 @@ if __name__ == "__main__":
     run_quad_test("CONQUAD8", quad8_points)
     run_quad_test("CONQUAD9", quad9_points)
     run_tri6_test()
+    run_subcell_convexity_test()
 
     print("\n====================================================")
     print("ALLE SEGMENTIERUNGSTESTS ERFOLGREICH PASSIERT!")

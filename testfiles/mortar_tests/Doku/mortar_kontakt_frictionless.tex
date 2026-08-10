@@ -11,6 +11,8 @@
 \usepackage{array}
 \usepackage{listings}
 \usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc,positioning}
 \usepackage{xcolor}
 \usepackage{xurl}
 \usepackage[round,authoryear]{natbib}
@@ -31,6 +33,14 @@
   \def\tfrac#1#2{#1/#2}%
   \def\tilde#1{#1}%
 }
+
+% Farben des UIBK-Beamer-Themes, damit die Abbildungen mit der zugehoerigen
+% Praesentation (meetings/hilti_presentation_2.0) uebereinstimmen.
+\definecolor{uibkblue}{cmyk}{1,0.6,0,0.65}
+\definecolor{uibkbluel}{rgb}{0.89,0.94,1.00}
+\definecolor{uibkorange}{cmyk}{0,.5,1,0}
+\definecolor{uibkorangel}{rgb}{1.00,0.90,0.76}
+\definecolor{uibkgray}{cmyk}{0,0,0,0.9}
 
 \definecolor{codegreen}{rgb}{0,0.6,0}
 \definecolor{codegray}{rgb}{0.5,0.5,0.5}
@@ -84,66 +94,87 @@
 \maketitle
 
 \begin{abstract}
-Dieses Dokument beschreibt Theorie, Herleitung und Implementierung des \emph{reibungsfreien}
-Mortar-Normalkontakts, wie er auf dem Branch \code{0\_mortarcontact} des Finite-Elemente-Frameworks
-\code{EdelweissFE} rechnet. Die Darstellung ist bewusst als in sich geschlossene, paper-artige
-Referenz angelegt: jede Formel, jeder Algorithmus und jede Konstante wird aus den Primärquellen
-der Literatur hergeleitet und mit exakter Fundstelle (Autor, Jahr, Gleichung bzw.\ Abschnitt)
-belegt, und jeder Baustein wird auf die konkrete Codestelle (\file{Datei:Zeile}) abgebildet.
-Die Formulierung beruht auf \emph{dualen} Lagrange-Multiplikatoren zur knotenweisen Entkopplung der
-Kontaktbedingungen \citep{wohlmuth2000}, einer \emph{segmentbasierten} Integration mit linearer
-Sub-Zellen-Zerlegung für lineare und quadratische Facetten- und Linienelemente
-(\code{CONLINE2/3}, \code{CONQUAD4/8/9}, \code{CONTRI3/6}), einer konsistenten Randbehandlung
-partiell überdeckter Elemente \citep{cichosz} und einer semiglatten Primal-Dual
-Active-Set-Strategie (PDASS) zur Lösung der diskreten Signorini-Bedingungen
-\citep{hueber2005,gitterle}. Besonderes Gewicht liegt auf den vier
-technischen Kernpunkten der zugehörigen Präsentation: (i)~warum die Segmentquadratur den
-Genauigkeitsgrad~5 verwendet (7-Punkt-Dreiecksregel nach \citealt{dunavant1985}), (ii)~Herleitung der
-Koppelmatrizen $\bm D,\bm M$ und des gewichteten Spalts, (iii)~warum die Basistransformation
-quadratischer Elemente den Faktor $\tfrac13$ trägt \citep{popp2012}, und (iv)~die Herleitung
-der Normal-NCP-Funktion \citep[Gl.~(55)]{gitterle}. Reibung und statische Kondensation
-sind auf diesem Branch \emph{nicht} enthalten und werden hier bewusst nicht behandelt.
+Beschrieben wird ein reibungsfreier Mortar-Normalkontakt für nichtkonforme Netze, wie er im
+Finite-Elemente-Framework \code{EdelweissFE} implementiert ist. Die Nichtdurchdringungsbedingung
+wird nicht punktweise, sondern im integralen Mittel über die Kontaktfläche durchgesetzt: die
+Kontakttraktion wird durch \emph{duale} Lagrange-Multiplikatoren \citep{wohlmuth2000} diskretisiert,
+deren Biorthogonalität zu den Slave-Formfunktionen die Kontaktbedingungen knotenweise entkoppelt und
+die Slave--Slave-Koppelmatrix diagonalisiert. Die Koppelmatrizen $\bm D$ und $\bm M$ und der aus
+ihnen gebildete gewichtete Spalt entstehen aus einer \emph{segmentbasierten} Integration: die
+Überlappung von Slave- und Masterfacette wird in einer Hilfsebene durch Polygon-Clipping
+\citep{sutherland1974} bestimmt und mit einer Quadraturregel vom Genauigkeitsgrad~5
+\citep{dunavant1985} über die entstehenden Teilflächen ausgewertet. Quadratische Facetten werden
+dafür in linear interpolierte Sub-Zellen zerlegt \citep{puso2008}; ihre dualen Knotengewichte
+bleiben durch eine Basistransformation der Formfunktionen positiv \citep{popp2012}. Unterstützt
+werden Linien- und Flächenelemente erster und zweiter Ordnung (\code{CONLINE2/3},
+\code{CONQUAD4/8/9}, \code{CONTRI3/6}) sowie teilweise überdeckte Elemente mit konsistenter
+Randbehandlung \citep{cichosz}. Die diskreten Signorini-Bedingungen werden als eine einzige
+nichtglatte Komplementaritätsfunktion \citep[Gl.~(55)]{gitterle} formuliert und mit einer
+semiglatten Primal-Dual-Active-Set-Strategie gelöst \citep{hueber2005}, die den Kontaktzustand in
+jeder Newton-Iteration neu bestimmt. Dargestellt werden die Herleitung der einzelnen Bausteine, ihre
+Umsetzung im Quelltext, die Verifikation an Patch-Tests und analytischen Lösungen sowie die
+Voraussetzungen, unter denen die Formulierung gilt. Die Kontakt-Patch-Tests werden in zwei und drei
+Dimensionen, für konforme wie nichtkonforme Netze und für lineare wie quadratische Elemente bei
+geraden Facettenkanten in Maschinengenauigkeit bestanden; für gekrümmte Kanten, teilweise
+überdeckte Facetten und entartete Überlappungen sind die Grenzen der Formulierung quantifiziert.
 \end{abstract}
 
 \clearpage
 \tableofcontents
 \clearpage
+\listoffigures
+\clearpage
 
 % =====================================================================
-\section*{Geltungsbereich und Implementierungsstand}
-\addcontentsline{toc}{section}{Geltungsbereich und Implementierungsstand}
+\section*{Symbolverzeichnis}
+\addcontentsline{toc}{section}{Symbolverzeichnis}
 
-Beschrieben wird ausschließlich der Zustand auf Branch \code{0\_mortarcontact}: der reibungsfreie
-Mortar-Normalkontakt in \textbf{Sattelpunkt-Formulierung} (die Lagrange-Multiplikatoren sind
-explizite zusätzliche Unbekannte). Es gibt auf diesem Branch:
-\begin{itemize}
-  \item \textbf{keine} Coulomb-Reibung (kein \code{friction\_coefficient}-Schlüsselwort),
-  \item \textbf{keine} statische/duale Kondensation (kein \code{condensation}-Schlüsselwort). Die
-        Constraint-Argumente sind \code{nonMortarSurface}, \code{mortarSurface}, \code{field} sowie
-        der NCP-Parameter \code{cn} (\file{mortarcontact.py:\allowbreak{}89--108}); \code{cn} ist optional
-        (Standard $10^6$), sollte aber gesetzt werden (Abschnitt~\ref{sec:ncp}).
-\end{itemize}
-Auf diesem Branch wird pro Slave-Knoten \emph{genau ein skalarer} Lagrange-Multiplikator
-instanziiert -- die Normalkomponente $\lambda_I$ der Kontakttraktion (der Kontaktdruck): es gibt
-einen Multiplikator-Freiheitsgrad je Slave-Knoten, \emph{nicht} $\dim$
-(\file{mortarcontact.py:\allowbreak{}348--351}). Die Kontaktkraft entsteht daraus als
-$\lambda_I\,\bm n_I$, also allein in Richtung der Knotennormale
-(\file{mortarcontact.py:\allowbreak{}825, 833}). In der allgemeinen (kontinuierlichen)
-Mortar-Formulierung ist der Multiplikator ein vollst\"andiger Traktionsvektor
-$\bm z_I\in\mathbb R^{\dim}$, dessen Tangentialkomponenten erst mit Coulomb-Reibung physikalisch
-aktiv w\"urden (dann $\dim$ Multiplikatoren je Knoten). Diese Vektor-Erweiterung ist der
-nat\"urliche Reibungspfad, auf Branch \code{0\_mortarcontact} aber \emph{nicht} instanziiert.
-Der Code ist reines Python im Framework \code{EdelweissFE}; die drei
-zentralen Quelldateien -- \file{mortarcontact.py} (867~Z.), \file{mortar\_geom\_utils.py} (119~Z.)
-und \file{contactelement/element.py} (511~Z.) -- werden mit ihren vollständigen Pfaden in
-Abschnitt~\ref{sec:architektur} (Tab.~Modulzuordnung) aufgeführt.
+Die Bezeichner folgen der Literatur. Wo der Quelltext davon abweicht, ist die dortige Schreibweise
+in der zweiten Spalte angegeben. Die lokalen Hilfsgrößen der dualen Basiskonstruktion ($\bm D_e$,
+$\bm M_e$, $\bm M_t$, $\bm A_e$) sind streng von den globalen Koppelmatrizen ($\bm D$, $\bm M$) zu
+unterscheiden.
 
-\medskip
-\noindent\textbf{Notationskonvention.} In der Literatur und in der Präsentation heißt die
-Slave--Master-Koppelmatrix~$\bm M$. Im Quelltext heißt dieselbe Matrix~\code{C}, während der
-Bezeichner~\code{M} dort für die lokale Biorthogonalitäts-Massenmatrix reserviert ist. Dieses
-Dokument folgt der Literatur und schreibt durchgehend $\bm D$ (Slave--Slave) und $\bm M$
-(Slave--Master); an den Codestellen wird jeweils auf den Bezeichner \code{C} hingewiesen.
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{llXl}
+\toprule
+Symbol & im Code & Bedeutung & Stelle \\
+\midrule
+\multicolumn{4}{l}{\emph{Geometrie und Kinematik}}\\
+$\gamma_c$ & --- & Kontaktfläche; Index $(1)$ Slave, $(2)$ Master & \S\ref{sec:kontinuierlich} \\
+$g_n$ & --- & punktweiser Normalspalt, $>0$ bei geöffnetem Kontakt & \eqref{eq:gap} \\
+$\bm n_I$ & \code{normals} & flächengewichtete Knotennormale des Slave-Knotens $I$ & \eqref{eq:facetnormal} \\
+$P_h$ & --- & diskrete Kontaktabbildung (Projektion Slave $\to$ Master) & \eqref{eq:DM} \\
+$\bm\xi$ & \code{local\_coords} & Naturkoordinaten eines Elements & \S\ref{sec:rueckabbildung} \\
+\midrule
+\multicolumn{4}{l}{\emph{Formfunktionen und duale Basis}}\\
+$N_k$ & \code{N\_s}, \code{N\_m} & Standard-Formfunktionen von Slave bzw.\ Master & --- \\
+$\tilde N_j$ & \code{N\_tilde} & basistransformierte Formfunktionen, $\tilde{\bm N}=\bm T_e\bm N$ & \S\ref{sec:basistrafo} \\
+$\Phi_j$ & --- & duale (biorthogonale) Formfunktionen des Multiplikatorraums & \eqref{eq:biorth} \\
+$\bm T_e$ & \code{T\_e} & elementlokale Basistransformation mit Parameter $\alpha$ & \S\ref{sec:basistrafo} \\
+$\bm A_e$ & \code{A\_e} & Koeffizienten $\Phi_j=A_{jk}N_k$ der dualen Basis & \eqref{eq:Ae} \\
+$\bm D_e,\bm M_e$ & \code{D\_e}, \code{M\_e} & \emph{lokale} Hilfs-Massenmatrizen zur Konstruktion von $\bm A_e$ & \eqref{eq:Ae} \\
+$\bm M_t,\bm D_t$ & \code{M\_t}, \code{D\_t} & dieselben Größen, über das tatsächliche Überlappungsgebiet gebildet & \S\ref{sec:sliver} \\
+\midrule
+\multicolumn{4}{l}{\emph{Koppelmatrizen und Spalt}}\\
+$\bm D$ & \code{D} & \emph{globale} Slave--Slave-Koppelmatrix & \eqref{eq:DM} \\
+$\bm M$ & \textbf{\code{C}} & \emph{globale} Slave--Master-Koppelmatrix & \eqref{eq:DM} \\
+$\tilde{\bm D}$ & --- & $\bm D=\tilde{\bm D}\,\bm T^{-1}$; diagonal bezüglich $\tilde{\bm N}$ & \S\ref{sec:basistrafo} \\
+$\tilde D_{jj}$ & \code{D\_rowsum} & Knotengewicht $\int_{\gamma_c^{\text{ovl}}}\tilde N_j$, vorzeichenbehaftet & \eqref{eq:weightisprimal} \\
+$\tilde g_j$ & \code{g\_I\_weak} & gewichteter (schwacher) Normalspalt am Slave-Knoten $j$ & \eqref{eq:wgap_pos} \\
+$g_{\text{sep},j}$ & \code{g\_sep} & $\tilde g_j/\tilde D_{jj}$; physikalische Knotenöffnung (Länge) & \eqref{eq:gsep} \\
+$\bm P$ & --- & Projektionsoperator $\bm D^{-1}\bm M$ (nicht aktiviert) & \S\ref{sec:dual} \\
+\midrule
+\multicolumn{4}{l}{\emph{Kontaktbedingung und Lösung}}\\
+$\bm z_j$ & --- & Traktionsvektor am Slave-Knoten $j$ (allgemeine Vektorform) & \S\ref{sec:koppelmatrizen} \\
+$\lambda_j$ & \code{lambda\_I} & instanziierter skalarer Normalmultiplikator $\bm z_j\!\cdot\!\bm n_j$ & \S\ref{sec:koppelmatrizen} \\
+$p_{n,j}$ & \code{p\_n} & physikalischer Kontaktdruck $-\lambda_j\,\mathrm{sgn}(\tilde D_{jj})\ge0$ & \eqref{eq:pn} \\
+$c_n$ & \code{cn} & Komplementaritätsparameter der NCP, rein algorithmisch & \eqref{eq:ncp} \\
+$s_{n,j}$ & \code{s\_n} & Aktivierungsindikator; aktiv $\iff s_{n,j}>0$ & \eqref{eq:indicator_code} \\
+$C_{n,j}$ & --- & NCP-Funktion der Signorini-Bedingungen & \eqref{eq:ncp} \\
+\bottomrule
+\end{tabularx}
+\end{center}
 
 % =====================================================================
 \section{Einleitung und Problemstellung}
@@ -167,6 +198,36 @@ entkoppeln die Kontaktbedingungen knotenweise (Abschnitte~\ref{sec:koppelmatrize
 und~\ref{sec:dual}), und die Methode besteht den Kontakt-Patch-Test bei optimaler
 Konvergenzordnung. Die Mortar-Methode ist heute der Standardzugang für Kontakt zwischen
 nichtkonformen Netzen bei großen Deformationen~\citep{puso2004,popp2010,farah}.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.72,>=Latex]
+  % unterer Koerper: Beton (Slave), grobes Netz
+  \fill[uibkbluel,opacity=0.45] (0,0) rectangle (5,1.9);
+  \draw[uibkblue,thick] (0,0) rectangle (5,1.9);
+  \foreach \x in {1,2,3,4} \draw[uibkblue!55] (\x,0)--(\x,1.9);
+  \draw[uibkblue!55] (0,0.95)--(5,0.95);
+  % oberer Koerper: Stahl (Master), feineres, versetztes Netz
+  \fill[uibkorangel,opacity=0.5] (0.4,2.0) rectangle (4.6,3.5);
+  \draw[uibkorange,thick] (0.4,2.0) rectangle (4.6,3.5);
+  \foreach \x in {1.0,1.7,2.4,3.1,3.8} \draw[uibkorange!60] (\x,2.0)--(\x,3.5);
+  \draw[uibkorange!60] (0.4,2.75)--(4.6,2.75);
+  % Kontaktflaeche + Traktion
+  \draw[very thick] (0,1.95)--(5,1.95);
+  \foreach \x in {0.9,1.9,2.9,3.9} \draw[->,thick,uibkgray] (\x,2.45)--(\x,2.02);
+  \node[uibkblue,font=\scriptsize] at (0.85,0.35){Beton};
+  \node[uibkorange,font=\scriptsize] at (3.9,3.15){Stahl};
+  \node[font=\scriptsize] at (5.4,1.7){$\gamma_c$};
+  \node[font=\scriptsize] at (2.4,2.68){$\bm\lambda$};
+  \node[font=\scriptsize] at (1.0,-0.45){Slave $(1)$};
+  \node[font=\scriptsize] at (4.0,3.95){Master $(2)$};
+\end{tikzpicture}
+\caption[Kontaktproblem mit nichtkonformen Netzen]{Ausgangssituation: zwei Körper, deren Netze an
+der Kontaktfläche $\gamma_c$ nicht aufeinandertreffen. Die Kontakttraktion $\bm\lambda$ wird auf der
+Slave-Seite diskretisiert. Eine Knotenpaarung existiert nicht, sodass die Nichtdurchdringung nicht
+punktweise, sondern im integralen Mittel durchgesetzt wird.}
+\label{fig:kontaktproblem}
+\end{figure}
 
 Dieses Dokument beschreibt die konkrete reibungsfreie Umsetzung in \code{EdelweissFE}. Die Darstellung
 folgt der Verarbeitungs-Pipeline: von der Geometrie (Nachbarsuche, Projektion, Clipping,
@@ -242,7 +303,8 @@ CONTRI3 / CONTRI6 & 3 / 6 & 3D-Dreieck & linear / quadratisch \\
 \end{center}
 
 \subsection{Verarbeitungs-Pipeline}
-Die Berechnung folgt einer festen Pipeline, die zugleich die Gliederung dieses Dokuments ist:
+Die Berechnung folgt einer festen Pipeline; ihr folgt auch die Reihenfolge der
+Theorieabschnitte:
 \begin{enumerate}\itemsep2pt
   \item \textbf{Nachbarsuche} (BVH) $\to$ Kandidatenpaare (Abschnitt~\ref{sec:geometrie}).
   \item \textbf{Projektion + Clipping + Triangulierung} $\to$ Integrationszellen
@@ -252,8 +314,32 @@ Die Berechnung folgt einer festen Pipeline, die zugleich die Gliederung dieses D
         (Abschnitte~\ref{sec:quadratur}, \ref{sec:koppelmatrizen}).
   \item \textbf{Gewichteter Spalt} $\tilde g_j$ und \textbf{NCP} $\to$ Active Set
         (Abschnitte~\ref{sec:koppelmatrizen}, \ref{sec:ncp}).
-  \item \textbf{Assemblierung + Newton} $\to$ Lösung (Abschnitt~\ref{sec:solve}).
+  \item \textbf{Assemblierung + Newton} $\to$ Lösung (Abschnitt~\ref{sec:loesung}).
 \end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[>=Latex,
+  box/.style={draw=uibkblue,fill=uibkbluel!45,rounded corners=2pt,align=center,
+              minimum height=1.0cm,text width=2.2cm,font=\scriptsize\bfseries},
+  last/.style={draw=uibkorange,fill=uibkorangel!60,rounded corners=2pt,align=center,
+              minimum height=1.0cm,text width=2.2cm,font=\scriptsize\bfseries}]
+  \node[box](n1) at (0,0) {Eigene Kontakt-elemente};
+  \node[box](n2) at (3.0,0) {Nachbar-suche (BVH)};
+  \node[box](n3) at (6.0,0) {Projektion + Clipping};
+  \node[box](n4) at (0,-2) {Quadratur (Dreiecke)};
+  \node[box](n5) at (3.0,-2) {Koppel-matrizen $\bm D,\bm M$};
+  \node[last](n6) at (6.0,-2) {Kontakt-bedingung (NCP)};
+  \draw[->,uibkgray,very thick](n1)--(n2);
+  \draw[->,uibkgray,very thick](n2)--(n3);
+  \draw[->,uibkgray,very thick](n3)--(n4);
+  \draw[->,uibkgray,very thick](n4)--(n5);
+  \draw[->,uibkgray,very thick](n5)--(n6);
+\end{tikzpicture}
+\caption[Verarbeitungs-Pipeline des Mortar-Kontakts]{Verarbeitungs-Pipeline. Die Reihenfolge der
+Theorieabschnitte folgt diesem Ablauf.}
+\label{fig:pipeline}
+\end{figure}
 
 \subsection{Modulzuordnung}
 \begin{center}
@@ -275,7 +361,7 @@ Datei & Rolle \\
 
 Bei nichtkonformen Netzen ist a priori unbekannt, welche Master-Facette welche Slave-Facette
 überlappt. Die geometrische Verarbeitung bestimmt diese Überlappungen und zerlegt sie in
-Integrationszellen (Folien~5--6).
+Integrationszellen.
 
 \subsection{Nachbarsuche mit Bounding-Volume-Hierarchie}
 Eine naive Prüfung aller Slave--Master-Paare kostet $\mathcal O(N^2)$. Stattdessen werden die
@@ -286,6 +372,25 @@ organisiert -- einem binären Baum mit Median-Split entlang der längsten Achse 
 Sicherheitsrand $\max(0.15\cdot\text{Ausdehnung},\,0.1)$; nur für die Kandidaten wird anschließend
 die exakte geometrische Verschneidung durchgeführt.
 
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.9,>=Latex]
+  \foreach \x/\y in {0/0,1.3/0.2,2.6/0.1,0.2/1.3,1.5/1.5,2.8/1.4}{
+    \draw[uibkorange,thick] (\x,\y)--(\x+1,\y+0.15)--(\x+0.85,\y+1)--(\x-0.1,\y+0.9)--cycle;
+    \draw[uibkgray,densely dashed] (\x-0.1,\y) rectangle (\x+1,\y+1.05);
+  }
+  \draw[uibkblue,very thick,fill=uibkbluel,opacity=0.6] (1.2,0.6) rectangle (2.2,1.6);
+  \draw[uibkblue,densely dashed] (1.05,0.45) rectangle (2.35,1.75);
+  \node[uibkblue,font=\scriptsize] at (1.7,1.1){Slave};
+  \node[uibkorange,font=\scriptsize] at (4.45,2.05){Master};
+\end{tikzpicture}
+\caption[Nachbarsuche mit achsparallelen Hüllboxen]{Nachbarsuche. Jede Master-Facette erhält eine
+achsparallele Hüllbox (grau gestrichelt), die in einem binären Baum organisiert wird. Die
+Abfragebox der Slave-Facette (blau gestrichelt) liefert die Kandidaten; nur für diese wird
+anschließend die exakte Verschneidung durchgeführt.}
+\label{fig:bvh}
+\end{figure}
+
 \subsection{Hilfsebene und Projektion}
 Für ein Kandidatenpaar wird an der Slave-(Sub-)Facette eine \emph{Hilfsebene} definiert (Stützpunkt
 $\bm p_0$, Normale $\bm n$). Beide Polygone -- Slave und Master -- werden in diese Ebene projiziert
@@ -294,31 +399,79 @@ und dort in ebenen Koordinaten dargestellt (\file{mortar\_geom\_utils.py}, \code
 später über die Newton-Rückabbildung an den Gauß-Punkten ein (Abschnitt~\ref{sec:quadratur}).
 
 \subsection{Sutherland--Hodgman-Clipping und Triangulierung}
-In der Ebene wird das Master-Polygon gegen das (konvexe) Slave-Polygon geschnitten. Dafür dient der
+In der Ebene wird das Master-Polygon gegen das Slave-Polygon geschnitten. Dafür dient der
 \emph{Sutherland--Hodgman-Algorithmus}~\citep{sutherland1974}: das zu schneidende Polygon wird
 sukzessive an jeder Kante des Clip-Polygons gekappt (\emph{reentrant polygon clipping}). Der
-Algorithmus setzt ein \emph{konvexes} Clip-Polygon voraus -- deshalb wird als Clip-Fenster die
-(konvexe) Slave-Facette bzw.\ Sub-Cell verwendet, nicht umgekehrt. Das Ergebnis ist das konvexe
-Überlappungspolygon $\text{Slave}\cap\text{Master}$ (\code{sutherland\_hodgman\_clip}).
+Algorithmus stellt an seine beiden Argumente ungleiche Anforderungen -- das zu schneidende Polygon
+darf beliebig sein, das Clip-Fenster muss konvex sein. Als Clip-Fenster dient daher die
+Slave-Facette bzw.\ Sub-Cell, nicht umgekehrt. Für lineare Facetten ist ihre Konvexität durch die
+Elementform gegeben; für die Sub-Cells quadratischer Facetten ist sie eine Bedingung an die
+Netzverzerrung, die in Abschnitt~\ref{sec:subcells} hergeleitet und quantifiziert wird. Das
+Ergebnis ist das konvexe Überlappungspolygon $\text{Slave}\cap\text{Master}$
+(\code{sutherland\_hodgman\_clip}).
 
 Da die Segmentquadratur (Abschnitt~\ref{sec:quadratur}) auf Dreiecken definiert ist, wird das
 Überlappungspolygon abschließend \emph{fächerartig} von einer Ecke aus trianguliert
-(\code{triangulate\_polygon}): ein $n$-Eck ergibt $n-2$ Integrationsdreiecke. Weil das Polygon konvex
-ist, ist diese Triangle-Fan-Zerlegung immer gültig. Im 2D-Fall reduziert sich das Ganze auf einen
+(\code{triangulate\_polygon}): ein $n$-Eck ergibt $n-2$ Integrationsdreiecke. Da der Schnitt zweier
+konvexer Polygone konvex ist, liegen die Fächerdreiecke stets innerhalb des Polygons. Im 2D-Fall reduziert sich das Ganze auf einen
 1D-Intervallschnitt (\code{clip\_1d\_segments}). Das Vorgehen entspricht MOOSEs
 \code{AutomaticMortarGeneration}.
 
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[>=Latex,line join=round,font=\scriptsize,scale=1.02]
+  \begin{scope}
+    \begin{scope}\clip (0,0) rectangle (2.6,1.8);
+      \fill[uibkgray,opacity=0.55] (0.9,0.55)--(3.2,1.0)--(2.7,2.5)--(0.45,2.0)--cycle;
+    \end{scope}
+    \draw[uibkblue,thick] (0,0) rectangle (2.6,1.8);
+    \draw[uibkorange,thick] (0.9,0.55)--(3.2,1.0)--(2.7,2.5)--(0.45,2.0)--cycle;
+    \node[uibkblue] at (0.5,0.28){Slave};
+    \node[uibkorange] at (2.55,2.25){Master};
+    \node[align=center] at (1.3,-0.75){projiziert,\\ überlappend};
+  \end{scope}
+  \draw[->,ultra thick,uibkgray] (3.5,0.9)--(4.4,0.9);
+  \begin{scope}[shift={(5.1,0)}]
+    \begin{scope}\clip (0,0) rectangle (2.6,1.8);
+      \clip (0.9,0.55)--(3.2,1.0)--(2.7,2.5)--(0.45,2.0)--cycle;
+      \fill[uibkgray,opacity=0.55] (-1,-1) rectangle (4,4);
+    \end{scope}
+    \draw[uibkblue,thin,densely dotted] (0,0) rectangle (2.6,1.8);
+    \draw[uibkorange,thin,densely dotted] (0.9,0.55)--(3.2,1.0)--(2.7,2.5)--(0.45,2.0)--cycle;
+    \node[align=center] at (1.3,-0.75){geclippt,\\ Slave\,$\cap$\,Master};
+  \end{scope}
+  \draw[->,ultra thick,uibkgray] (8.6,0.9)--(9.5,0.9);
+  \begin{scope}[shift={(10.2,0)}]
+    \coordinate (V0) at (0.90,0.55);
+    \coordinate (V1) at (2.60,0.883);
+    \coordinate (V2) at (2.60,1.80);
+    \coordinate (V3) at (0.512,1.80);
+    \fill[uibkgray,opacity=0.30] (V0)--(V1)--(V2)--(V3)--cycle;
+    \draw[uibkgray,very thick] (V0)--(V1)--(V2)--(V3)--cycle;
+    \draw[uibkorange,thick] (V0)--(V2);
+    \node[align=center] at (1.3,-0.75){trianguliert\\ (Integrationsdreiecke)};
+  \end{scope}
+\end{tikzpicture}
+\caption[Projektion, Clipping und Triangulierung]{Verschneidung eines Kandidatenpaars in der
+Hilfsebene: links die beiden projizierten Polygone, in der Mitte ihr Durchschnitt nach dem
+Sutherland--Hodgman-Clipping, rechts dessen Fächer-Zerlegung in Integrationsdreiecke. Die
+dargestellten Flächen sind exakte Schnitte der gezeichneten Polygone. Auf jedem Dreieck steht
+anschließend die Quadraturregel aus Abbildung~\ref{fig:dunavant}; ihre Gauß-Punkte werden in die
+Naturkoordinaten beider Elemente zurückabgebildet, sodass die Krümmung der Facetten ausschließlich
+über die Formfunktionsauswertung eingeht, nie über die geraden Clip-Kanten.}
+\label{fig:clipping}
+\end{figure}
+
 % =====================================================================
-\section{Segmentbasierte Quadratur: warum Genauigkeitsgrad 5}
+\section{Segmentbasierte Quadratur}
 \label{sec:quadratur}
 
 Nach dem Clipping (Abschnitt~\ref{sec:geometrie}) liegt die Überlappung eines Slave--Master-Paars
 als Menge ebener Integrationsdreiecke (3D) bzw.\ Teilstrecken (2D) vor. Auf diesen wird integriert.
-Dieser Abschnitt beantwortet die zentrale Frage der Präsentation (Folie~7): \emph{Warum verwendet
-der Code Genauigkeitsgrad~5 -- konkret die 7-Punkt-Dreiecksregel im 3D-Fall?} Die Antwort hat drei
-Schichten: (i)~warum überhaupt \emph{segment}basiert integriert wird, (ii)~warum der effektive
-Integrationsgrad \emph{über} das nominelle Formfunktionsprodukt angehoben werden muss, und
-(iii)~woher die konkrete 7-Punkt-Regel stammt.
+Der Abschnitt begründet die Wahl der Quadratur in drei Schritten: die Notwendigkeit einer
+\emph{segment}basierten statt einer elementbasierten Integration, die daraus folgende Anhebung des
+effektiven Integrationsgrades über das nominelle Formfunktionsprodukt hinaus, und die Herkunft der
+im 3D-Fall verwendeten 7-Punkt-Regel vom Genauigkeitsgrad~5.
 
 \subsection{Notwendigkeit der segmentbasierten Integration}
 Die Mortar-Matrizen $\bm D,\bm M$ (Abschnitt~\ref{sec:koppelmatrizen}) enthalten unter dem Integral
@@ -402,6 +555,23 @@ Gauß-Punkte sind identisch, die Gewichte dort ($9/80,\ (155\mp\sqrt{15})/2400$,
 statt~$1$) sind bereits mit der Referenzdreiecksfläche~$\tfrac12$ verrechnet, sodass das Produkt
 $w\cdot J_{\text{cell}}$ und damit die Regel unverändert bleibt.
 
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=3.0,font=\scriptsize]
+  \coordinate(A)at(0,0);\coordinate(B)at(1,0);\coordinate(C)at(0.5,0.866);
+  \fill[uibkbluel,opacity=0.55](A)--(B)--(C)--cycle;
+  \draw[uibkblue,thick](A)--(B)--(C)--cycle;
+  \foreach \px/\py in {0.5/0.289, 0.5/0.691, 0.849/0.087, 0.151/0.087,
+                       0.5/0.052, 0.295/0.407, 0.705/0.407}
+    \fill[uibkorange] (\px,\py) circle (1.3pt);
+\end{tikzpicture}
+\caption[7-Punkt-Regel vom Genauigkeitsgrad 5 auf dem Referenzdreieck]{Die 7-Punkt-Regel vom
+Genauigkeitsgrad~5 auf dem Referenzdreieck \citep{dunavant1985}: ein Schwerpunktpunkt und zwei
+Dreiergruppen auf den Seitenhalbierenden. Alle Punkte liegen im Inneren und alle Gewichte sind
+positiv -- die beiden Eigenschaften, die diese Regel für die Segmentquadratur auszeichnen.}
+\label{fig:dunavant}
+\end{figure}
+
 \subsection{Der zweidimensionale Fall}
 Im 2D-Fall wird pro geclipptem Liniensegment eine 3-Punkt-Gauß--Legendre-Regel auf $[-1,1]$ mit
 Punkten $\xi\in\{0,\pm\sqrt{0.6}\}$ und Gewichten $\{5/9,8/9,5/9\}$ eingesetzt
@@ -431,14 +601,29 @@ Summenform nach \citealt[Alg.~1, S.~215]{farah2015}):
 \section{Koppelmatrizen $\bm D,\bm M$ und gewichteter Spalt}
 \label{sec:koppelmatrizen}
 
-Dieser Abschnitt leitet die diskreten Mortar-Koppelmatrizen und den gewichteten Spalt her -- die
-Größen der Präsentation (Folie~8), die am Ende der Segmentquadratur stehen.
+Dieser Abschnitt leitet die diskreten Mortar-Koppelmatrizen und den gewichteten Spalt her, die am
+Ende der Segmentquadratur stehen.
+
+\medskip
+\noindent\emph{Notationskonvention.} In der Literatur trägt die Slave--Master-Koppelmatrix das
+Symbol $\bm M$. Im Quelltext heißt dieselbe Matrix \code{C}, da der Bezeichner \code{M} dort für die
+lokale Biorthogonalitäts-Massenmatrix $\bm M_t$ aus \eqref{eq:Ae} reserviert ist. Dieses Dokument
+folgt der Literatur und schreibt durchgehend $\bm D$ (Slave--Slave) und $\bm M$ (Slave--Master); an
+den Codestellen wird auf den Bezeichner \code{C} hingewiesen.
 
 \subsection{Entstehung von $\bm D$ und $\bm M$}
+In den folgenden Ausdrücken bezeichnet $\Phi_j$ die \emph{duale} Formfunktion des
+Multiplikatorraums am Slave-Knoten $j$. Ihre definierende Eigenschaft -- die Biorthogonalität zu
+den Slave-Formfunktionen $N_k^{(1)}$ -- und ihre elementlokale Konstruktion werden in
+Abschnitt~\ref{sec:dual} behandelt; für die Herleitung dieses Abschnitts genügt, dass $\Phi_j$ auf
+der Slave-Fläche lebt und dort den Multiplikator interpoliert. Die Wahl gerade dieses Raums ist
+erst für die Struktur von $\bm D$ wesentlich, nicht für seine Definition.
+
 Man diskretisiert die Kontakttraktion mit dem dualen Multiplikatorfeld
-$\bm\lambda_h = \sum_j \Phi_j\,\bm z_j$ (allgemeine Vektorform; auf Branch \code{0\_mortarcontact}
-wird davon nur die Normalkomponente $\bm z_j\!\cdot\!\bm n_j=\lambda_j$ instanziiert, s.\
-Geltungsbereich) und die Geometrie beider Seiten mit den jeweiligen
+$\bm\lambda_h = \sum_j \Phi_j\,\bm z_j$ (allgemeine Vektorform; instanziiert wird davon nur die
+Normalkomponente $\bm z_j\!\cdot\!\bm n_j=\lambda_j$, also ein skalarer Freiheitsgrad je
+Slave-Knoten und nicht $\dim$; die Tangentialkomponenten würden erst mit Coulomb-Reibung physikalisch
+aktiv) und die Geometrie beider Seiten mit den jeweiligen
 Standard-Formfunktionen $N^{(1)},N^{(2)}$ und setzt beides in die Kontakt-Virtuelle-Arbeit ein.
 Sortiert man nach den Knotenbeiträgen um, treten genau zwei Matrizen auf -- die \emph{Mortar-Matrizen}
 (\citealp[Gl.~(3.34)--(3.36)]{farah}; \citealp[Gl.~(3.5)--(3.6)]{popp2012}; \citealp[Gl.~(35)/(36)]{poppgeewall2009}):
@@ -501,7 +686,7 @@ er summiert über alle Einträge der Zeile~$j$ mit $|D_{jk}|>10^{-14}$.
 \ldots\ Nevertheless, it is utilized as node-wise measure''}). Der tiefere Grund für die schwache
 Auswertung liegt in der Ungleichungsnatur der Nichtdurchdringung in Kombination mit
 Formfunktionen höherer Ordnung: eine punktweise (starke) Durchsetzung ist damit nicht konsistent
-behandelbar~\cite[S.~B429]{popp2012}. Die knotenweisen HSM-Bedingungen lauten dann
+behandelbar~\citep[S.~B429]{popp2012}. Die knotenweisen HSM-Bedingungen lauten dann
 $\tilde g_{n,j}\ge0,\; \lambda_{n,j}\ge0,\; \lambda_{n,j}\tilde g_{n,j}=0$
 (\citealp[Gl.~(3.7)]{popp2012}; \citealp[Gl.~(3.41)]{farah}) -- die diskrete Fassung von \eqref{eq:kkt}.
 
@@ -590,8 +775,7 @@ ist $\bm T_e=\bm I$.
 Für quadratische Kontaktelemente ist die direkte duale Basiskonstruktion aus
 Abschnitt~\ref{sec:dual} nicht unmittelbar brauchbar. Dieser Abschnitt begründet dies, leitet die
 Abhilfe -- eine Basistransformation -- her und diskutiert die Wahl des Transformationsparameters
-$\alpha$ einschließlich der begründeten Abweichung von der Literaturempfehlung
-(vgl.\ Präsentation, Folie~9).
+$\alpha$ einschließlich der begründeten Abweichung von der Literaturempfehlung.
 
 \subsection{Verlust der Integral-Positivität bei quadratischen Formfunktionen}
 An die Multiplikator-Formfunktionen wird die \emph{Integral-Positivität} gestellt
@@ -729,7 +913,7 @@ sie hat Vorrang vor der exakten Linearreproduktion von $\alpha=\tfrac15$. Dies d
 Begründung ``numerische Erfahrung'' (\citealp[Gl.~(6.20)]{farah}).
 \end{quote}
 
-\subsection{Sonderfall CONQUAD9: warum die Literaturbegründung hier nicht ganz reicht}
+\subsection{Sonderfall CONQUAD9: Reichweite der Literaturbegründung}
 \label{sec:quad9}
 
 \paragraph{Was die Literatur sagt.} Für das biquadratische Lagrange-Element sind die
@@ -744,7 +928,7 @@ the case of quad9 surfaces}, because the corresponding shape functions $N_j$ alr
 \end{quote}
 Nach diesem Kriterium ist für CONQUAD9 nichts zu tun -- und genau so ist es implementiert.
 
-\paragraph{Warum das hier nicht die ganze Geschichte ist.} Die Bedingung \eqref{eq:intpos} bezieht
+\paragraph{Geltungsbereich der Bedingung.} Die Bedingung \eqref{eq:intpos} bezieht
 sich auf das Integral über das \emph{ganze} Element. In der segmentbasierten Formulierung dieses
 Codes wird aber über die \emph{tatsächliche Überlappungsfläche} integriert (konsistente
 Randbehandlung, Abschnitt~\ref{sec:alphachoice}); maßgeblich ist dann
@@ -765,7 +949,7 @@ Für CONQUAD8 tritt das nicht auf: dort macht gerade die Transformation mit $\al
 Basis punktweise nichtnegativ -- das war die Begründung in Abschnitt~\ref{sec:alphachoice}. Für
 CONQUAD9 gibt es in diesem Code keine entsprechende Absicherung.
 
-\paragraph{Was ``voll überdeckt'' genau heißt.} Maßgeblich ist die \emph{Vereinigung aller}
+\paragraph{Präzisierung des Begriffs der vollen Überdeckung.} Maßgeblich ist die \emph{Vereinigung aller}
 Überlappungssegmente einer Slave-Facette, nicht die Zuordnung zu einem einzelnen Master-Element.
 Deckt diese Vereinigung die Facette vollständig, so ist $\int_{\gamma_c^{\text{ovl}}}\tilde N_j
 = \int_{\text{ele}}\tilde N_j$ -- also das Voll-Element-Integral und damit positiv, \emph{gleich
@@ -784,7 +968,7 @@ genau die drei Knoten auf der freiliegenden Kante. Eine Lücke in der \emph{Elem
 dagegen negative Anteile und vergrößert die Gewichte sogar -- bei $80\,\%$ Überdeckung mit einer
 mittigen Lücke bleibt das kleinste Gewicht bei $+0{,}0276$.
 
-\paragraph{Warum die konsistente Randbehandlung das nicht löst.} Naheliegender Einwand: es ist doch
+\paragraph{Reichweite der konsistenten Randbehandlung.} Naheliegender Einwand: es ist doch
 gerade eine konsistente Randbehandlung nach \citet{cichosz} implementiert
 (Abschnitt~\ref{sec:dual}), die die dualen Koeffizienten auf dem tatsächlichen Überlappungsgebiet
 aufbaut. Sie leistet auch genau das, wofür sie gedacht ist: die Biorthogonalität gilt dort, wo
@@ -891,7 +1075,71 @@ CONLINE3 & $[0,2],\;[2,1]$ (2D-Analogon) \\
 Die Knoten $4$--$7$ (bzw.\ $3$--$5$) sind die Kantenmittelknoten; die Sub-Cells werden über sie
 aufgespannt.
 
-\subsection{Wie die Krümmung dennoch eingeht}
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=1.5,font=\scriptsize]
+  \coordinate(n0)at(0,0);\coordinate(n1)at(2,0);\coordinate(n2)at(2,2);\coordinate(n3)at(0,2);
+  \coordinate(n4)at(1,0);\coordinate(n5)at(2,1);\coordinate(n6)at(1,2);\coordinate(n7)at(0,1);
+  \fill[uibkbluel,opacity=0.7] (n4)--(n5)--(n6)--(n7)--cycle;
+  \fill[uibkorangel,opacity=0.7] (n0)--(n4)--(n7)--cycle;
+  \fill[uibkorangel,opacity=0.7] (n4)--(n1)--(n5)--cycle;
+  \fill[uibkorangel,opacity=0.7] (n5)--(n2)--(n6)--cycle;
+  \fill[uibkorangel,opacity=0.7] (n7)--(n6)--(n3)--cycle;
+  \draw[uibkgray,thin] (n4)--(n7) (n4)--(n5) (n5)--(n6) (n7)--(n6);
+  \draw[thick] (n0)--(n1)--(n2)--(n3)--cycle;
+  \foreach \n in {n0,n1,n2,n3} \fill[uibkblue] (\n) circle (1.4pt);
+  \foreach \n in {n4,n5,n6,n7} \fill[uibkorange] (\n) circle (1.4pt);
+  \node[below left] at (n0) {$0$};  \node[below right] at (n1) {$1$};
+  \node[above right] at (n2) {$2$}; \node[above left] at (n3) {$3$};
+  \node[below] at (n4) {$4$};       \node[right] at (n5) {$5$};
+  \node[above] at (n6) {$6$};       \node[left] at (n7) {$7$};
+\end{tikzpicture}
+\caption[Lineare Sub-Cell-Zerlegung eines CONQUAD8]{Zerlegung eines CONQUAD8 in lineare Sub-Cells
+nach \citet[Abb.~3]{puso2008}: vier Eck-Dreiecke (orange) und ein Mittel-Quad (blau). Eckknoten
+blau, Kantenmittelknoten orange. Geclippt wird auf diesen Sub-Cells, sodass ausschließlich gerade
+Kanten in die Schnittbildung eingehen. Konvex sein muss dabei nur das Mittel-Quad -- Dreiecke sind
+es stets.}
+\label{fig:subcells}
+\end{figure}
+
+\paragraph{Konvexitätsanforderung an die Sub-Cells.}
+Der Schnittalgorithmus stellt an seine beiden Argumente ungleiche Anforderungen. Das zu schneidende
+Polygon darf beliebig sein -- \citet[S.~33]{sutherland1974} halten fest, der Algorithmus sei
+``applicable to any polygon, convex or concave, planar or non-planar'' --, das \emph{Clip-Fenster}
+dagegen nicht: er schneidet ``against irregular \emph{convex} plane-faced volumes'' bzw.\ in zwei
+Dimensionen ``against irregular \emph{convex} windows'' \citep[S.~32]{sutherland1974}. Der Grund
+ist der Aufbau des Verfahrens als Folge von Halbebenenschnitten: jede Clip-Kante wird zur
+unbeschränkten Trenngeraden, und nur für ein konvexes Fenster ist der Durchschnitt dieser
+Halbebenen das Fenster selbst. Bei einer einspringenden (reflexen) Ecke entfernt die zugehörige
+Halbebene Gebiet, das zum Polygon gehört. Dieselbe Voraussetzung trägt die Fächer-Triangulierung
+ab einer festen Ecke, deren Dreiecke nur bei konvexem Polygon innerhalb desselben liegen.
+
+In der Segmentierung ist die \emph{Slave}-Sub-Zelle das Clip-Fenster (\file{mortarcontact.py},
+\code{sutherland\_hodgman\_clip(m\_sub\_2d, s\_sub\_2d)}); ihre Konvexität ist damit die zu sichernde
+Bedingung, die der Master-Sub-Zelle dagegen nicht. Dreiecke sind stets konvex, sodass die
+Anforderung allein das Mittel-Quad $[4,5,6,7]$ des CONQUAD8 und die vier Quads des CONQUAD9
+betrifft. Ihre Verletzung äußert sich nicht als Abbruch, sondern als Verlust an Integrationsgebiet:
+für ein konstruiertes reflexes Viereck fehlen zwei Drittel der Fläche
+(\file{02\_polygon\_clipping}).
+
+\paragraph{Zulässiger Verzerrungsbereich.}
+Der Abstand zur Verletzung lässt sich für die Referenzgeometrie geschlossen angeben und ist in
+\file{05\_quadratic\_segmentation} nachgerechnet. Für das CONQUAD8 auf dem Einheitsquadrat mit dem
+unteren Kantenmittelknoten bei $(\tfrac12,t)$ und den übrigen Mittelknoten in Sehnenmitte lautet
+das Kreuzprodukt an der zugehörigen Ecke des Mittel-Quads $\tfrac12-t$; das Quad ist also genau für
+$t<\tfrac12$ konvex, der Mittelknoten müsste den \emph{Elementmittelpunkt} überschreiten. Für das
+CONQUAD9 mit Zentralknoten bei $(s,s)$ ist die Sub-Zelle $[0,4,8,7]$ für $s>\tfrac14$ konvex, der
+Zentralknoten müsste also bis auf ein Viertel der Kantenlänge an eine Ecke rücken. Innerhalb dieser
+Schranken stimmt die integrierte mit der geometrischen Sub-Cell-Fläche bis auf $10^{-10}$ überein;
+jenseits davon fehlen $1{,}3\,\%$ bei $t=0{,}51$, $12{,}5\,\%$ bei $t=0{,}8$ und $4{,}3\,\%$ bei
+$s=0{,}15$.
+
+Beide Schranken liegen jenseits der Verzerrung, bei der die Jacobi-Determinante des zugehörigen
+Volumenelements ihr Vorzeichen wechselt; für zulässige Netze ist die Bedingung damit erfüllt. Da
+ihre Verletzung sich den Ergebnissen nicht ansehen lässt, prüft die Segmentierung die Konvexität
+der Slave-Sub-Zelle zur Laufzeit und meldet sie (Abschnitt~\ref{sec:implnotes}).
+
+\subsection{Eingang der Krümmung über die Formfunktionsauswertung}
 Wesentlich: die Zerlegung betrifft \emph{nur} das Integrationsgebiet (die Clip-Geometrie), \emph{nicht}
 die Feldinterpolation. Über affine Abbildungen zwischen Sub-Segment- und Eltern-Element-Parameterraum
 (\citealp[Gl.~(31)/(32)]{puso2008}) werden an den Gauß-Punkten weiterhin die \emph{vollen}
@@ -950,7 +1198,7 @@ festgehalten (\file{mortarcontact.py:\allowbreak{}721--756}). Die Formulierung i
 \emph{gestaffelte} (staggered) Behandlung der Geometrienichtlinearität. Das hat zwei
 Konsequenzen, die sauber auseinandergehalten werden müssen.
 
-\paragraph{(1) Die Tangente ist exakt -- für das eingefrorene Residuum.}
+\paragraph{(1) Exaktheit der Tangente bezüglich des eingefrorenen Residuums.}
 Behandelt man $\bm n_I,\bm D,\bm M$ innerhalb des Increments als Konstanten, so ist die
 assemblierte Steifigkeit die \emph{exakte} Jacobi-Matrix des assemblierten Residuums. Das ist
 numerisch belegt: Test~09 (\file{09\_consistent\_tangent}) vergleicht $\bm K$ mit zentralen
@@ -963,9 +1211,9 @@ und erhält
 für flache, geneigte und gekrümmte Interfaces, für lineare und quadratische Elemente sowie für
 gemischt aktive/inaktive Active Sets (also beide Zweige der NCP gleichzeitig). Damit ist die
 Voraussetzung für die Newton-Konvergenz innerhalb des Increments erfüllt
-(Abschnitt~\ref{sec:solve}).
+(Abschnitt~\ref{sec:loesung}).
 
-\paragraph{(2) Die geometrische Linearisierung fehlt -- und sie ist nicht klein.}
+\paragraph{(2) Fehlende geometrische Linearisierung und ihre Größenordnung.}
 Die Ableitungen der Geometrie selbst, $\partial\bm D/\partial\bm x$,
 $\partial\bm M/\partial\bm x$ und $\partial\bm n_I/\partial\bm x$, sind in $\bm K$
 \textbf{nicht} enthalten. Ihre Größe lässt sich mit demselben Test messen: differenziert man
@@ -978,9 +1226,9 @@ Kontaktkraft ist $\lambda_I\bm D[I,K]\bm n_I$, folglich ist
 $\partial\bm f_c/\partial\bm x\sim\lambda\,\partial\bm D/\partial\bm x$ von der Ordnung
 $\bm D$ geteilt durch eine Elementlänge. Es handelt sich also \emph{nicht} um einen
 vernachlässigbaren Zusatzterm, sondern um eine bewusste Auslassung
-(Ausblick, Abschnitt~\ref{sec:ausblick}).
+(Ausblick, Abschnitt~\ref{sec:ausblick:lin}).
 
-\paragraph{Was das jeweils kostet.} Die beiden Punkte wirken sich unterschiedlich aus:
+\paragraph{Auswirkung der beiden Punkte.} Die beiden Punkte wirken sich unterschiedlich aus:
 \begin{itemize}\itemsep2pt
   \item Fehlende Terme \emph{in $\bm K$} ändern das \textbf{Ergebnis nicht}. Konvergiert das
         Newton-Verfahren, so ist das Residuum null -- unabhängig davon, mit welcher Matrix man
@@ -1007,8 +1255,8 @@ flächeneigene Normale. Für glatte Kontaktflächen ist es ohnehin unkritisch.
 \label{sec:ncp}
 
 Die diskreten Kontaktbedingungen \eqref{eq:kkt} sind Ungleichungen mit Fallunterscheidung
-(Kontakt / offen). Dieser Abschnitt fasst sie in \emph{eine} nichtglatte Gleichung -- die
-NCP-Funktion (Folie~11) -- und begründet ihre Lösung per Active-Set/semismooth Newton.
+(Kontakt / offen). Dieser Abschnitt fasst sie in \emph{eine} nichtglatte Gleichung, die
+NCP-Funktion, und begründet ihre Lösung per Active-Set/semismooth Newton.
 
 \subsection{Von den KKT-Bedingungen zur NCP-Funktion}
 Die knotenweisen Hertz--Signorini--Moreau-Bedingungen
@@ -1112,11 +1360,11 @@ $\sim10^{-3}\!\to\!10^{-8}\!\to\!10^{-11}$ nach Fixierung). Dort ist das die Fol
 Konvergenz zu erwarten ist. Was hier exakt ist, ist die Tangente des \emph{eingefrorenen}
 Residuums (\eqref{eq:fdcheck}). Das Set-Stabilitäts-Kriterium selbst ist umgesetzt und
 zusätzlich per Anti-Cycling (Bland-Regel) gegen Zustandswiederholung abgesichert
-(\file{mortarcontact.py:\allowbreak{}841--867}; siehe Abschnitt~\ref{sec:solve}).
+(\file{mortarcontact.py:\allowbreak{}841--867}; siehe Abschnitt~\ref{sec:loesung}).
 
 % =====================================================================
 \section{Lösungsstrategie: Newton-Ablauf und Active-Set}
-\label{sec:solve}
+\label{sec:loesung}
 
 \subsection{Sattelpunkt-Struktur}
 Auf Branch \code{0\_mortarcontact} sind die Lagrange-Multiplikatoren \emph{explizite} zusätzliche
@@ -1153,9 +1401,24 @@ bestimmt (\file{mortarcontact.py:\allowbreak{}797--839}). Pro Knoten gibt es zwe
 \end{itemize}
 Die äußere Iteration ist konvergiert, sobald sich das Set nicht mehr ändert (PDASS-Kriterium,
 \citealp{hueber2005}). Gegen \emph{Zyklen} (abwechselnde Active-Set-Zustände) sichert eine
-Anti-Cycling-Regel im Sinne von Bland: bei erneutem Besuch eines bereits gesehenen Zustands wird das
-Set eingefroren (\file{mortarcontact.py:\allowbreak{}841--867}); eine harte Obergrenze von 20 Iterationen dient als
-Sicherheitsnetz.
+Anti-Cycling-Regel nach dem Vorbild der Bland'schen Pivotregel der linearen Optimierung: da es nur
+endlich viele Active-Set-Zustände gibt, ist der erneute Besuch eines bereits aufgetretenen Zustands
+nach einer Änderung der Nachweis eines Zyklus, und das Set wird eingefroren
+(\file{mortarcontact.py:\allowbreak{}841--867}). Als dritter, unbedingter Abbruch dient eine
+Obergrenze von $20$ Iterationen.
+
+\paragraph{Statistik der drei Auslöser.}
+Die drei Abbruchgründe sind nicht gleichwertig: nur das PDASS-Kriterium bestätigt, dass das Set sich
+gesetzt hat; die Anti-Cycling-Regel bricht einen nachgewiesenen Zyklus ab, und die Obergrenze bricht
+eine noch laufende Suche ab. Über die \file{Control\_Tests}-Reihe und die Patch-Tests ($251$
+Inkremente) friert das Set ausschließlich über das PDASS-Kriterium ein ($111$ Fälle), weder über
+die Anti-Cycling-Regel noch über die Obergrenze; die höchste auftretende Iterationszahl beträgt
+$11$ bei einer Schranke von $20$. Im Ausziehversuch (Abschnitt~\ref{sec:testbeispiel}) greift die
+Obergrenze dagegen in $3{,}5\,\%$ (hex8) bzw.\ $4{,}6\,\%$ der Inkremente (hex20) bei bis zu $26$
+Iterationen. Für die betroffenen Inkremente ist die Zulässigkeit der Lösung im Sinne der
+Signorini-Bedingungen nicht durch das Verfahren garantiert, sondern nachzuweisen; Test~10 leistet
+das für ein konvergiertes Modell und weist zugleich aus, ob das Set des letzten Increments über die
+Obergrenze eingefroren wurde.
 
 % =====================================================================
 \section{Implementierungsdetails und bekannte Einschränkungen}
@@ -1168,7 +1431,7 @@ Annahmen. Sie sind hier vollständig benannt, damit klar ist, worauf man sich ve
 \subsection{Vorzeichenbehandlung bei negativem Knotengewicht}
 \label{sec:sgnd}
 
-\paragraph{Wofür dieser Code da ist -- in einem Satz.}
+\paragraph{Zweck der Fallunterscheidung.}
 Im Aktivierungstest steht an mehreren Stellen der Faktor $\mathrm{sgn}(\tilde D_{jj})$ bzw.\ eine
 Division durch $\tilde D_{jj}$. Wer den Code liest, ohne den Hintergrund zu kennen, hält das
 leicht für überflüssig, denn $\tilde D_{jj}$ ist normalerweise positiv. Der Grund: \textbf{bei
@@ -1179,7 +1442,7 @@ fälschlich freigegeben oder -- schlimmer -- bei offenem Spalt aktiv gehalten un
 verkleben, sodass der ``Kontakt'' Zug überträgt. Für alle anderen Elementtypen ist
 $\mathrm{sgn}(\tilde D_{jj})=+1$ und der gesamte Abschnitt wirkungslos.
 
-\paragraph{Warum die Vorzeichen überhaupt am Gewicht hängen.}
+\paragraph{Abhängigkeit der Vorzeichen vom Knotengewicht.}
 Der Active-Set-Test \eqref{eq:indicator_code} vergleicht zwei Größen, deren Vorzeichen jeweils eine
 physikalische Bedeutung tragen: $p_{n,j}\ge0$ heißt Druck, $g_{\text{sep},j}>0$ heißt offener
 Spalt. Beide Zuordnungen sind über $\tilde D_{jj}=\sum_k D_{jk}=\int\Phi_j\,\mathrm d\gamma$
@@ -1197,8 +1460,8 @@ set strategy.'' \hfill \citep[Abschn.~4.3]{popp2012}
 Für CONQUAD4/8, CONTRI3/6 und CONLINE2/3 ist $\tilde D_{jj}>0$ durch die Basistransformation
 gesichert (Abschnitt~\ref{sec:basistrafo}); für das voll-Lagrange'sche CONQUAD9 bei
 Teilüberdeckung ist es das \emph{nicht} (Abschnitt~\ref{sec:quad9}). Der Code muss den Fall daher
-abfangen. Die folgende Herleitung zeigt, wie -- und wo dabei ein Vorzeichenfehler naheliegt, der in
-einer früheren Fassung tatsächlich vorhanden war.
+abfangen. Die folgende Herleitung zeigt, wie, und an welcher Stelle dabei ein Vorzeichenfehler
+naheliegt.
 
 \paragraph{Die beiden Vorzeichenregeln.}
 Sei $s_j:=\mathrm{sgn}(\tilde D_{jj})$. Zwei Beobachtungen legen die Umrechnung fest.
@@ -1236,28 +1499,33 @@ unabhängig vom Vorzeichen des Gewichts. Sie ist zugleich die in Abschnitt~\ref{
 Normierung, die $c_n\,g_{\text{sep},j}$ druckartig macht.
 
 \paragraph{Nur eine der beiden Größen wird umgerechnet.}
-Das ist der Punkt, an dem man sich leicht vertut: \eqref{eq:pn} braucht den Faktor $s_j$,
-\eqref{eq:gsep} braucht ihn \emph{nicht} -- er steckt bereits in $\tilde D_{jj}$. Multipliziert man
-zusätzlich mit $s_j$, so erhält man $\tilde g_j/|\tilde D_{jj}|$, das Vorzeichen ist doppelt
-gedreht, und ein offener Knoten wird als durchdringend gelesen. Genau dieser Fehler steckte in
-einer früheren Fassung des Codes; er wurde behoben und ist seither durch einen Regressionstest
-abgesichert (Abschnitt~\ref{sec:verif}, \file{06\_active\_set\_pdass}): ein CONQUAD9 mit
-$70\,\%$ Überdeckung erzeugt drei Knoten mit $\tilde D_{jj}<0$ (bis $-0{,}0109$); wird der Master
-um bis zu $0{,}2$ von der Slave-Fläche weggezogen, müssen sie bei $\lambda_j=0$ \emph{inaktiv}
-sein, bei Durchdringung dagegen aktiv werden. Vor der Korrektur blieben sie durchgehend aktiv,
-erzwangen dort $\tilde g_j=0$ und verklebten die Flächen -- der Kontakt konnte Zug übertragen.
-Für $\tilde D_{jj}>0$ ist der korrigierte Indikator mit dem vorherigen identisch, weshalb sich an
-allen übrigen Ergebnissen nichts ändert.
+Die beiden Regeln sind nicht symmetrisch: \eqref{eq:pn} trägt den Faktor $s_j$, \eqref{eq:gsep}
+trägt ihn \emph{nicht}, da er bereits in $\tilde D_{jj}$ enthalten ist. Eine zusätzliche
+Multiplikation mit $s_j$ ergäbe $\tilde g_j/|\tilde D_{jj}|$, also ein doppelt gedrehtes
+Vorzeichen, und ein offener Knoten würde als durchdringend gelesen. Ein so verfälschter Indikator
+hält die betroffenen Knoten dauerhaft aktiv, erzwingt dort $\tilde g_j=0$ und verklebt die Flächen,
+sodass der Kontakt Zug überträgt -- also genau das Verhalten, vor dem \citet[Abschn.~4.3]{popp2012}
+im obigen Zitat warnen. Für $\tilde D_{jj}>0$ stimmen beide Varianten überein; die Unterscheidung
+wird ausschließlich bei negativem Knotengewicht wirksam und ist deshalb nur an Konfigurationen
+sichtbar, die solche Gewichte erzeugen.
 
-\paragraph{Was die Umrechnung nicht leistet.}
+Der Regressionstest in \file{06\_active\_set\_pdass} (Abschnitt~\ref{sec:verif}) prüft die Regel an
+einem CONQUAD9 mit $70\,\%$ Überdeckung, das drei Knoten mit $\tilde D_{jj}<0$ bis $-0{,}0109$
+aufweist: bei einer Öffnung des Masters bis $0{,}2$ müssen diese Knoten bei $\lambda_j=0$
+\emph{inaktiv} bleiben, bei Durchdringung dagegen aktiv werden.
+
+\paragraph{Reichweite der Vorzeichenbehandlung.}
 Sie stellt die Vorzeichen richtig, sie macht $\tilde D_{jj}<0$ aber nicht ungeschehen. Der
 gewichtete Spalt bleibt an einem solchen Knoten ein Mittel mit teilweise negativen Gewichten und
 verliert damit seine Deutung als mittlere Öffnung; er kann positiv sein, während Teile der Facette
 durchdringen. Die Vorzeichenbehandlung ist also eine Absicherung, kein Ersatz für die
 Integral-Positivität. Die praktische Konsequenz steht in Abschnitt~\ref{sec:basistrafo}: für
-quadratische Flächen CONQUAD8 verwenden, CONQUAD9 nur bei voller Überdeckung.
+quadratische Flächen CONQUAD8 verwenden, CONQUAD9 nur bei voller Überdeckung -- mit der im
+folgenden Abschnitt vermessenen Einschränkung, dass auch CONQUAD8 seine Positivitätsgarantie
+verliert, sobald der Rückfallpfad greift.
 
 \subsection{Rückfallpfad für entartete Überlappungen}
+\label{sec:sliver}
 Die dualen Koeffizienten werden auf dem tatsächlichen Integrationsgebiet gebildet
 (Abschnitt~\ref{sec:dual}), also aus $\bm M_t$ und $\bm D_t$ der Segmentquadratur. Bei sehr
 schmalen Überlappungen (\emph{slivers}) wird $\bm M_t$ nahezu singulär und $\bm A_e$ unbrauchbar.
@@ -1265,6 +1533,49 @@ Der Code prüft daher die Konditionszahl und fällt bei $\mathrm{cond}(\bm M_t)\
 \emph{Referenzelement}-Koeffizienten aus \eqref{eq:Ae} zurück
 (\file{mortarcontact.py:\allowbreak{}670--673}). Für diese Zellen gilt die Biorthogonalität dann
 nur auf dem Voll-Element, nicht auf der Überlappung.
+
+\paragraph{Häufigkeit des Rückfallpfads.}
+Über die \file{Control\_Tests}-Reihe und die Patch-Tests -- $251$ Inkremente mit $3\,989$
+ausgewerteten Slave-Elementen; \file{POT\_Dejori} ist nicht Teil dieser Auswertung -- wird der Pfad
+viermal betreten, ausschließlich in den beiden gekrümmten Hertz-Modellen mit CONQUAD8 und dort mit
+$\mathrm{cond}(\bm M_t)$ bis $2{,}8\cdot10^{24}$. Er ist damit kein bloß theoretischer Zweig,
+sondern an gekrümmten Kontakträndern mit wandernder Kontaktzone der Normalfall.
+
+\paragraph{Konsequenz für die Knotengewichte.}
+Die Positivität $\tilde D_{jj}\ge0$ für CONQUAD8 beruht darauf, dass auf dem konsistenten Weg
+$\tilde D_{jj}=\int_{\text{Überlappung}}\tilde N_j$ gilt und die transformierte Basis $\tilde N_j$
+punktweise nicht-negativ ist (Abschnitt~\ref{sec:basistrafo}); das Integral einer nicht-negativen
+Funktion über ein beliebiges Teilgebiet bleibt nicht-negativ. Auf dem Rückfallpfad steht an dieser
+Stelle $\int_{\text{Überlappung}}\Phi_j^{\text{ref}}$ mit den dualen Funktionen des
+\emph{Voll}-Elements. Diese sind punktweise vorzeichenwechselnd: ihre definierende Eigenschaft ist
+die Biorthogonalität \eqref{eq:biorth} über das \emph{ganze} Element, nicht Nicht-Negativität. Das
+Integral über ein Teilgebiet kann daher jedes Vorzeichen annehmen. Die Positivitätsaussage ist damit an den konsistenten
+Weg gebunden und gilt auf dem Rückfallpfad für CONQUAD8 ebenso wenig wie für CONQUAD9. Ein
+CONQUAD8-Paar mit schrumpfender Überdeckung zeigt den Übergang:
+
+\begin{center}
+\small
+\begin{tabular}{rccr}
+\toprule
+Überdeckung & Rückfall & $\min_j\tilde D_{jj}$ & $\min_j\tilde D_{jj}/\max_j|\tilde D_{jj}|$ \\
+\midrule
+$1{,}0\cdot10^{-1}$ & nein & $+3{,}9\cdot10^{-4}$ & $+0{,}011$ \\
+$1{,}0\cdot10^{-2}$ & nein & $+2{,}9\cdot10^{-6}$ & $+0{,}001$ \\
+$1{,}0\cdot10^{-3}$ & \textbf{ja} & $-1{,}8\cdot10^{-3}$ & $-1{,}000$ \\
+$1{,}0\cdot10^{-5}$ & \textbf{ja} & $-1{,}8\cdot10^{-5}$ & $-1{,}000$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Der Übergang ist scharf und fällt mit dem Umschalten des Rückfallpfads zusammen. In den
+Hertz-Modellen treten dadurch in $5$ von $251$ Inkrementen insgesamt $9$ Knoten mit
+$\tilde D_{jj}<0$ auf, im ungünstigsten Fall bei $-18\,\%$ des größten Gewichts. Die
+Vorzeichenbehandlung aus Abschnitt~\ref{sec:sgnd} deckt diesen Fall ab, sodass die Lösungen
+gültig bleiben; negative Knotengewichte sind damit aber keine Eigenheit des CONQUAD9, sondern
+eine Eigenschaft jeder Sliver-Zelle unabhängig vom Elementtyp. Die Konditionsschranke $10^{12}$
+tauscht demnach eine unbrauchbare Inverse gegen den Verlust der Integral-Positivität; beide
+Alternativen sind an einer entarteten Zelle unbefriedigend, und der Rückfall ist die numerisch
+robustere von beiden.
 
 \subsection{Implizite Annahmen der Nachbarsuche}
 Der Sicherheitsrand der AABB in der BVH-Suche ist
@@ -1275,19 +1586,107 @@ Suchaufwand; bei Facetten weit darüber ist der relative Term maßgeblich. Die S
 konservativ (sie liefert höchstens zu viele Kandidaten, die das Clipping anschließend verwirft),
 aber die Konstante ist keine dimensionslose Größe.
 
-\subsection{Rückabbildung der Gauß-Punkte}
-Die Newton-Iteration, die einen Ebenenpunkt in die Naturkoordinaten von Slave und Master
-zurückabbildet (Abschnitt~\ref{sec:quadratur}), läuft mit höchstens zehn Iterationen und einer
-Toleranz von $10^{-12}$; bei Nichterreichen der Toleranz wird der letzte Iterationswert ohne
-Warnung zurückgegeben (\file{mortarcontact.py:\allowbreak{}113--153}). Für die auftretenden,
-gutartig konditionierten Abbildungen konvergiert sie in wenigen Schritten; eine Diagnose bei
-Fehlschlag existiert nicht.
+\paragraph{Verhalten unter Skalierung der Längeneinheit.}
+Ein rein geometrisch skaliertes Randwertproblem -- Längen und vorgeschriebene Verschiebungen mit
+$k$ multipliziert, $E$ unverändert -- besitzt dieselben Dehnungen, Spannungen und Kontaktdrücke;
+nur die Verschiebungen skalieren mit $k$. Test~11 rechnet das Zwei-Block-Problem für
+$k\in\{10^{-3},1,10^{3}\}$ und bestätigt diese Invarianz: Spannungen und Multiplikatoren stimmen
+über die drei Skalen bis $10^{-13}$ überein. Die absoluten Toleranzen der Segmentierung wirken sich
+somit nicht auf die Lösung aus. Für $k=10^{-3}$ übersteigt der Suchrand die Facettengröße um den
+Faktor $200$; die BVH-Anfrage liefert dann nahezu alle Masterfacetten zurück und die Nachbarsuche
+entartet zur vollständigen Paarung mit $\mathcal O(n^2)$ Kandidatenpaaren. Die Konstante bestimmt
+also den Aufwand, nicht das Ergebnis.
 
-\subsection{Was der Constraint nicht prüft}
-Die Orientierung der Kontaktelement-Normalen wird \emph{nicht} verifiziert -- sie muss beim
+\paragraph{Dimension des Parameters $c_n$.}
+Im Indikator $s_{n,j}=p_{n,j}-c_n\,g_{\text{sep},j}$ ist $p_{n,j}$ eine Spannung, während
+$g_{\text{sep},j}$ nach \eqref{eq:gsep} eine Länge ist; $c_n$ trägt damit die Einheit
+Spannung/Länge. Das ist eine Folge der in Abschnitt~\ref{sec:ncp} beschriebenen Normierung mit
+$\tilde D_{jj}$, die in der Literaturform $s_{n,j}=p_{n,j}-c_n\,\tilde g_j$ nicht auftritt. Bei
+festgehaltenem $c_n$ verschiebt sich die Schaltschwelle daher mit der Längenskala. Die konvergierte
+Lösung bleibt davon unberührt, da $g_{\text{sep},j}\to0$ an aktiven Knoten und das Ergebnis somit
+$c_n$-unabhängig ist \citep[Abschn.~3.5.2]{farah}; Test~11 rechnet alle drei Skalen mit demselben
+$c_n=E$ und erhält übereinstimmende Ergebnisse. Betroffen ist allein der Iterationsverlauf, für
+den die Wahl $c_n\sim\mathcal O(E)$ auf die jeweilige Modellskala zu beziehen ist.
+
+\subsection{Rückabbildung der Gauß-Punkte}
+\label{sec:rueckabbildung}
+Die Rückabbildung eines Ebenenpunkts $\bm x_{\text{gp}}$ in die Naturkoordinaten von Slave und
+Master (Abschnitt~\ref{sec:quadratur}) ist die inverse isoparametrische Abbildung und wird als
+Newton-Verfahren für $\bm r(\bm\xi)=\bm N(\bm\xi)\,\bm x^{(e)}-\bm x_{\text{gp}}=\bm 0$ gelöst,
+mit höchstens zehn Schritten und der Schranke $10^{-12}$
+(\file{mortarcontact.py:\allowbreak{}113--153}).
+
+\paragraph{Abbruchkriterium.}
+Abgebrochen wird, sobald $\|\bm r\|<\text{tol}$ \emph{oder} $\|\Delta\bm\xi\|<\text{tol}$ erfüllt
+ist. Die zweite Bedingung ist die allgemeinere, denn ein Newton-Verfahren treibt das
+\emph{Inkrement} gegen null; das Residuum tut es nur dann ebenfalls, wenn das Gleichungssystem
+lösbar ist. Für Flächenelemente ist das der Fall: $\bm J=\partial\bm N/\partial\bm\xi\cdot\bm x^{(e)}$
+ist quadratisch und regulär, und beide Facetten sind in dieselbe Hilfsebene projiziert, sodass
+$\bm x_{\text{gp}}$ in der Elementebene liegt.
+
+Für die Linienelemente des 2D-Pfads gilt das nicht. Dort ist $\bm J\in\mathbb R^{1\times2}$, das
+System also überbestimmt, und der Schritt
+$\Delta\xi=(\bm J\bm J^{\!\top})^{-1}\bm J\,\bm r$ ist ein Gauß-Newton- bzw.
+Ausgleichsschritt, der auf die Orthogonalprojektion des Punkts auf das Element führt. Der
+Gauß-Punkt wird auf der \emph{Slave}-Linie erzeugt und in die Naturkoordinaten des \emph{Master}
+abgebildet; bei einem Spalt $g$ zwischen beiden ist der kleinste erreichbare Residuumsbetrag daher
+gerade $g$, während $\Delta\xi$ verschwindet. Ein reines Residuumskriterium wäre in diesem Fall
+unerfüllbar, obwohl die gesuchte Größe exakt vorliegt: für ein CONLINE2-Paar mit $g=0{,}02$ liefert
+der Mittelpunkt $\xi=0$ und der Viertelpunkt $\xi=-\tfrac12$ auf Maschinengenauigkeit. Das
+Inkrementkriterium ist zugleich das dimensionsfreie: $\bm\xi$ ist einheitenlos, $\|\bm r\|$ trägt
+die Längeneinheit des Modells (vgl.\ Abschnitt~\ref{sec:implnotes}, Absatz zur Skalierung).
+
+\paragraph{Grenzen.}
+Wird keine der beiden Schranken innerhalb von zehn Schritten erreicht, wird der letzte Iterationswert
+zurückgegeben. Für die hier auftretenden Abbildungen -- Facetten mit regulärer Jacobi-Matrix und
+Startwerten im Elementinneren -- konvergiert das Verfahren quadratisch und in wenigen Schritten; auf
+den Zwei-Block- und Hertz-Modellen wurde kein Fall beobachtet, in dem die Schranken nicht erreicht
+werden. Eine Diagnose für den Fehlschlag existiert nicht, da ein nicht konvergierter Wert sich von
+einem konvergierten nicht unterscheiden lässt, ohne die Iteration zu wiederholen.
+
+\subsection{Eingabeprüfungen und Laufzeitdiagnosen}
+Der Konstruktor weist Konfigurationen zurück, in denen Slave- und Masterfläche Knoten gemeinsam
+haben (Abschnitt~\ref{sec:ausblick:selbst}). Der Grund ist algebraisch: bei deckungsgleichen
+Facetten wird $\bm C=\bm D$ exakt, $\tilde g_j$ verschwindet für jede Konfiguration identisch, und
+die zugehörige $\lambda$-Zeile von $\bm K$ hebt sich auf, sobald ein solcher Knoten aktiv wird --
+das System ist dann singulär.
+
+Die Orientierung der Kontaktelement-Normalen wird dagegen \emph{nicht} verifiziert; sie muss beim
 Erzeugen der Overlay-Elemente korrekt gesetzt werden (Abschnitt~\ref{sec:inputfile}). Zeigt eine
-Slave-Facettennormale in den eigenen Körper hinein, so kehren sich Spalt- und Druckvorzeichen um,
-und der Kontakt zieht statt zu drücken.
+Slave-Facettennormale in den eigenen Körper, so kehren sich Spalt- und Druckvorzeichen um, und der
+Kontakt überträgt Zug statt Druck.
+
+\paragraph{Laufzeitdiagnosen.}
+Vier Zustände sind zulässig, aber tragen Voraussetzungen der Formulierung nicht mehr; sie werden
+zur Laufzeit gemeldet, je Constraint und Ursache einmal, da sie nach ihrem ersten Auftreten in
+jedem weiteren Increment wiederkehren:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{lX}
+\toprule
+Zustand & Verletzte Voraussetzung \\
+\midrule
+Nicht-konvexe Slave-Sub-Zelle & Konvexität des Clip-Fensters von Sutherland--Hodgman; das
+Integrationsgebiet wird zu klein (Abschnitt~\ref{sec:subcells}). \\
+$\mathrm{cond}(\bm M_t)\ge10^{12}$ & Biorthogonalität auf dem tatsächlichen Integrationsgebiet;
+es gilt nur noch die des Referenzelements (Abschnitt~\ref{sec:sliver}). \\
+$\tilde D_{jj}<0$ & Integral-Positivität nach \citet[Gl.~(4.2)]{popp2012}; der gewichtete Spalt
+verliert die Deutung als mittlere Öffnung (Abschnitt~\ref{sec:sgnd}). \\
+Active Set über die Obergrenze eingefroren & Konvergenz der semiglatten Iteration; die
+Signorini-Bedingungen sind für dieses Increment nicht garantiert
+(Abschnitt~\ref{sec:loesung}). \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent Die Ausgabe erfolgt über \code{warnings.warn} und nicht über das \code{Journal} des
+Rahmenwerks, da die Constraint-Schnittstelle den Constraints kein \code{Journal}-Objekt übergibt.
+Über die Testreihe hinweg spricht genau eine dieser Diagnosen an -- das negative Knotengewicht im
+Regressionsfall von \file{06\_active\_set\_pdass}, der eben diese Konfiguration erzeugt. Auf den
+Hertz-Modellen mit CONQUAD8 sprechen Sliver-Rückfall und negatives Knotengewicht gemeinsam an, was
+den in Abschnitt~\ref{sec:sliver} beschriebenen Zusammenhang bestätigt; auf den Modellen mit
+CONQUAD4 bleiben beide stumm.
 
 % =====================================================================
 \section{Verifikation}
@@ -1310,6 +1709,8 @@ Eigenschaft & Prüfung \\
 \textbf{Patch-Test 2D} & Bausteine \emph{und} Löser-Patch-Test: CPE4/CONLINE2 und CPE8/CONLINE3, je konform und nichtkonform (\file{07\_patch\_test\_2d}). \\
 \textbf{Patch-Test hex20} & 3D-Patch-Test mit CONQUAD8, vier Netz-/Ordnungskombinationen mit geraden Kanten plus eine verzerrte Variante (\file{08\_patch\_test\_hex20}). \\
 \textbf{Konsistente Tangente} & $\bm K$ gegen zentrale Differenzen des Residuums, alle Freiheitsgrade, beide NCP-Zweige (\file{09\_consistent\_tangent}). \\
+\textbf{Signorini-Bedingungen} & Nachprüfung der \emph{konvergierten} Lösung: $p_n\ge0$, $g_{\text{sep}}\ge0$, $p_n\,g_{\text{sep}}=0$ je Slave-Knoten, in Lastfällen mit arbeitendem Active Set (\file{10\_signorini\_check}). \\
+\textbf{Skaleninvarianz} & Dieselbe Rechnung über sechs Zehnerpotenzen der Längenskala, als Test aller absoluten Toleranzen (\file{11\_scale\_invariance}). \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -1379,40 +1780,12 @@ Gerechnet wird dasselbe Modell zweimal: einmal linear (\code{GC3D8} für den Bet
 Kontaktflächen mit gleicher Facettenzahl, und die Eckknoten stimmen auf Maschinengenauigkeit
 überein; das quadratische Netz hat lediglich zusätzliche Kantenmittelknoten.
 
-\subsection{Kalibrierung der Auflagerbettung}
-\label{sec:bettung}
-Die Auflager sind nicht starr, sondern als elastische Bettung über
-\code{directionalspringpenalty} abgebildet. Dabei ist eine Eigenschaft dieses Constraints
-wesentlich: es setzt eine \emph{unabhängige Einzelfeder der Steifigkeit} \code{penalty}
-\emph{auf jeden Knoten} des Knotensets (\file{constraints/directionalspringpenalty.py:\allowbreak{}117--123}) --
-es wertet weder Koordinaten noch Facetten oder Flächen aus. Die Gesamtsteifigkeit einer
-Auflagerfläche ist damit
-\begin{equation}
-k_{\text{ges}} \;=\; \code{penalty}\cdot n_{\text{Knoten}} ,
-\label{eq:bettung}
-\end{equation}
-also \emph{netz- und elementordnungsabhängig}. Beim Übergang von hex8 auf hex20 wächst die
-Knotenzahl der Auflagerflächen von $10$ auf $23$ je Seite (die Kantenmittelknoten kommen hinzu).
-Wird derselbe Zahlenwert \code{penalty} übernommen, ist die Bettung des hex20-Modells um den Faktor
-$2{,}3$ steifer -- ein reiner Modellierungsartefakt, der nichts mit dem Kontakt oder der
-Elementformulierung zu tun hat.
-
-Damit beide Rechnungen dieselbe \emph{Gesamt}bettung besitzen, ist \code{penalty} entsprechend
-\eqref{eq:bettung} umzurechnen:
-\begin{center}
-\small
-\begin{tabular}{lccc}
-\toprule
- & Knoten je Auflager & \code{penalty} & $k_{\text{ges}}$ je Auflager \\
-\midrule
-hex20 & 23 & 400 & 9200\,N/mm \\
-hex8  & 10 & 920 & 9200\,N/mm \\
-\bottomrule
-\end{tabular}
-\end{center}
-Alle folgenden Ergebnisse verwenden diese Werte. \emph{Ohne} diese Umrechnung erscheint die
-hex8-Kurve künstlich weich (Sekantensteifigkeit 117 statt 199\,kN/mm), ohne dass sich am Modell
-etwas geändert hätte.
+Die Auflager sind als elastische Bettung über \code{directionalspringpenalty} abgebildet. Da dieser
+Constraint eine unabhängige Einzelfeder der Steifigkeit \code{penalty} auf jeden Knoten des
+Knotensets setzt, ist die Gesamtsteifigkeit einer Auflagerfläche knotenzahl- und damit
+elementordnungsabhängig. Beide Rechnungen verwenden dieselbe Gesamtbettung von $9200$\,N/mm je
+Auflager, umgerechnet über die Knotenzahl: \code{penalty}${}=920$ bei $10$ Knoten (hex8) und
+\code{penalty}${}=400$ bei $23$ Knoten (hex20).
 
 \subsection{Ergebnis}
 Abbildung~\ref{fig:pot} stellt beide Rechnungen den drei Laborversuchen gegenüber.
@@ -1420,9 +1793,10 @@ Abbildung~\ref{fig:pot} stellt beide Rechnungen den drei Laborversuchen gegenüb
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.95\linewidth]{force_disp_hex8_vs_hex20.pdf}
-\caption{Ausziehversuch nach Dejori: Kraft-Weg-Kurven der linearen (hex8) und der quadratischen
+\caption[Ausziehversuch nach Dejori: Kraft-Weg-Kurven]{Ausziehversuch nach Dejori:
+Kraft-Weg-Kurven der linearen (hex8) und der quadratischen
 (hex20) Diskretisierung gegen das Streuband der drei Laborversuche. Beide Rechnungen verwenden
-dieselbe Gesamt-Auflagerbettung (Abschnitt~\ref{sec:bettung}). Das Kreuz markiert jeweils das
+dieselbe Gesamt-Auflagerbettung. Das Kreuz markiert jeweils das
 Ende der Rechnung. Erzeugt mit \file{POT\_Dejori/plot\_comparison.py}.}
 \label{fig:pot}
 \end{figure}
@@ -1453,7 +1827,7 @@ quadratische, reduziert integrierte Modell ist geringfügig \emph{weicher} -- di
 richtige Richtung, da der trilineare Ansatzraum im 20-Knoten-Serendipity-Raum enthalten ist und
 reduzierte Integration die Steifigkeit zusätzlich senkt.
 
-\paragraph{Traglast: hier entscheidet die Diskretisierung.}
+\paragraph{Traglast: Einfluss der Diskretisierung.}
 Am Peak trennen sich die Kurven. Die quadratische Rechnung trifft mit $19{,}85$\,kN die Oberkante
 des Versuchsstreubands ($16{,}6\ldots19{,}5$\,kN), die lineare überschätzt mit $22{,}50$\,kN alle
 drei Versuche um $15$ bis $35\,\%$ und erreicht den Peak zudem später ($0{,}143$ statt
@@ -1469,7 +1843,7 @@ Schädigungszone.
 Die beiden Rechnungen enden aus \emph{unterschiedlichen} Gründen; das ist für die Bewertung der
 Kurven wesentlich.
 
-\paragraph{hex8 -- Materialversagen.}
+\paragraph{hex8: Materialversagen.}
 Die lineare Rechnung läuft bis $u=0{,}795$\,mm, also weit über den Peak hinaus, und bricht dort im
 entfestigenden Ast ab: die Kurve endet mit \emph{senkrechter Tangente}
 ($\mathrm dF/\mathrm du\to-\infty$; über die letzten Inkremente $-452$\,kN/mm, während $u$ praktisch
@@ -1479,7 +1853,7 @@ Die Kurve ist damit inhaltlich vollständig: Anstieg, Traglast und ein großer T
 Nachbruchbereichs sind erfasst. Aufwand: $184$ Inkremente, $13$ Cutbacks, rund $1200$
 Newton-Iterationen, etwa $25$ Minuten Rechenzeit.
 
-\paragraph{hex20 -- händischer Abbruch.}
+\paragraph{hex20: händischer Abbruch.}
 Die quadratische Rechnung versagt nicht, sie kommt nicht mehr voran. Nach $5902$ Inkrementen,
 $302$ Cutbacks und rund $34\,000$ Newton-Iterationen war sie erst bei $u=0{,}838$\,mm, also
 $76\,\%$ der vorgegebenen $1{,}1$\,mm -- bei einer Laufzeit von $49{,}5$ Stunden
@@ -1495,7 +1869,7 @@ Knoten -- ist nicht allein Netzgröße. Er ist auch die praktische Auswirkung de
 konsistenten Linearisierung (Abschnitt~\ref{sec:frozen}): ohne die geometrischen Ableitungen ist
 der Konvergenzradius kleiner, das Verfahren greift häufiger zu Cutbacks, und die Schrittweite
 erholt sich im entfestigenden Bereich nicht mehr. Genau hier läge der Gewinn einer konsistenten
-Linearisierung (Abschnitt~\ref{sec:ausblick}) -- nicht in der Genauigkeit der Kurve, sondern darin,
+Linearisierung (Abschnitt~\ref{sec:ausblick:lin}) -- nicht in der Genauigkeit der Kurve, sondern darin,
 sie überhaupt in vertretbarer Zeit zu Ende rechnen zu können.
 
 % =====================================================================
@@ -1520,8 +1894,10 @@ Nichtdurchdringungsbedingung. Die tragenden Bausteine sind:
 \end{itemize}
 Die Formulierung besteht die Kontakt-Patch-Tests in 2D und 3D (linear und quadratisch, konform und
 nichtkonform) bei geraden Facettenkanten in Maschinengenauigkeit; bei gekrümmten Kanten gilt der
-Patch-Test im dokumentierten Näherungsrahmen (Abschnitt~\ref{sec:verif}). Reibung und
-statische Kondensation sind nicht Teil dieses Branches und wurden hier bewusst ausgeklammert.
+Patch-Test im dokumentierten Näherungsrahmen (Abschnitt~\ref{sec:verif}). Coulomb-Reibung und
+statische Kondensation sind nicht umgesetzt; ihre Bausteine und die dafür erforderlichen
+Erweiterungen sind in den Abschnitten~\ref{sec:ausblick:reibung}
+und~\ref{sec:ausblick:kondensation} benannt.
 
 \medskip
 \noindent Die bewusst in Kauf genommenen Einschränkungen sind an ihren jeweiligen Stellen benannt:
@@ -1532,8 +1908,11 @@ Teilüberdeckung (Abschnitt~\ref{sec:basistrafo}) sowie die impliziten Annahmen 
 der Implementierung (Abschnitt~\ref{sec:implnotes}).
 
 % =====================================================================
-\section{Ausblick: konsistente Linearisierung}
+\section{Ausblick}
 \label{sec:ausblick}
+
+\subsection{Konsistente Linearisierung}
+\label{sec:ausblick:lin}
 
 Der nächste substanzielle Entwicklungsschritt ist die \emph{konsistente Linearisierung} des
 Kontaktbeitrags. Wie in Abschnitt~\ref{sec:frozen} gezeigt, ist die assemblierte Tangente exakt
@@ -1556,7 +1935,165 @@ Staffelungsfehler des Residuums, die konvergierte Lösung ist geometrisch exakt 
 wäre keine Jacobi-Matrix mehr, mit entsprechend langsamerer Konvergenz. Ob das ein Nettogewinn
 ist, müsste gemessen werden; Test~09 stellt dafür bereits die passende Messung bereit.
 
+\subsection{Selbstkontakt}
+\label{sec:ausblick:selbst}
+
+Die Formulierung ist auf ein festes, disjunktes Flächenpaar aufgebaut und deckt damit den
+Selbstkontakt -- die Berührung einer Oberfläche mit sich selbst unter großer Verformung -- nicht ab.
+Die Paarung von Slave- und Masterfläche erfolgt einmalig bei der Instanziierung, womit auch die
+Zahl der Multiplikatoren feststeht; die Vorzeichenkonvention des Spalts setzt zwei getrennte Körper
+voraus; eine Ausschlussregel für die eigene und die angrenzenden Facetten einer Slave-Facette
+existiert nicht, und für einen Knoten, der beiden Flächen angehörte, wäre die flächengewichtete
+Knotennormale nach \eqref{eq:facetnormal} nicht eindeutig definiert.
+
+Die bindende Einschränkung ist dabei algebraischer Natur. Für deckungsgleiche Facetten gilt
+$\bm C=\bm D$ exakt, sodass der gewichtete Spalt
+\begin{equation*}
+\tilde g_I = -\sum_K D_{IK}\,(\bm x_K\!\cdot\!\bm n_I) + \sum_J C_{IJ}\,(\bm x_J\!\cdot\!\bm n_I)
+\end{equation*}
+für jede Konfiguration identisch verschwindet. Die zugehörige $\lambda$-Zeile von $\bm K$ hebt sich
+auf, sobald ein solcher Knoten aktiv wird, und das Gesamtsystem ist singulär. Der Konstruktor prüft
+daher auf gemeinsame Knoten beider Flächen und weist solche Konfigurationen zurück
+(Abschnitt~\ref{sec:implnotes}; Regressionstest in \file{07\_patch\_test\_2d}).
+
+Von den Bausteinen, die eine Selbstkontaktbehandlung erfordert, ist einer bereits vorhanden: die
+binäre Bounding-Volume-Hierarchie über die Kontaktfläche (\code{build\_bvh},
+Abschnitt~\ref{sec:geometrie}) entspricht der Suchstruktur, die \citet{yang2008} für denselben
+Zweck verwenden. Sie ist für sich genommen jedoch nicht hinreichend
+\citep[S.~764]{yang2008}:
+
+\begin{quote}
+\small ``[\ldots] it might be as inefficient as $\mathcal{O}(n^2)$ for a contact surface with $n$
+elements since the bounding volumes of adjacent subsurfaces always intersect with each other.''
+\end{quote}
+
+\noindent Die Hüllkörper benachbarter Facetten schneiden sich stets, sodass eine reine
+Näherungssuche gerade jene Paare zurückliefert, die auszuschließen sind. \citet{yang2008} ergänzen
+sie um ein Krümmungskriterium als hinreichende Bedingung für die Abwesenheit von Selbstkontakt,
+das sie \citet{volino2000} entnehmen \citep[S.~764]{yang2008}:
+
+\begin{quote}
+\small ``for a continuous smooth surface $S$ with contour $C$, if there is a vector $\bm v$ and
+$\bm n\cdot\bm v>0$ for each normal vector $\bm n$ on the surface $S$, and the projection of $C$ on
+a plane orthogonal to $\bm v$ along the direction of $\bm v$ does not intersect with itself, then
+there is no self contact on surface $S$.''
+\end{quote}
+
+\noindent In Verbindung mit einem $\mathcal{O}(1)$-Adjazenztest lassen sich damit benachbarte
+Teilflächen ausschließen, ohne sie geometrisch zu schneiden. Hinzu kommt ein Facet-Sorting, das die
+Mortar-Integrale auf zusammenhängenden Element-Patches definiert hält. Beide Bestandteile sind
+nicht implementiert; ihre Ergänzung wäre ein eigenständiger Entwicklungsschritt.
+
+\subsection{Coulomb-Reibung}
+\label{sec:ausblick:reibung}
+
+Die Formulierung überträgt ausschließlich Normalkräfte. Die Erweiterung auf Coulomb-Reibung ist in
+der Mortar-Literatur vollständig ausgearbeitet und fügt sich in dieselbe semiglatte Struktur ein;
+ihre Bausteine lassen sich daher genau benennen.
+
+Kontinuierlich treten zu den Normalbedingungen \eqref{eq:kkt} die Reibbedingungen
+\begin{equation}
+\Psi := \|\bm t_\tau\| - \mathcal F\,|p_n| \le 0,
+\qquad
+\bm v_{\tau,\text{rel}} + \beta\,\bm t_\tau = \bm 0,
+\qquad
+\beta \ge 0,
+\qquad
+\beta\,\Psi = 0
+\label{eq:coulomb}
+\end{equation}
+mit dem Reibbeiwert $\mathcal F$ und der relativen Tangentialgeschwindigkeit
+$\bm v_{\tau,\text{rel}}$ \citep[Gl.~(10)--(13), S.~546--547]{gitterle}. Sie zerfallen in zwei
+Zustände: \emph{Haften} ($\Psi<0$, erzwingt $\bm v_{\tau,\text{rel}}=\bm 0$) und \emph{Gleiten}
+($\Psi=0$, die Tangentialspannung stellt sich der Relativbewegung entgegen).
+
+Diskret werden auch diese Bedingungen in \emph{eine} nichtglatte Funktion gefasst -- genau wie die
+Normalbedingung in \eqref{eq:ncp}. Ausgangspunkt ist die Tresca-Form mit konstanter Reibschranke
+$b_j$ \citep[Gl.~(58)]{gitterle}; ersetzt man $b_j$ durch die lastabhängige Coulomb-Schranke
+$b_j=\mathcal F\max(0,\lambda_{n,j}-c_n\tilde g_j)$ \citep[Gl.~(60)]{gitterle} und löst die
+geschachtelten Maxima auf, so ergibt sich
+\begin{equation}
+C_{\tau,j} = \max\!\big(\mathcal F(\lambda_{n,j}-c_n\tilde g_{j}),\;
+\|\bm\lambda_{\tau,j}+c_t\,\tilde{\bm u}_{\tau,\text{rel},j}\|\big)\,\bm\lambda_{\tau,j}
+- \mathcal F\max\!\big(0,\lambda_{n,j}-c_n\tilde g_{j}\big)
+\big(\bm\lambda_{\tau,j}+c_t\,\tilde{\bm u}_{\tau,\text{rel},j}\big) = \bm 0
+\label{eq:ncptau}
+\end{equation}
+mit $c_n,c_t>0$ (\citealp[Gl.~(61)/(62)]{gitterle}; in der hier notierten allgemeinen Form
+\citealp[Gl.~(3.60)/(3.61)]{farah}). Wie $c_n$ beeinflussen beide Parameter allein das
+Konvergenzverhalten, nicht die Lösung.
+
+Für die vorliegende Implementierung folgen daraus vier konkrete Änderungen:
+
+\begin{itemize}\itemsep2pt
+  \item \textbf{Multiplikator wird vektoriell.} Statt eines skalaren Normalmultiplikators je
+        Slave-Knoten (Abschnitt~\ref{sec:koppelmatrizen}) sind $\dim$ Freiheitsgrade zu
+        instanziieren; die Kontaktkraft ist dann nicht mehr auf $\bm n_I$ beschränkt. Die
+        Koppelmatrizen $\bm D,\bm M$ selbst bleiben unverändert -- sie sind bereits als
+        $D_{jk}\bm I$ definiert \eqref{eq:DM}.
+  \item \textbf{Eine neue kinematische Größe.} Der gewichtete relative Schlupfzuwachs
+        $\tilde{\bm u}_{\tau,\text{rel},j}$ tritt neben den gewichteten Spalt. Er ist
+        \emph{pfadabhängig} und muss über die Increments akkumuliert werden, und er ist als
+        Ratengröße nur dann brauchbar, wenn seine Auswertung bezugsystemunabhängig erfolgt
+        -- ein Punkt, den \citet{gitterle} eigens behandeln. Der Spalt allein ist
+        konfigurationsabhängig, der Schlupf dagegen geschichtsbehaftet; die eingefrorene
+        Geometrie (Abschnitt~\ref{sec:frozen}) berührt damit hier mehr als beim Normalkontakt.
+  \item \textbf{Dreiwertiges Active Set.} An die Stelle der Aufteilung aktiv/inaktiv tritt
+        inaktiv/haftend/gleitend. Da die Reibschranke in \eqref{eq:ncptau} den Normaldruck
+        enthält, sind Normal- und Tangentialzweig gekoppelt und nicht getrennt lösbar.
+  \item \textbf{Zweiter algorithmischer Parameter.} $c_t$ balanciert $\bm\lambda_\tau$ gegen
+        $\tilde{\bm u}_{\tau,\text{rel}}$ und ist damit last- und verformungsabhängig;
+        \citet[Abschn.~3.5.2]{farah} empfiehlt, ihn zunächst in der Größenordnung von $c_n$ zu
+        wählen und über das Verhältnis beider Größen aus dem abgeschlossenen Vorschritt
+        nachzuführen.
+\end{itemize}
+
+\noindent Das Vorzeichenverhalten bei negativem Knotengewicht (Abschnitt~\ref{sec:sgnd}) wäre
+dabei erneut zu prüfen: \eqref{eq:ncptau} enthält denselben Ausdruck
+$\lambda_{n,j}-c_n\tilde g_j$ wie der Normalindikator und erbt dessen Vorzeichenempfindlichkeit.
+
+\subsection{Statische Kondensation der Multiplikatoren}
+\label{sec:ausblick:kondensation}
+
+Die Multiplikatoren sind hier explizite Unbekannte, das System also vom Sattelpunkttyp
+(Abschnitt~\ref{sec:loesung}). Die duale Basis ist gerade darauf angelegt, diese Unbekannten wieder
+zu eliminieren: weil $\tilde{\bm D}$ diagonal ist (Abschnitt~\ref{sec:dual}), lässt sich die
+Multiplikatorzeile knotenweise nach $\Delta\bm\lambda$ auflösen und in die übrigen Zeilen einsetzen.
+\citet[Gl.~(3.62)--(3.65)]{farah} führt das aus; das Ergebnis ist ein System \emph{konstanter}
+Größe in den Verschiebungen allein, aus dem die Multiplikatoren nachträglich in einem
+Rückrechnungsschritt gewonnen werden. Der praktische Gewinn liegt weniger in der Systemgröße als in
+der Struktur: die Sattelpunktform mit ihrem Nullblock entfällt, und damit auch die Einschränkungen
+bei der Wahl von Löser und Vorkonditionierer.
+
+Entscheidend für eine Umsetzung ist, \emph{welche} Zeile eliminiert wird. Die Auflösung lautet
+\begin{equation}
+\Delta\bm\lambda = -\tilde{\bm D}^{-T}\big(\bm K_{SN}\Delta\bm d_N + \tilde{\bm K}_{SM}\Delta\bm d_M
++ \tilde{\bm K}_{SS}\Delta\bm d_S + \bm r_S\big)
+\label{eq:kondensation}
+\end{equation}
+\citep[Gl.~(3.63)]{farah}, wobei $(\cdot)_N,(\cdot)_S,(\cdot)_M$ die inneren, die Slave- und die
+Master-Knoten bezeichnen. Auf der rechten Seite steht die \emph{assemblierte Slave-Verschiebungs\-zeile}
+des Gesamtsystems -- sie enthält die Steifigkeit des umgebenden Materials, nicht nur die Beiträge
+des Kontakts. Die Kondensation ist damit ein Schur-Komplement des bereits assemblierten Systems und
+keine Umformung, die der Constraint für sich allein vornehmen könnte.
+
+Genau darin liegt das Hindernis: die Constraint-Schnittstelle des Rahmenwerks erlaubt es, additiv
+zu $\bm K$ und $\bm P_{\text{ext}}$ beizutragen, nicht aber, Zeilen zu \emph{ersetzen}. Eine
+Kondensation erforderte daher eine Erweiterung dieser Schnittstelle, nicht bloß eine andere Formel
+im Constraint.
+
+Nicht mit \eqref{eq:kondensation} zu verwechseln ist die naheliegende Abkürzung, $\lambda_j$ direkt
+aus dem aktuellen Spalt zu bestimmen, etwa als $\lambda_j=-\tilde g_j/\tilde D_{jj}$, und die
+resultierende Kraft wie eine Penaltykraft aufzubringen. Das ist keine Elimination, sondern eine
+Penalty-Formulierung mit der Ersatzsteifigkeit $1/\tilde D_{jj}$ -- einer Größe, die aus der
+Facettengeometrie stammt und mit der Steifigkeit der beteiligten Körper nichts zu tun hat. Der
+Kontakt überträgt dann systematisch zu wenig Kraft, und zwar umso mehr, je steifer das Material
+ist. Ein Einzelzustandstest, der lediglich prüft, ob ein \emph{vorgegebenes} $\lambda_j$ die
+passenden Knotenkräfte erzeugt, deckt das nicht auf, weil er die Iteration auf den richtigen Wert
+gar nicht durchläuft.
+
 % =====================================================================
+\appendix
 \section{Anwendungsanleitung: Kontaktspezifikation in der Input-Datei}
 \label{sec:inputfile}
 
@@ -1643,9 +2180,13 @@ Der Mortar-Kontakt basiert auf expliziten Overlay-Kontaktelementen (\code{CONLIN
 
 \bibitem[Sutherland \& Hodgman(1974)]{sutherland1974} I.~E.~Sutherland, G.~W.~Hodgman: \emph{Reentrant polygon clipping}, Communications of the ACM 17 (1974), 32--42. (Lokale Kopie: \path{meetings/literature/SutherlandHodgam_1974_ReentrantPolygonClipping.pdf})
 
+\bibitem[Volino \& Magnenat-Thalmann(2000)]{volino2000} P.~Volino, N.~Magnenat-Thalmann: \emph{Virtual Clothing}, Springer, Berlin/Heidelberg, 2000. (Quelle des Krümmungskriteriums; zitiert nach \citealp{yang2008}, Ref.~[17] -- nicht lokal vorliegend.)
+
 \bibitem[Wohlmuth(2000)]{wohlmuth2000} B.~I.~Wohlmuth: \emph{A mortar finite element method using dual spaces for the Lagrange multiplier}, SIAM Journal on Numerical Analysis 38 (2000), 989--1012. (Lokale Kopie: \path{meetings/literature/Wohlmuth_2000_AMortarFiniteElementMethodUsingDualSpacesForTheLagrangeMutliplier.pdf})
 
 \bibitem[Wriggers(2006)]{wriggers} P.~Wriggers: \emph{Computational Contact Mechanics}, 2.~Aufl., Springer, 2006. (Lokale Kopie: \path{meetings/literature/Wriggers_2006_ComputationalContactMechanics.pdf})
+
+\bibitem[Yang \& Laursen(2008)]{yang2008} B.~Yang, T.~A.~Laursen: \emph{A large deformation mortar formulation of self contact with finite sliding}, Computer Methods in Applied Mechanics and Engineering 197 (2008), 756--772. (Lokale Kopie: \path{meetings/literature/YangLaursen_2008_ALargeDeformationMortarFormulationOfSelfContactWithFiniteSliding.pdf})
 
 \end{thebibliography}
 

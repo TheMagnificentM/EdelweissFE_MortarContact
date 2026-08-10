@@ -24,6 +24,8 @@
 #  the top level directory of EdelweissFE.
 #  ---------------------------------------------------------------------
 
+import warnings
+
 import numpy as np
 
 from edelweissfe.config.phenomena import getFieldSize
@@ -112,9 +114,26 @@ documentation = [module]
 
 
 def map_2d_to_natural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
-    """Map a 2D local plane coordinate point_2d to the element's natural space."""
+    """Map a 2D local plane coordinate point_2d to the element's natural space.
+
+    Termination. This is a (Gauss-)Newton solve for the natural coordinate, so the
+    quantity it actually drives to zero is the UPDATE, not the residual. For 2D
+    surface elements the two coincide as long as the point lies in the element's
+    plane - which it does, since both facets are projected into the same auxiliary
+    plane. For 1D line elements in 2D space they do NOT: the Gauss point is
+    generated on the SLAVE line and then mapped into the MASTER element, so with an
+    open contact gap g the smallest attainable residual is exactly g and a residual
+    test can never be satisfied. The least-squares step nevertheless returns the
+    exact orthogonal projection after the first pass; without an update-based test
+    the loop just burns all max_iter passes to return it. Measured on the test
+    suite before this criterion was added: 189 of 780476 calls "failed" this way,
+    every one of them a 2D call at an open gap, every returned coordinate exact.
+
+    The update test is also the scale-invariant one - the natural coordinate is
+    dimensionless, whereas the residual carries the model's length unit.
+    """
     el_type = el.elType.upper()
-    
+
     # 1D line elements
     if "LINE" in el_type:
         local_coords = np.zeros(1)
@@ -131,13 +150,15 @@ def map_2d_to_natural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
                 break
             delta = np.dot(J[0], res) / J_norm
             local_coords[0] -= delta
+            if abs(delta) < tol:
+                break
         return local_coords
 
     # 2D surface elements (Quads and Triangles)
     local_coords = np.zeros(2)
     if "TRI" in el_type:
         local_coords = np.array([1.0 / 3.0, 1.0 / 3.0])
-        
+
     for _ in range(max_iter):
         N = el.getShapeFunctions(local_coords)
         x_mapped = N @ coords_2d
@@ -151,6 +172,8 @@ def map_2d_to_natural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
         except np.linalg.LinAlgError:
             break
         local_coords -= delta
+        if np.linalg.norm(delta) < tol:
+            break
     return local_coords
 
 
@@ -171,6 +194,33 @@ SUB_CELL_MAP = {
     "CONQUAD9": [[0, 4, 8, 7], [4, 1, 5, 8], [8, 5, 2, 6], [7, 8, 6, 3]],
     "CONTRI6": [[0, 3, 5], [3, 4, 5], [3, 1, 4], [5, 4, 2]],
 }
+
+
+def is_convex_polygon(poly_2d, tol: float = 1e-14) -> bool:
+    """Whether a planar polygon given in order is convex.
+
+    The segmentation clips the master sub-cell against the SLAVE sub-cell, and
+    Sutherland-Hodgman clips against the half-plane of each clip edge - which is
+    the polygon itself only if that polygon is convex. A reflex vertex therefore
+    removes area that genuinely belongs to the facet, silently; the same applies
+    to the fan triangulation. Triangles cannot be non-convex, so only the middle
+    quad of a CONQUAD8 and the four quads of a CONQUAD9 are at risk.
+    """
+    n = len(poly_2d)
+    if n < 4:
+        return True
+    sign = 0.0
+    for i in range(n):
+        a = poly_2d[(i + 1) % n] - poly_2d[i]
+        b = poly_2d[(i + 2) % n] - poly_2d[(i + 1) % n]
+        cross = a[0] * b[1] - a[1] * b[0]
+        if abs(cross) < tol:
+            continue  # collinear vertex: neither convex nor reflex
+        if sign == 0.0:
+            sign = cross
+        elif cross * sign < 0.0:
+            return False
+    return True
 
 
 def get_sub_cells(el) -> list[list[int]]:
@@ -342,6 +392,28 @@ class Constraint(ConstraintBase):
                 if node not in self.mortar_nodes:
                     self.mortar_nodes.append(node)
 
+        # The formulation assumes a fixed pair of DISJOINT surfaces. A node listed
+        # on both of them is not merely questionable input, it makes the system
+        # singular: for coinciding facets C = D holds exactly, hence the weak gap
+        # g_I = -sum_K D_IK (x_K.n) + sum_J C_IJ (x_J.n) vanishes identically for
+        # every configuration, and the corresponding lambda row of K cancels out
+        # the moment such a node becomes active. Without this check the user only
+        # sees an unintelligible linear-solver failure.
+        # NOTE: this rules out MISDECLARED surfaces, not self-contact. Genuine
+        # self-contact would additionally require an exclusion rule for a facet's
+        # own and adjacent facets, an unambiguous nodal normal at doubly
+        # classified nodes and a dynamic surface pairing - see Yang & Laursen
+        # (2008); it is out of scope here either way.
+        shared_nodes = set(self.non_mortar_nodes) & set(self.mortar_nodes)
+        if shared_nodes:
+            labels = sorted(node.label for node in shared_nodes)
+            raise ValueError(
+                f"MortarContact '{name}': non-mortar surface '{non_mortar_surf_name}' and mortar "
+                f"surface '{mortar_surf_name}' share {len(labels)} node(s): {labels}. "
+                f"The two contact surfaces must be disjoint - coinciding facets yield an "
+                f"identically vanishing weak gap and thus a singular system."
+            )
+
         self._nodes = self.non_mortar_nodes + self.mortar_nodes
         self.nNonMortarNodes = len(self.non_mortar_nodes)
         self.nMortarNodes = len(self.mortar_nodes)
@@ -349,7 +421,6 @@ class Constraint(ConstraintBase):
         self.nMultipliers = self.nNonMortarNodes
         self._nDof = self.sizeField * len(self._nodes) + self.nMultipliers
 
-        self.recovered_lambdas = np.zeros(self.nNonMortarNodes)
         self._fieldsOnNodes = [[self.field]] * len(self._nodes)
         self.active = True
 
@@ -384,6 +455,25 @@ class Constraint(ConstraintBase):
         self.active_set_stable_count = 0
         self._seen_states = set()
         self._last_state = None
+
+        # Runtime diagnostics. Every assumption below was measured over the
+        # Control_Tests and patch-test suite before being wired up here; the
+        # counts are recorded in the documentation. They are emitted through
+        # `warnings` rather than the journal because the constraint interface
+        # does not hand a Journal instance to constraints.
+        self._warned = set()
+
+    def _warn_once(self, key: str, message: str):
+        """Emit a runtime diagnostic at most once per constraint instance and cause.
+
+        These conditions repeat every increment once they occur at all, so warning
+        per occurrence would bury the message in its own repetitions. One message
+        per run and cause is what makes it readable.
+        """
+        if key in self._warned:
+            return
+        self._warned.add(key)
+        warnings.warn(f"MortarContact '{self._name}': {message}", RuntimeWarning, stacklevel=3)
 
     @property
     def nodes(self) -> list:
@@ -578,6 +668,22 @@ class Constraint(ConstraintBase):
                     s_sub_2d = to_plane_coords(sc_coords, p0, t1, t2)
                     s_full_2d = to_plane_coords(s_coords, p0, t1, t2)
 
+                    # The slave sub-cell is the CLIP polygon, so it must be convex
+                    # (see is_convex_polygon). For CONQUAD8 this requires the
+                    # mid-side node to stay on its own side of the element centre,
+                    # for CONQUAD9 the centre node to stay clear of the corners -
+                    # margins no usable volume element gets anywhere near, which is
+                    # why this is a warning and not a raise.
+                    if not is_convex_polygon(s_sub_2d):
+                        self._warn_once(
+                            "nonconvex_subcell",
+                            f"non-convex sub-cell on slave facet {s_el.elNumber} (element type "
+                            f"{s_el.elType}). The segmentation clips against the half-plane of "
+                            f"each sub-cell edge, so contact area is lost without further notice. "
+                            f"Check the mid-side/centre node positions of the quadratic contact "
+                            f"facets; the element is severely distorted.",
+                        )
+
                     for m_el, m_faceID in candidates:
                         m_nodes = m_el.nodes
                         m_coords = np.array([current_coords[nd] for nd in m_nodes])
@@ -668,9 +774,26 @@ class Constraint(ConstraintBase):
 
             # For sliver overlaps M_t becomes (near-)singular; fall back to the
             # reference-element coefficients in that case.
-            if np.linalg.cond(M_t) < 1e12:
+            cond_M_t = np.linalg.cond(M_t)
+            if cond_M_t < 1e12:
                 A_e = np.diag(D_t) @ np.linalg.inv(M_t) @ T_e
             else:
+                # Measured over the Control_Tests and patch-test suite: 4 of 3989
+                # slave-element evaluations take this path, all of them in the
+                # curved Hertz models with CONQUAD8. It is not a dead branch, and
+                # it has a consequence worth naming: the positivity of D_II rests
+                # on D_II = int_overlap(N_tilde) with a pointwise non-negative
+                # transformed basis. Here the reference-element dual functions are
+                # used instead, and those DO change sign over a partial overlap -
+                # so CONQUAD8 loses its positivity guarantee too, not just
+                # CONQUAD9. Measured: below ~0.1 % coverage D_II flips sign.
+                self._warn_once(
+                    "sliver_fallback",
+                    f"degenerate overlap on slave facet {s_num}: cond(M_t) = {cond_M_t:.2e} >= 1e12, "
+                    f"falling back to reference-element dual coefficients. Biorthogonality then "
+                    f"holds on the full element only, and the nodal weights D_II lose their "
+                    f"positivity guarantee there - for CONQUAD8 as well.",
+                )
                 A_e = dual_mats[s_num][2]
 
             # Assemble the D block and per-master C blocks of this slave element
@@ -752,6 +875,31 @@ class Constraint(ConstraintBase):
             self.current_C = C_full
             # Positive by construction: sum_K D_IK = int(Phi_I) = int(N_tilde_I) > 0
             self.current_D_rowsum = np.sum(D_full, axis=1)
+            # The sign-consistent contact measures below carry a negative D_II
+            # correctly, but the weighted gap loses its reading as a mean opening
+            # there - so it is worth saying out loud that it happened.
+            # Only for weights that are meaningfully negative, though: a node far
+            # outside the covered region integrates to a value that is zero up to
+            # round-off, and whether that lands at +1e-19 or -1e-19 says nothing.
+            # Measured range of the real cases: -0.031 (CONQUAD9 at 70 % coverage,
+            # 06_active_set_pdass) down to -0.18 (sliver fallback, Hertz hex20),
+            # so a relative threshold of 1e-6 separates them from the dust by
+            # orders of magnitude.
+            weights = self.current_D_rowsum
+            weight_scale = np.max(np.abs(weights))
+            if weight_scale > 0.0:
+                significant = np.flatnonzero(weights < -1e-6 * weight_scale)
+                if len(significant):
+                    worst = np.min(weights) / weight_scale
+                    self._warn_once(
+                        "negative_nodal_weight",
+                        f"{len(significant)} slave node(s) with a negative nodal mortar weight "
+                        f"D_II (worst: {worst:.3e} of the largest weight), first in increment "
+                        f"{timeStep.number}. The active-set indicator handles the sign, but the "
+                        f"weighted gap is no longer a mean opening at those nodes. Usual causes: a "
+                        f"partially covered CONQUAD9, or a sliver overlap that triggered the "
+                        f"reference-element fallback.",
+                    )
             # Precompute the sparsity patterns once per increment
             self.current_D_nz = [np.flatnonzero(np.abs(D_full[I]) > 1e-14) for I in range(nSlave)]
             self.current_C_nz = [np.flatnonzero(np.abs(C_full[I]) > 1e-14) for I in range(nSlave)]
@@ -838,8 +986,6 @@ class Constraint(ConstraintBase):
                 s_n = p_n - self.c_n * g_sep
                 self.active_set[I] = bool(s_n > 0.0)
 
-            self.recovered_lambdas[I] = lambda_I if self.active_set[I] else 0.0
-
             if self.active_set[I]:
                 PExt[idx_LM_I] -= g_I_weak
 
@@ -882,9 +1028,24 @@ class Constraint(ConstraintBase):
             cycle = changed and (state in self._seen_states)
             self._seen_states.add(state)
             self._last_state = state
-            if (
-                (self.active_set_stable_count >= 2 and self.current_iteration >= 2)
-                or cycle
-                or (self.current_iteration >= 20)
-            ):
+            settled = self.active_set_stable_count >= 2 and self.current_iteration >= 2
+            hit_cap = self.current_iteration >= 20
+            if settled or cycle or hit_cap:
+                if hit_cap and not settled and not cycle:
+                    # Measured over the Control_Tests and patch-test suite: this
+                    # never fires - the set freezes 111 times out of 111 through the
+                    # PDASS criterion, at most 11 iterations. Where it DOES fire the
+                    # set was still moving, so the increment converges onto a set
+                    # that was never confirmed and the converged solution may
+                    # violate the Signorini conditions. Nothing checks that
+                    # automatically; testfiles/mortar_tests/10_signorini_check does
+                    # it for a converged model.
+                    self._warn_once(
+                        "active_set_iteration_cap",
+                        f"the active set was frozen by the iteration cap (20), not by the PDASS "
+                        f"convergence criterion, first in increment {timeStep.number}. The set had "
+                        f"not settled, so the converged solution of such increments is not "
+                        f"guaranteed to satisfy the Signorini conditions - verify it (see "
+                        f"testfiles/mortar_tests/10_signorini_check).",
+                    )
                 self.active_set_frozen = True

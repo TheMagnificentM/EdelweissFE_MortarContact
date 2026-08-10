@@ -82,8 +82,14 @@ def _build_block(model, el_type, x0, y0, lx, ly, nX, nY):
     return elements, lattice, step
 
 
-def build(model, el_type, nX_a, nX_b, nY=1, length=1.0, height=1.0):
+def build(model, el_type, nX_a, nX_b, nY=1, length=1.0, height=1.0, length_b=None):
     """Zwei aufeinanderliegende Blöcke: A in y in [0, height], B in y in [height, 2*height].
+
+    Block A reicht in x von 0 bis ``length``, Block B von 0 bis ``length_b``; ohne
+    Angabe ist B deckungsgleich mit A. Ein schmalerer Block B lässt einen Teil der
+    Slave-Fläche ohne Gegenüber -- der Lastfall, in dem das Active Set tatsächlich
+    arbeitet (10_signorini_check). Beide Blöcke beginnen bei x = 0, damit ``symm_x``
+    für beide auf derselben Symmetrieachse liegt.
 
     Legt an:
       Elementsets  ``solids_a``, ``solids_b``
@@ -91,8 +97,11 @@ def build(model, el_type, nX_a, nX_b, nY=1, length=1.0, height=1.0):
                    ``symm_x`` (linke Kante beider Blöcke)
       Surfaces     ``surf_a_top`` (faceID 3), ``surf_b_bottom`` (faceID 1)
     """
+    if length_b is None:
+        length_b = length
+
     els_a, lat_a, step = _build_block(model, el_type, 0.0, 0.0, length, height, nX_a, nY)
-    els_b, lat_b, _ = _build_block(model, el_type, 0.0, height, length, height, nX_b, nY)
+    els_b, lat_b, _ = _build_block(model, el_type, 0.0, height, length_b, height, nX_b, nY)
 
     model.elementSets["solids_a"] = ElementSet("solids_a", list(els_a.values()))
     model.elementSets["solids_b"] = ElementSet("solids_b", list(els_b.values()))

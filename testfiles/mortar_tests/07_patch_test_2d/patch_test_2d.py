@@ -20,6 +20,9 @@ Teil A -- Bausteine (ohne Löser)
      alpha * int(N_mid) von jedem Mittelknoten auf seine beiden Eckknoten,
      also 1/6 + (1/3)(2/3) = 7/18 bzw. (1/3)(2/3) = 2/9.
 3. Teilüberdeckung (Master um 50 % verschoben): sum(D) = sum(C) = 0.5.
+4. Eingabeschutz: eine Slave- und eine Masterfläche, die sich Knoten teilen,
+   werden vom Konstruktor abgewiesen (sie führten sonst auf ein singuläres
+   System, nicht auf einen Indizierungsfehler -- Begründung im Test).
 
 Teil B -- Kontakt-Patch-Test durch den Löser
 --------------------------------------------
@@ -101,10 +104,15 @@ def line3_points(shift_x=0.0, y=0.0):
     ]
 
 
-def build_2d_contact_model(el_type, slave_pts, master_pts):
+def build_2d_contact_model(el_type, slave_pts, master_pts, share_nodes=False):
+    """Minimalmodell aus je einer Slave- und einer Masterfacette.
+
+    Mit ``share_nodes=True`` wird für beide Facetten DASSELBE Knotenobjekt
+    verwendet -- die Fehlkonfiguration, gegen die der Konstruktor schützt.
+    """
     model = FEModel(dimension=2)
     slave_nodes = make_nodes_2d(model, 1, slave_pts)
-    master_nodes = make_nodes_2d(model, 100, master_pts)
+    master_nodes = slave_nodes if share_nodes else make_nodes_2d(model, 100, master_pts)
 
     ConClass = getElementClass(el_type, "edelweiss")
     s_con = ConClass(el_type, 1)
@@ -196,6 +204,29 @@ def test_2d_partial_overlap():
     all_ok &= check("rowsum diff D vs C", float(np.max(np.abs(rowsum_D - rowsum_C))), 0.0)
 
     assert all_ok, "Teilüberdeckungstest fehlgeschlagen"
+
+
+def test_overlapping_surfaces_rejected():
+    """Slave- und Masterfläche dürfen sich keinen Knoten teilen.
+
+    Bei deckungsgleichen Facetten ist C = D exakt, damit verschwindet der
+    gewichtete Spalt g = -sum_K D_IK (x_K.n) + sum_J C_IJ (x_J.n) für JEDE
+    Konfiguration identisch und die zugehörige lambda-Zeile von K hebt sich auf,
+    sobald der Knoten aktiv wird -- das System wird singulär. Der Konstruktor
+    muss das mit einer verständlichen Meldung abweisen statt es dem Löser zu
+    überlassen.
+    """
+    print("\n=== Test Schutz gegen überlappende Kontaktflächen ===")
+    try:
+        build_2d_contact_model("CONLINE2", line2_points(0.0, 0.0), None, share_nodes=True)
+    except ValueError as e:
+        msg = str(e)
+        print(f"  Meldung: {msg}")
+        assert "disjoint" in msg, "Die Meldung muss die Ursache benennen"
+        assert "[1, 2]" in msg, "Die Meldung muss die betroffenen Knotenlabels nennen"
+        print("  [PASS] Überlappende Flächen werden mit klarer Meldung abgewiesen.")
+        return
+    raise AssertionError("Überlappende Kontaktflächen wurden NICHT abgewiesen!")
 
 
 # ===========================================================================
@@ -339,5 +370,6 @@ if __name__ == "__main__":
     test_2d_line2()
     test_2d_line3()
     test_2d_partial_overlap()
+    test_overlapping_surfaces_rejected()
     test_2d_solver_patch_tests()
     print("\n[SUCCESS] Alle 2D-Mortar-Kontakt-Tests erfolgreich bestanden!")

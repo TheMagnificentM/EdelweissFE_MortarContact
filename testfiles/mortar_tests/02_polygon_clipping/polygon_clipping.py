@@ -125,5 +125,50 @@ class TestMortarIntersection(unittest.TestCase):
         print("Summed area of sub-triangles:", total_area)
         self.assertAlmostEqual(total_area, 1.25)
 
+    def test_nonconvex_clip_polygon_loses_area(self):
+        """Sutherland-Hodgman setzt ein KONVEXES Clip-Polygon voraus.
+
+        Der Algorithmus schneidet nacheinander gegen die HALBEBENE jeder
+        Clip-Kante. Bei einem einspringenden (reflexen) Eckpunkt schneidet die
+        zugehörige Halbebene echtes Gebiet weg, das zum Polygon gehört -- ohne
+        Fehler, ohne Meldung. Dasselbe gilt für ``triangulate_polygon``, das als
+        Dreiecksfächer ab Ecke 0 ebenfalls Konvexität voraussetzt.
+
+        Dieser Test hält den Verlust FEST, statt ihn zu behaupten: er ist die
+        dokumentierte Voraussetzung des Verfahrens, nicht ein Fehler der
+        Implementierung. Praktisch relevant wird er nur, wenn eine Sub-Zelle
+        einer quadratischen Facette nicht-konvex wird -- wie weit die Knoten
+        dafür wandern müssen, misst 05_quadratic_segmentation.
+        """
+        # Mittel-Quad [4,5,6,7] eines CONQUAD8, dessen unterer Mittelknoten über
+        # den Elementmittelpunkt hinaus verschoben wurde: Ecke 0 ist reflex.
+        nonconvex = np.array([[0.5, 0.75], [1.0, 0.5], [0.5, 1.0], [0.0, 0.5]])
+        covering = np.array([[-2.0, -2.0], [3.0, -2.0], [3.0, 3.0], [-2.0, 3.0]])
+
+        def shoelace(p):
+            x, y = p[:, 0], p[:, 1]
+            return 0.5 * np.abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+
+        true_area = shoelace(nonconvex)
+        clip = sutherland_hodgman_clip(covering, nonconvex)
+        clipped_area = shoelace(clip) if len(clip) >= 3 else 0.0
+
+        print("\n--- Test Non-Convex Clip Polygon ---")
+        print("Non-convex clip polygon:\n", nonconvex)
+        print("True area (shoelace):", true_area)
+        print("Clipped area:", clipped_area)
+        print("Lost fraction:", 1.0 - clipped_area / true_area)
+
+        self.assertAlmostEqual(true_area, 0.125, places=12)
+        # Der Verlust ist gross, nicht marginal -- deshalb ist die Voraussetzung
+        # kein Detail: hier gehen zwei Drittel der Flaeche verloren.
+        self.assertLess(clipped_area, 0.5 * true_area)
+
+        # Gegenprobe: dasselbe Polygon konvex gemacht -> exakt erhalten.
+        convex = np.array([[0.5, 0.0], [1.0, 0.5], [0.5, 1.0], [0.0, 0.5]])
+        clip_c = sutherland_hodgman_clip(covering, convex)
+        self.assertAlmostEqual(shoelace(clip_c), shoelace(convex), places=12)
+
+
 if __name__ == '__main__':
     unittest.main()
