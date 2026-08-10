@@ -163,12 +163,15 @@ $\tilde{\bm D}$ & --- & $\bm D=\tilde{\bm D}\,\bm T^{-1}$; diagonal bezüglich $
 $\tilde D_{jj}$ & \code{D\_rowsum} & Knotengewicht $\int_{\gamma_c^{\text{ovl}}}\tilde N_j$, vorzeichenbehaftet & \eqref{eq:weightisprimal} \\
 $\tilde g_j$ & \code{g\_I\_weak} & gewichteter (schwacher) Normalspalt am Slave-Knoten $j$ & \eqref{eq:wgap_pos} \\
 $g_{\text{sep},j}$ & \code{g\_sep} & $\tilde g_j/\tilde D_{jj}$; physikalische Knotenöffnung (Länge) & \eqref{eq:gsep} \\
+$A_j$ & --- & Knotengewicht über die \emph{ganze} Facette, $\int_{\text{ele}}\tilde N_j$ & \eqref{eq:pforce} \\
 $\bm P$ & --- & Projektionsoperator $\bm D^{-1}\bm M$ (nicht aktiviert) & \S\ref{sec:dual} \\
 \midrule
 \multicolumn{4}{l}{\emph{Kontaktbedingung und Lösung}}\\
 $\bm z_j$ & --- & Traktionsvektor am Slave-Knoten $j$ (allgemeine Vektorform) & \S\ref{sec:koppelmatrizen} \\
 $\lambda_j$ & \code{lambda\_I} & instanziierter skalarer Normalmultiplikator $\bm z_j\!\cdot\!\bm n_j$ & \S\ref{sec:koppelmatrizen} \\
 $p_{n,j}$ & \code{p\_n} & physikalischer Kontaktdruck $-\lambda_j\,\mathrm{sgn}(\tilde D_{jj})\ge0$ & \eqref{eq:pn} \\
+$f_{n,j}$ & --- & Knotenkontaktkraft entlang $\bm n_j$, $\lambda_j\tilde D_{jj}$ & \eqref{eq:nodalforce} \\
+$p_{F,j}$ & --- & auf den ganzen Knotenträger bezogener Druck, $-f_{n,j}/A_j$ & \eqref{eq:pforce} \\
 $c_n$ & \code{cn} & Komplementaritätsparameter der NCP, rein algorithmisch & \eqref{eq:ncp} \\
 $s_{n,j}$ & \code{s\_n} & Aktivierungsindikator; aktiv $\iff s_{n,j}>0$ & \eqref{eq:indicator_code} \\
 $C_{n,j}$ & --- & NCP-Funktion der Signorini-Bedingungen & \eqref{eq:ncp} \\
@@ -1359,19 +1362,51 @@ vernachlässigbaren Zusatzterm, sondern um eine bewusste Auslassung
         kontrolliert.
 \end{itemize}
 
-\paragraph{Größenordnung des Staffelungsfehlers.} Sie lässt sich als Empfindlichkeit gegenüber der
-Referenzkonfiguration beziffern: Punkt~(0) nennt mit dem konvergierten Zustand und dem
-extrapolierten Prädiktor zwei Konfigurationen, die sich um $\mathcal O(\Delta t)$ unterscheiden
-und beide innerhalb der Staffelungsordnung liegen. Die Differenz der zugehörigen Lösungen ist
-damit ein Maß für den Staffelungsfehler selbst.
+\paragraph{Größenordnung und Ordnung des Staffelungsfehlers.}
+\label{sec:staffelordnung}
+Der Fehler ist ausgemessen (\file{12\_increment\_size}). Dass er nur an einer \emph{gekrümmten}
+Kontaktfläche überhaupt auftritt, ist dabei keine Wahl des Testfalls, sondern eine Eigenschaft der
+Staffelung: bleiben die Kontaktflächen über das Increment eben und deckungsgleich, so ändern sich
+$\bm D$ und $\bm M$ nicht, und es ist gleichgültig, an welchem Zustand des Increments man sie
+auswertet. Auf allen Patch-Tests ist der Staffelungsfehler deshalb \emph{exakt} null; sie können
+zu dieser Frage nichts beitragen.
 
-Auf den Patch-Tests ist sie \emph{null}: dort ist die Lösung linear, die Geometrie über das
-Increment konstant, und beide Varianten bleiben maschinengenau. Auf dem gekrümmten Hertz-Modell
-beträgt sie relativ $6{,}5\cdot10^{-4}$ (\file{Control\_Tests/08\_hertz}, \code{hex8\_medium}:
-$11{,}3869$ gegenüber $11{,}3795$ im Scheitel des Druckprofils) -- gut drei Größenordnungen unter
-dem Modellfehler gegenüber der Hertz-Lösung selbst ($4$--$7\,\%$ bei linearen Elementen), aber
-nicht null. Eine Increment-Größen-Studie, die den Fehler über die Schrittweite als
-$\mathcal O(\Delta t)$ nachweist, liegt nicht vor.
+Der Testfall ist eine Eindringung: ein Block mit parabolisch gekrümmter Unterseite (Stich $0{,}02$
+über die halbe Breite) wird um $0{,}05$ auf einen ebenen Block gedrückt. Die Kontaktzone wächst
+dabei fortlaufend, $\bm D$ und $\bm M$ ändern sich also über den gesamten Lastpfad. Dasselbe
+Randwertproblem wird mit $N$ Increments bis zur gleichen Endverschiebung gerechnet und gegen
+einen Referenzlauf mit $N_{\text{ref}}=64$ verglichen:
+
+\begin{center}
+\small
+\begin{tabular}{rccc}
+\toprule
+$N$ & rel.\ $L_2$-Fehler von $\bm u$ & geschätzte Ordnung & rel.\ Fehler der Gesamtkontaktkraft \\
+\midrule
+$1$  & $4{,}18\cdot10^{-3}$ & ---      & $1{,}38\cdot10^{-3}$ \\
+$2$  & $4{,}91\cdot10^{-4}$ & ---      & $1{,}67\cdot10^{-5}$ \\
+$4$  & $2{,}87\cdot10^{-4}$ & $0{,}78$ & $1{,}70\cdot10^{-5}$ \\
+$8$  & $1{,}26\cdot10^{-4}$ & $1{,}19$ & $9{,}50\cdot10^{-6}$ \\
+$16$ & $4{,}83\cdot10^{-5}$ & $1{,}38$ & $2{,}73\cdot10^{-6}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Die mittlere Ordnung beträgt $1{,}12$ und bestätigt damit die Aussage $\mathcal
+O(\Delta t)$. Maßgeblich ist das Verschiebungsfeld; die Gesamtkontaktkraft ist ein Integral, in
+dem sich die lokalen Abweichungen teilweise aufheben, und liegt ab $N=2$ bereits im Bereich der
+Löser-Toleranzen. Der Sprung von $N=1$ auf $N=2$ geht über die asymptotische Ordnung hinaus, weil
+bei $N=1$ die eingefrorene Geometrie die \emph{unverformte} Konfiguration ist, in der noch gar
+kein Kontakt besteht; die Ordnung ist deshalb ab $N=2$ geschätzt.
+
+\medskip
+\noindent Eine zweite, unabhängige Messung derselben Größe ergibt sich aus der Empfindlichkeit
+gegenüber der Referenzkonfiguration: konvergierter Zustand und extrapolierter Prädiktor
+(Punkt~(0)) unterscheiden sich um $\mathcal O(\Delta t)$, ihre Lösungen also ebenfalls. Auf den
+Patch-Tests ist die Differenz null, auf dem gekrümmten Hertz-Modell beträgt sie relativ
+$6{,}5\cdot10^{-4}$ (\file{Control\_Tests/08\_hertz}, \code{hex8\_medium}: $11{,}3869$ gegenüber
+$11{,}3795$ im Scheitel des Druckprofils) -- gut drei Größenordnungen unter dem Modellfehler
+gegenüber der Hertz-Lösung selbst ($4$--$7\,\%$ bei linearen Elementen), aber nicht null.
 
 \medskip
 \noindent\textit{Bekannte Einschränkung.} An \emph{scharfen} Kanten ist die gemittelte
@@ -1537,6 +1572,23 @@ nach einer Änderung der Nachweis eines Zyklus, und das Set wird eingefroren
 (\file{mortarcontact.py:\allowbreak{}841--867}). Als dritter, unbedingter Abbruch dient eine
 Obergrenze von $20$ Iterationen.
 
+\paragraph{Selbstkonsistenz des eingefrorenen Satzes.}
+Alle drei Auslöser frieren das Active Set \emph{während} der Newton-Iteration ein. Der Zustand,
+auf den das Increment danach konvergiert, ist damit an einem Zwischen-Iterierten entschieden
+worden. Im Regelfall ist das genau richtig -- der Satz hat sich gesetzt, weil er konvergiert war
+--, garantiert ist es nicht, und innerhalb des Increments fällt es nicht auf: die Newton-Iteration
+konvergiert auch dann sauber, wenn der eingefrorene Satz die falschen Knoten enthält. Sie löst
+dann lediglich ein anderes Problem.
+
+Prüfbar wird das genau einmal, nämlich sobald das Increment konvergiert ist. Der Constraint wertet
+den Indikator \eqref{eq:indicator_code} deshalb zu Beginn des \emph{nächsten} Increments erneut
+aus -- mit der Geometrie, die im vorigen in Kraft war, und den Verschiebungen, die dabei
+herausgekommen sind (\file{mortarcontact.py:\allowbreak{}595--650}). Reproduziert der eingefrorene
+Satz sich dort nicht, so hat das Increment an den betroffenen Knoten den falschen Zweig erzwungen,
+also $\tilde g_j=0$ an einem Knoten, der sich öffnen will, oder $\lambda_j=0$ an einem, der
+schließen will; seine Lösung erfüllt die Signorini-Bedingungen dann nicht. Das wird gemeldet
+(Abschnitt~\ref{sec:implnotes}) und ist über die gesamte Verifikationsreihe nicht eingetreten.
+
 \paragraph{Statistik der drei Auslöser.}
 Die drei Abbruchgründe sind nicht gleichwertig: nur das PDASS-Kriterium bestätigt, dass das Set sich
 gesetzt hat; die Anti-Cycling-Regel bricht einen nachgewiesenen Zyklus ab, und die Obergrenze bricht
@@ -1653,6 +1705,64 @@ Integral-Positivität. Die praktische Konsequenz steht in Abschnitt~\ref{sec:bas
 quadratische Flächen CONQUAD8 verwenden, CONQUAD9 nur bei voller Überdeckung -- mit der im
 folgenden Abschnitt vermessenen Einschränkung, dass auch CONQUAD8 seine Positivitätsgarantie
 verliert, sobald der Rückfallpfad greift.
+
+\subsection{Deutung des Multiplikators bei teilweiser Überdeckung}
+\label{sec:lambdadeutung}
+
+Der Multiplikator $\lambda_j$ ist die Knotenamplitude des dualen Feldes
+$\bm\lambda_h=\sum_j\Phi_j\bm z_j$, nicht unmittelbar ein Kontaktdruck. Die physikalisch
+eindeutige Größe ist die \emph{Knotenkraft} entlang $\bm n_j$,
+\begin{equation}
+f_{n,j} \;=\; \lambda_j\sum_k D_{jk} \;=\; \lambda_j\,\tilde D_{jj},
+\label{eq:nodalforce}
+\end{equation}
+und $\tilde D_{jj}=\int_{\gamma_c^{\text{ovl}}}\tilde N_j$ ist das Integral über den
+\emph{überdeckten} Teil des Knotenträgers \eqref{eq:weightisprimal}. An einem voll überdeckten
+Knoten stimmt $\tilde D_{jj}$ mit dem Vollflächengewicht
+$A_j=\int_{\text{ele}}\tilde N_j$ überein, und $\lambda_j$ ist dort der mittlere Kontaktdruck über
+den Knotenträger. Schrumpft die Überdeckung, so schrumpft $\tilde D_{jj}$ mit, während
+$f_{n,j}$ endlich bleibt: $\lambda_j$ skaliert dann mit $\tilde D_{jj}^{-1}$ und wächst über
+jede Grenze. Gemessen an der Kante einer Teilüberdeckung (\file{10\_signorini\_check}):
+$\tilde D_{jj}/\max_k\tilde D_{kk}=2{,}1\cdot10^{-2}$, $5{,}2\cdot10^{-3}$ und
+$8{,}3\cdot10^{-6}$ ergeben $\lambda_j=58$, $173$ und $8{,}2\cdot10^{4}$, während die Knotenkraft
+durchweg von der Ordnung eins bleibt.
+
+Das ist kein Fehler, sondern die Eigenschaft eines dualen Multiplikators über schrumpfendem
+Träger. Es heißt aber, dass $\lambda_j$ an solchen Knoten \textbf{nicht} als Kontaktdruck gelesen
+werden darf -- und genau dort, am Rand der Kontaktzone, liegen sie. Eine druckartige Größe, die
+auch dort gilt, ist die auf den \emph{ganzen} Knotenträger bezogene Knotenkraft
+\begin{equation}
+p_{F,j} \;=\; -\,\frac{f_{n,j}}{A_j} \;=\; -\,\lambda_j\,\frac{\tilde D_{jj}}{A_j},
+\qquad A_j=\sum_{f\ni j}\int_f \tilde N_j\,\mathrm d\gamma .
+\label{eq:pforce}
+\end{equation}
+Beide Lesarten übertragen dieselbe Gesamtkraft, $\sum_j p_{F,j}A_j=\sum_j\lambda_j\tilde D_{jj}$,
+und fallen an voll überdeckten Knoten zusammen.
+
+\paragraph{Anwendung auf die Hertz-Modelle.} Der Vergleich beider Lesarten trennt einen echten
+Diskretisierungseffekt von einem Auswertungsartefakt am Kontaktrand. Auf den vier Hertz-Varianten
+(\file{Control\_Tests/08\_hertz}) stimmen die Maximaldrücke auf $6\cdot10^{-4}$ relativ überein,
+und die Knoten-zu-Knoten-Oszillation ist in beiden Lesarten \emph{identisch}:
+
+\begin{center}
+\small
+\begin{tabular}{lccc}
+\toprule
+Netz & Oszillation aus $\lambda_j$ & Oszillation aus $p_{F,j}$ & aktive Knoten \\
+\midrule
+hex8, mittel     & $5{,}3\,\%$  & $5{,}3\,\%$  & $10$ \\
+hex8, fein       & $3{,}0\,\%$  & $3{,}0\,\%$  & $20$ \\
+hex20, mittel    & $10{,}1\,\%$ & $10{,}1\,\%$ & $21$ \\
+hex20, fein      & $7{,}8\,\%$  & $7{,}8\,\%$  & $34$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Die Oszillation der quadratischen Modelle ist demnach der Ecke/Mittel\-knoten-Effekt der
+quadratischen Mortar-Kontaktdrücke und nicht die $\tilde D_{jj}^{-1}$-Skalierung am Rand. Ausgewertet
+wird $A_j$ dabei in der \emph{deformierten} Konfiguration, weil $\tilde D_{jj}$ es ebenfalls ist;
+mit undeformierten Koordinaten trüge das Verhältnis sonst die Flächenänderung durch die
+Verformung mit und verschöbe den Vergleich um rund ein Prozent.
 
 \subsection{Rückfallpfad für entartete Überlappungen}
 \label{sec:sliver}
@@ -1948,12 +2058,13 @@ Eigenschaft & Prüfung \\
 \textbf{Polygon-Clipping} & Schnitt-/Triangulierungsgeometrie gegen analytische Überlappungen, einschließlich des Flächen\emph{gewinns} bei nicht-konvexem Subject (\file{02\_polygon\_clipping}). \\
 \textbf{Koppelmatrizen} & $\bm D,\bm M$, Zeilensummen-Identität \eqref{eq:rowsum} ($<10^{-14}$) und Überlappungsfläche gegen den analytischen Wert (\file{03\_coupling\_matrices}). \\
 \textbf{Biorthogonalität} & \eqref{eq:biorth} gegen \emph{unabhängige} Referenzen: geschlossene duale Basis des CONQUAD4, Nachrechnung mit einer höhergradigen Quadraturregel, und -- als einzige Prüfung des Produktionspfads -- Diagonalität von $\bm D\bm T_e^{\!\top}$ aus der echten Segmentquadratur, auch bei Teilüberdeckung (\file{04\_dual\_biorthogonality}). \\
-\textbf{Quadratische Segmentierung} & Sub-Cell-Zerlegung + Segmentquadratur für CONQUAD8/9, CONTRI6 (\file{05\_quadratic\_segmentation}). \\
+\textbf{Quadratische Segmentierung} & Sub-Cell-Zerlegung + Segmentquadratur für CONQUAD8/9, CONTRI6; Schwellen der Sub-Cell-Konvexität und Übergang zum Rückfallpfad samt Vorzeichenwechsel von $\tilde D_{jj}$ (\file{05\_quadratic\_segmentation}). \\
 \textbf{Active-Set / PDASS} & Aktivierung bei Durchdringung, Freeze/Anti-Cycling sowie Vorzeichenbehandlung bei negativem Knotengewicht (\file{06\_active\_set\_pdass}). \\
 \textbf{Patch-Test 2D} & Bausteine \emph{und} Löser-Patch-Test: CPE4/CONLINE2 und CPE8/CONLINE3, je konform und nichtkonform (\file{07\_patch\_test\_2d}). \\
 \textbf{Patch-Test hex20} & 3D-Patch-Test mit CONQUAD8, vier Netz-/Ordnungskombinationen mit geraden Kanten plus eine verzerrte Variante (\file{08\_patch\_test\_hex20}). \\
 \textbf{Konsistente Tangente} & $\bm K$ gegen zentrale Differenzen des Residuums, alle Freiheitsgrade, beide NCP-Zweige (\file{09\_consistent\_tangent}). \\
-\textbf{Signorini-Bedingungen} & Nachprüfung der \emph{konvergierten} Lösung: $p_n\ge0$, $g_{\text{sep}}\ge0$, $p_n\,g_{\text{sep}}=0$ je Slave-Knoten, in Lastfällen mit arbeitendem Active Set (\file{10\_signorini\_check}). \\
+\textbf{Signorini-Bedingungen} & Nachprüfung der \emph{konvergierten} Lösung: $p_n\ge0$, $g_{\text{sep}}\ge0$, $p_n\,g_{\text{sep}}=0$ je Slave-Knoten, in Lastfällen mit arbeitendem Active Set, in 2D und 3D; zusätzlich der physikalische Spalt an neu ausgewerteter Geometrie (\file{10\_signorini\_check}). \\
+\textbf{Staffelungsfehler} & Fehler der eingefrorenen Geometrie über die Schrittweite, an einem gekrümmten Indenter mit $N=1\ldots16$ Increments gegen einen Referenzlauf; Schätzung der Konvergenzordnung (\file{12\_increment\_size}). \\
 \textbf{Skaleninvarianz} & Dieselbe Rechnung über sechs Zehnerpotenzen der Längenskala, in 2D \emph{und} 3D (\file{11\_scale\_invariance}). Nur die 3D-Variante erreicht die flächenwertigen Toleranzen des Polygon-Clippings. Derselbe Test hält zudem die Grenze fest, ab der die \emph{absolute} Konvergenzschranke des Lösers für die Multiplikatorzeile unerreichbar wird (Abschnitt~\ref{sec:scalelimit}). \\
 \bottomrule
 \end{tabularx}
@@ -2001,6 +2112,30 @@ Eigenschaft & Prüfung \\
         Die Referenz ist dabei bewusst \emph{extern}: eine Prüfung der Form
         $\bm n_f\cdot\bm v=0$ wäre für die Konstruktion \eqref{eq:facetnormal} eine Identität und
         damit für jede Eingabe erfüllt.
+  \item \textbf{Signorini-Bedingungen, zweifach ausgewertet.} Die Bedingungen $p_n\ge0$,
+        $g_{\text{sep}}\ge0$ und $p_n g_{\text{sep}}=0$ werden je Slave-Knoten geprüft, in 2D wie
+        in 3D und in Lastfällen mit Teilkontakt, Abheben und voller Überdeckung. Beide
+        Knotenklassen -- offen bei vorhandenem Gegenüber und geschlossen -- kommen dabei vor,
+        andernfalls prüfte die Reihe das Active Set nicht.
+
+        Ausgewertet wird zweimal. Mit den \emph{eingefrorenen} Größen $\bm D,\bm M,\bm n_I$ ist
+        die Prüfung die Auswertung genau der Gleichungen, die der Löser aufgestellt hat; sie ist
+        über alle Lastfälle bis auf Löserrauschen ($<10^{-7}$ relativ) erfüllt. Diese Auswertung
+        kann den Staffelungsfehler aus Abschnitt~\ref{sec:frozen} allerdings prinzipiell nicht
+        sehen, weil er gerade in diesen Größen steckt. Die zweite Auswertung rechnet
+        $\bm D,\bm M,\bm n_I$ deshalb an der \emph{konvergierten} Konfiguration neu und misst den
+        physikalisch verbliebenen Spalt. Bei einer Schrittweite von $\Delta t\le0{,}1$ verbleiben
+        höchstens $1{,}1\cdot10^{-4}$ der aufgebrachten Verschiebung an Durchdringung, im
+        3D-Zweig um mehrere Größenordnungen weniger.
+  \item \textbf{Fehler der eingefrorenen Geometrie: Ordnung $1{,}12$.} An einem gekrümmten
+        Indenter fällt der relative $L_2$-Fehler des Verschiebungsfeldes von $4{,}18\cdot10^{-3}$
+        bei einem Increment auf $4{,}83\cdot10^{-5}$ bei sechzehn; die Tabelle und die Begründung,
+        warum dazu eine gekrümmte Kontaktfläche nötig ist, stehen in
+        Abschnitt~\ref{sec:staffelordnung}.
+  \item \textbf{Rückfallpfad und Vorzeichen der Knotengewichte.} Der Übergang zum
+        Referenzelement-Rückfall liegt zwischen $1\,\%$ und $0{,}1\,\%$ Überdeckung und fällt mit
+        dem Vorzeichenwechsel von $\tilde D_{jj}$ zusammen (Abschnitt~\ref{sec:sliver}); die dort
+        angegebenen Werte sind als Regressionsfall festgehalten.
   \item \textbf{Zwei-Block-Referenztests} (\file{Control\_Tests/README.md}): verschiebungs- und
         lastgesteuerte Blöcke, konform und nichtkonform, mit Abgleich von Verschiebungsfeld,
         Spannungen und Kontaktbedingungen; dort sind auch die beobachteten Grenzen des
