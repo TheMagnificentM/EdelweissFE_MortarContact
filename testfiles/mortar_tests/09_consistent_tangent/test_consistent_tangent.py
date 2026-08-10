@@ -246,11 +246,7 @@ LINE3_SLAVE = [[0.0, 0.0], [1.0, 0.0], [0.5, 0.0]]
 LINE3_MASTER = [[0.2, 0.01], [1.2, 0.01], [0.7, 0.01]]
 
 
-if __name__ == "__main__":
-    print("====================================================")
-    print("MORTAR KONTAKT: KONSISTENTE TANGENTE (FINITE DIFFERENZEN)")
-    print("====================================================")
-
+def test_consistent_tangent():
     results = []
 
     results.append(
@@ -312,11 +308,17 @@ if __name__ == "__main__":
         )
     )
 
+    n_fail = results.count(False)
+    assert n_fail == 0, f"{n_fail} von {len(results)} Tangenten-Tests fehlgeschlagen"
+
+
+if __name__ == "__main__":
+    print("====================================================")
+    print("MORTAR KONTAKT: KONSISTENTE TANGENTE (FINITE DIFFERENZEN)")
+    print("====================================================")
+
+    test_consistent_tangent()
+
     print("\n====================================================")
-    if all(results):
-        print("ALLE TANGENTEN-TESTS ERFOLGREICH PASSIERT!")
-        print("====================================================")
-    else:
-        print(f"{results.count(False)} von {len(results)} TANGENTEN-TESTS FEHLGESCHLAGEN!")
-        print("====================================================")
-        sys.exit(1)
+    print("ALLE TANGENTEN-TESTS ERFOLGREICH PASSIERT!")
+    print("====================================================")

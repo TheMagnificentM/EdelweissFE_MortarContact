@@ -199,12 +199,24 @@ SUB_CELL_MAP = {
 def is_convex_polygon(poly_2d, tol: float = 1e-14) -> bool:
     """Whether a planar polygon given in order is convex.
 
-    The segmentation clips the master sub-cell against the SLAVE sub-cell, and
-    Sutherland-Hodgman clips against the half-plane of each clip edge - which is
-    the polygon itself only if that polygon is convex. A reflex vertex therefore
-    removes area that genuinely belongs to the facet, silently; the same applies
-    to the fan triangulation. Triangles cannot be non-convex, so only the middle
-    quad of a CONQUAD8 and the four quads of a CONQUAD9 are at risk.
+    BOTH sub-cells of a segmentation pair have to be convex, for two different
+    reasons:
+
+    slave (clip window)   Sutherland-Hodgman clips against the half-plane of each
+        clip edge, and the intersection of those half-planes is the polygon itself
+        only if the polygon is convex. A reflex vertex therefore removes area that
+        genuinely belongs to the facet, silently (measured: -2/3 of the area for a
+        constructed reflex quad, see 02_polygon_clipping).
+
+    master (subject)      Sutherland-Hodgman itself accepts any subject polygon
+        ("applicable to any polygon, convex or concave", Sutherland & Hodgman 1974,
+        p. 33), but the overlap it returns inherits the subject's reflex vertices,
+        and `triangulate_polygon` fans from vertex 0 with a per-triangle |area|.
+        For a non-convex overlap those fan triangles reach outside the polygon and
+        the area is OVER-counted (measured: 0.375 instead of 0.125, i.e. +200 %).
+
+    Triangles cannot be non-convex, so the requirement only bites on the middle
+    quad of a CONQUAD8 and the four quads of a CONQUAD9.
     """
     n = len(poly_2d)
     if n < 4:
@@ -530,7 +542,19 @@ class Constraint(ConstraintBase):
                     v2 = coords[3] - coords[1]
                     n_facet = 0.5 * np.cross(v1, v2)
             else: # dim == 2
-                t = coords[-1] - coords[0]
+                # Area-weighted facet normal of a line facet. The two CORNER nodes
+                # span it, never coords[-1]: for CONLINE3 the node order is
+                # [end, end, mid], so coords[-1] is the mid-side node and the chord
+                # would be the first half-edge only - on a curved edge that is not
+                # even the right direction (measured: 16.7 deg off for a mid-side
+                # node 0.15 out of the chord of a unit edge).
+                #
+                # The corner chord is not an approximation but the exact area
+                # weight: with t = dx/dxi and n = [t_y, -t_x]/|t|,
+                #   int n dGamma = int [t_y, -t_x] dxi = R (x_1 - x_0),
+                # i.e. the rotated chord between the two END nodes, for a straight
+                # and a curved edge alike.
+                t = coords[1] - coords[0]
                 n_facet = np.array([t[1], -t[0]])
             
             # Add to the normals of all nodes on this facet
@@ -692,6 +716,22 @@ class Constraint(ConstraintBase):
                         for m_sub in get_sub_cells(m_el):
                             m_sub_2d = m_full_2d[m_sub]
 
+                            # The master sub-cell is the SUBJECT of the clip, which
+                            # Sutherland-Hodgman accepts non-convex - but the overlap
+                            # inherits its reflex vertices and the fan triangulation
+                            # below then over-counts the area (see is_convex_polygon).
+                            if not is_convex_polygon(m_sub_2d):
+                                self._warn_once(
+                                    "nonconvex_master_subcell",
+                                    f"non-convex sub-cell on master facet {m_el.elNumber} (element "
+                                    f"type {m_el.elType}), projected into the plane of slave facet "
+                                    f"{s_el.elNumber}. The overlap polygon inherits the reflex "
+                                    f"vertex and the fan triangulation then integrates over area "
+                                    f"outside the facet. Check the mid-side/centre node positions "
+                                    f"of the quadratic contact facets; the element is severely "
+                                    f"distorted.",
+                                )
+
                             overlap_2d = sutherland_hodgman_clip(m_sub_2d, s_sub_2d)
                             if len(overlap_2d) < 3:
                                 continue
@@ -841,6 +881,27 @@ class Constraint(ConstraintBase):
         # frozen data would stem from the diverged iterate of the failed attempt -
         # and the semi-smooth active-set iteration has to restart as well.
         # Keying the reset on the increment number alone would miss this.
+        #
+        # REFERENCE CONFIGURATION of the frozen geometry: the LAST CONVERGED state,
+        # U_n = U_np - dU, not the state handed in as U_np.
+        #
+        # The reference formulations do not freeze at all: Popp et al. (2009/2010),
+        # Gitterle et al. (2010) and Farah (2018) re-evaluate D, M and the nodal
+        # normals in every Newton iteration and carry their linearizations in K;
+        # MOOSE regenerates the mortar segmentation on the displaced mesh and
+        # differentiates it by AD. That is the target state (see the documentation,
+        # section "Ausblick / Konsistente Linearisierung"), not what is done here.
+        #
+        # Within a staggered scheme, however, the reference must be the converged
+        # state. EdelweissFE's solvers extrapolate the previous increment before the
+        # first assembly (`extrapolation`, DEFAULT "linear": U_np = U_n + dU_extrap
+        # already at iteration 0). Freezing at that predictor would make the
+        # CONVERGED contact solution depend on a solver switch that must not
+        # influence it - and it would be inconsistent within itself, since a cutback
+        # re-attempt resets dU to zero and would then use a different kind of
+        # reference than a regular increment. It would also void the error statement
+        # of the staggered scheme, which is first order in the increment size only
+        # with respect to an equilibrated reference configuration.
         step_key = (timeStep.number, timeStep.timeIncrement, timeStep.totalTime)
         if step_key != self.last_timestep_key or not hasattr(self, "current_normals"):
             self.last_timestep_key = step_key
@@ -859,8 +920,10 @@ class Constraint(ConstraintBase):
             # visited this increment, and the immediately previous one.
             self._seen_states = set()
             self._last_state = None
-            self.current_normals = self.compute_normals(U_np)
-            D_full, C_full = self.compute_mortar_coupling_matrices(U_np)
+            # Last converged state - see the reference-configuration note above.
+            U_ref = U_np - dU
+            self.current_normals = self.compute_normals(U_ref)
+            D_full, C_full = self.compute_mortar_coupling_matrices(U_ref)
             # The FULL (element-locally sparse) D matrix is used for forces,
             # stiffness and weak gap. With the basis transformation T_e the
             # biorthogonality holds w.r.t. N_tilde, so D is not diagonal for

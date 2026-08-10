@@ -412,10 +412,13 @@ Ergebnis ist das konvexe Überlappungspolygon $\text{Slave}\cap\text{Master}$
 
 Da die Segmentquadratur (Abschnitt~\ref{sec:quadratur}) auf Dreiecken definiert ist, wird das
 Überlappungspolygon abschließend \emph{fächerartig} von einer Ecke aus trianguliert
-(\code{triangulate\_polygon}): ein $n$-Eck ergibt $n-2$ Integrationsdreiecke. Da der Schnitt zweier
-konvexer Polygone konvex ist, liegen die Fächerdreiecke stets innerhalb des Polygons. Im 2D-Fall reduziert sich das Ganze auf einen
-1D-Intervallschnitt (\code{clip\_1d\_segments}). Das Vorgehen entspricht MOOSEs
-\code{AutomaticMortarGeneration}.
+(\code{triangulate\_polygon}): ein $n$-Eck ergibt $n-2$ Integrationsdreiecke. Diese liegen genau
+dann sämtlich innerhalb des Polygons, wenn dieses konvex ist -- was der Schnitt zweier
+\emph{konvexer} Polygone stets ist. Die Fächer-Zerlegung stellt damit eine Anforderung an
+\emph{beide} Argumente des Clippings, das Clipping selbst dagegen nur an das Clip-Fenster;
+Abschnitt~\ref{sec:subcells} trennt die beiden Bedingungen und beziffert, was ihre Verletzung
+jeweils kostet. Im 2D-Fall reduziert sich das Ganze auf einen 1D-Intervallschnitt
+(\code{clip\_1d\_segments}). Das Vorgehen entspricht MOOSEs \code{AutomaticMortarGeneration}.
 
 \begin{figure}[htbp]
 \centering
@@ -833,11 +836,39 @@ $\alpha < \tfrac12$ nach oben beschränkt, damit auch die Kantenknoten-Integrale
 der transformierten Basis werden dann -- wie bei linearen Elementen über \eqref{eq:Ae} -- die dualen
 Funktionen gebildet.
 
-Die Transformation wird nur auf die \emph{serendipity}-Typen mit nichtpositivem Eckintegral
-angewandt (CONQUAD8, CONTRI6; CONLINE3). Für das voll-Lagrange'sche CONQUAD9 (aus hex27) entfällt
-sie -- für CONQUAD9 wird wie für lineare Typen die Identität verwendet
-(\file{element.py:\allowbreak{}454--462}). Der folgende Abschnitt begründet das und benennt zugleich
-die Grenze dieser Begründung.
+Angewandt wird die Transformation auf CONQUAD8, CONTRI6 und CONLINE3; für CONQUAD4, CONTRI3,
+CONLINE2 und das voll-Lagrange'sche CONQUAD9 (aus hex27) ist $\bm T_e=\bm I$
+(\file{element.py:\allowbreak{}467--481}).
+
+\medskip
+\noindent\textbf{Der Grund ist nicht bei allen dreien derselbe.} Nichtpositiv ist das
+Eckknoten-Integral nur bei den beiden \emph{serendipity}-Typen:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{lcX}
+\toprule
+Typ & $\int_{\text{ele}} N_{\text{Ecke}}$ & Wozu die Transformation dort dient \\
+\midrule
+CONQUAD8 & $-\tfrac{1}{12}A$ & stellt die Integral-Positivität \eqref{eq:intpos} überhaupt erst her \\
+CONTRI6  & $0$               & dito \\
+CONLINE3 & $+\tfrac13$ (auf $[-1,1]$) & Integral-Positivität gilt bereits; gesichert wird die
+   \emph{punktweise} Nichtnegativität \eqref{eq:pointwisepos} \\
+CONQUAD9 & $+\tfrac19$ (Referenzquadrat) & keine Transformation, siehe Abschnitt~\ref{sec:quad9} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent Bei CONLINE3 wäre die Transformation nach dem Kriterium \eqref{eq:intpos} also gar nicht
+nötig: ohne sie sind die Knotengewichte $\tfrac16$ (Ecken) und $\tfrac23$ (Mittelknoten) je
+Einheitslänge, alle positiv. Sie wird trotzdem angewandt, weil
+$N_{\text{Ecke}}=\tfrac12\xi(\xi-1)$ im Element das Vorzeichen wechselt und in einer
+\emph{segment}basierten Formulierung über Teilgebiete integriert wird
+(Abschnitt~\ref{sec:alphachoice}); erst die Transformation macht die Basis punktweise
+nichtnegativ und damit die Gewichte auch bei Teilüberdeckung positiv. Mit Transformation sind sie
+$\tfrac{7}{18}$ bzw.\ $\tfrac29$ (nachgerechnet in \file{07\_patch\_test\_2d}). Genau diese
+Absicherung fehlt beim CONQUAD9 -- der folgende Abschnitt begründet, warum, und benennt die Grenze
+dieser Begründung.
 
 \subsection{Wahl des Transformationsparameters $\alpha$}
 \label{sec:alphachoice}
@@ -1103,24 +1134,41 @@ es stets.}
 \end{figure}
 
 \paragraph{Konvexitätsanforderung an die Sub-Cells.}
-Der Schnittalgorithmus stellt an seine beiden Argumente ungleiche Anforderungen. Das zu schneidende
-Polygon darf beliebig sein -- \citet[S.~33]{sutherland1974} halten fest, der Algorithmus sei
-``applicable to any polygon, convex or concave, planar or non-planar'' --, das \emph{Clip-Fenster}
-dagegen nicht: er schneidet ``against irregular \emph{convex} plane-faced volumes'' bzw.\ in zwei
-Dimensionen ``against irregular \emph{convex} windows'' \citep[S.~32]{sutherland1974}. Der Grund
-ist der Aufbau des Verfahrens als Folge von Halbebenenschnitten: jede Clip-Kante wird zur
-unbeschränkten Trenngeraden, und nur für ein konvexes Fenster ist der Durchschnitt dieser
-Halbebenen das Fenster selbst. Bei einer einspringenden (reflexen) Ecke entfernt die zugehörige
-Halbebene Gebiet, das zum Polygon gehört. Dieselbe Voraussetzung trägt die Fächer-Triangulierung
-ab einer festen Ecke, deren Dreiecke nur bei konvexem Polygon innerhalb desselben liegen.
+\emph{Beide} Sub-Zellen eines Segmentierungspaares müssen konvex sein -- aus zwei verschiedenen
+Gründen, die auseinanderzuhalten sind, weil sie an unterschiedlichen Verfahrensschritten hängen
+und in unterschiedliche Richtungen falsch liegen.
 
-In der Segmentierung ist die \emph{Slave}-Sub-Zelle das Clip-Fenster (\file{mortarcontact.py},
-\code{sutherland\_hodgman\_clip(m\_sub\_2d, s\_sub\_2d)}); ihre Konvexität ist damit die zu sichernde
-Bedingung, die der Master-Sub-Zelle dagegen nicht. Dreiecke sind stets konvex, sodass die
-Anforderung allein das Mittel-Quad $[4,5,6,7]$ des CONQUAD8 und die vier Quads des CONQUAD9
-betrifft. Ihre Verletzung äußert sich nicht als Abbruch, sondern als Verlust an Integrationsgebiet:
-für ein konstruiertes reflexes Viereck fehlen zwei Drittel der Fläche
-(\file{02\_polygon\_clipping}).
+\medskip
+\noindent\textbf{(a) Die Slave-Sub-Zelle, weil sie das Clip-Fenster ist.} Der Schnittalgorithmus
+stellt an seine beiden Argumente ungleiche Anforderungen. Das zu schneidende Polygon darf beliebig
+sein -- \citet[S.~33]{sutherland1974} halten fest, der Algorithmus sei ``applicable to any polygon,
+convex or concave, planar or non-planar'' --, das \emph{Clip-Fenster} dagegen nicht: er schneidet
+``against irregular \emph{convex} plane-faced volumes'' bzw.\ in zwei Dimensionen ``against
+irregular \emph{convex} windows'' \citep[S.~32]{sutherland1974}. Der Grund ist der Aufbau des
+Verfahrens als Folge von Halbebenenschnitten: jede Clip-Kante wird zur unbeschränkten
+Trenngeraden, und nur für ein konvexes Fenster ist der Durchschnitt dieser Halbebenen das Fenster
+selbst. Bei einer einspringenden (reflexen) Ecke entfernt die zugehörige Halbebene Gebiet, das zum
+Polygon gehört. In der Segmentierung ist die Slave-Sub-Zelle das Clip-Fenster
+(\code{sutherland\_hodgman\_clip(m\_sub\_2d, s\_sub\_2d)}). Die Verletzung äußert sich nicht als
+Abbruch, sondern als \emph{Verlust} an Integrationsgebiet: für ein konstruiertes reflexes Viereck
+fehlen zwei Drittel der Fläche (\file{02\_polygon\_clipping}).
+
+\medskip
+\noindent\textbf{(b) Die Master-Sub-Zelle, weil das Überlappungspolygon ihre Reflexecken erbt.}
+Für das Clipping selbst ist die Konvexität des Subjects nach dem obigen Zitat nicht nötig -- wohl
+aber für die anschließende Fächer-Triangulierung (Abschnitt~\ref{sec:geometrie}). Ist das
+Master-Polygon nicht konvex, so ist es auch der Schnitt im Allgemeinen nicht, und
+\code{triangulate\_polygon} fächert dann ab Ecke~0 über Gebiet hinweg, das außerhalb des Polygons
+liegt. Da die Zell-Jacobi-Determinante als \emph{Betrag} je Dreieck eingeht, wird diese Fläche
+nicht abgezogen, sondern addiert: die integrierte Fläche ist zu \emph{groß}. Nachgerechnet an
+einem reflexen Viereck der wahren Fläche $0{,}125$ liefert die Fächer-Summe $0{,}375$, also
+$+200\,\%$. Der Fehler ist damit gegenläufig zu (a) -- ein Grund mehr, beide Bedingungen getrennt
+zu prüfen statt sie zu einer zusammenzufassen.
+
+\medskip
+\noindent Dreiecke sind stets konvex, sodass die Anforderung in beiden Fällen allein das
+Mittel-Quad $[4,5,6,7]$ des CONQUAD8 und die vier Quads des CONQUAD9 betrifft. Beide Sub-Zellen
+werden zur Laufzeit geprüft und gemeldet (Abschnitt~\ref{sec:implnotes}).
 
 \paragraph{Zulässiger Verzerrungsbereich.}
 Der Abstand zur Verletzung lässt sich für die Referenzgeometrie geschlossen angeben und ist in
@@ -1137,7 +1185,9 @@ $s=0{,}15$.
 Beide Schranken liegen jenseits der Verzerrung, bei der die Jacobi-Determinante des zugehörigen
 Volumenelements ihr Vorzeichen wechselt; für zulässige Netze ist die Bedingung damit erfüllt. Da
 ihre Verletzung sich den Ergebnissen nicht ansehen lässt, prüft die Segmentierung die Konvexität
-der Slave-Sub-Zelle zur Laufzeit und meldet sie (Abschnitt~\ref{sec:implnotes}).
+\emph{beider} Sub-Zellen zur Laufzeit und meldet sie getrennt (Abschnitt~\ref{sec:implnotes}).
+Die Master-Sub-Zelle wird dabei in der Hilfsebene der Slave-Sub-Zelle geprüft, also genau in der
+Darstellung, in der anschließend geschnitten und trianguliert wird.
 
 \subsection{Eingang der Krümmung über die Formfunktionsauswertung}
 Wesentlich: die Zerlegung betrifft \emph{nur} das Integrationsgebiet (die Clip-Geometrie), \emph{nicht}
@@ -1179,24 +1229,74 @@ CONQUAD4/8/9; beide liefern eine \emph{flächengewichtete} Normale, deren Länge
 entspricht -- daher die Gewichtung im Mittel oben. Mittelknoten gehen in $\bm n_f$ nicht ein, die
 Krümmung einer quadratischen Facette also auch nicht.
 
-Im 2D-Fall ist $\bm n_f=[t_y,-t_x]$ mit $\bm t=\bm x_{\text{letzt}}-\bm x_0$
-(\file{mortarcontact.py:\allowbreak{}442}). Zu beachten: bei \code{CONLINE3} ist der \emph{letzte}
-Knoten der Kantenmittelknoten (Reihenfolge Ende--Ende--Mitte), $\bm t$ also die halbe Sehne
-statt der ganzen. Auf geraden Kanten ist das unkritisch -- die Richtung stimmt, und der
-gemeinsame Faktor $\tfrac12$ kürzt sich in der Normierung heraus. Auf \emph{gekrümmten}
-Kanten ist $\bm t$ dagegen die Sehne der ersten Kantenhälfte und damit nicht die Tangente
-in Kantenmitte; der Fehler ist von der Ordnung der Kantenkrümmung.
+Im 2D-Fall ist $\bm n_f=[t_y,-t_x]$ mit der Sehne $\bm t=\bm x_1-\bm x_0$ zwischen den beiden
+\emph{Eck}knoten (\file{mortarcontact.py:\allowbreak{}532--546}). Bei \code{CONLINE3} ist das
+ausdrücklich nicht der letzte Knoten der Liste: die Knotenreihenfolge ist Ende--Ende--Mitte, der
+letzte Eintrag also der Kantenmittelknoten.
+
+Die Eckknoten-Sehne ist dabei keine Näherung, sondern exakt das gesuchte Flächengewicht. Mit
+$\bm t=\mathrm d\bm x/\mathrm d\xi$ und $\bm n=[t_y,-t_x]/\|\bm t\|$ ist $\mathrm d\gamma =
+\|\bm t\|\,\mathrm d\xi$, also
+\begin{equation}
+\int_{\text{Kante}} \bm n\,\mathrm d\gamma \;=\; \int_{-1}^{1}[t_y,-t_x]\,\mathrm d\xi
+\;=\; \bm R\,(\bm x_1-\bm x_0),
+\qquad \bm R=\begin{bmatrix}0&1\\-1&0\end{bmatrix},
+\label{eq:linefacetnormal}
+\end{equation}
+und zwar für gerade wie für gekrümmte Kanten gleichermaßen, da
+$\int \mathrm d\bm x/\mathrm d\xi\,\mathrm d\xi = \bm x_1-\bm x_0$ unabhängig von der Krümmung
+gilt. Die 2D-Facettennormale ist damit -- anders als ihr 3D-Gegenstück
+\eqref{eq:facetnormal}, das die Krümmung tatsächlich vernachlässigt -- nicht approximativ.
+
+\medskip
+\noindent\emph{Anmerkung zur Entwicklungsgeschichte.} Bis einschließlich Commit \code{7c0c078}
+stand hier $\bm t=\bm x_{\text{letzt}}-\bm x_0$, bei \code{CONLINE3} also die Sehne der
+\emph{ersten Kantenhälfte}. Auf geraden Kanten ist das folgenlos (die Richtung stimmt, der
+gemeinsame Faktor $\tfrac12$ kürzt sich in der Normierung heraus), auf gekrümmten dagegen nicht:
+für einen um $0{,}15$ aus der Sehne einer Einheitskante gerückten Mittelknoten ergab sich eine um
+$16{,}7^\circ$ verdrehte Knotennormale. Der Fehler war nicht auffindbar, weil der zugehörige Test
+(\file{01\_node\_normals}) die Formel des Codes nachbaute und anschließend $\bm n_f\cdot\bm t=0$
+prüfte -- eine Identität, die für jede Eingabe gilt. Er wird jetzt gegen die analytische Normale
+einer gekrümmten Fläche geprüft (Abschnitt~\ref{sec:verif}).
 
 Die gemittelte Normale garantiert ein stetiges Normalenfeld über Facettengrenzen hinweg, was für
 die Konsistenz des Kontakts an Elementkanten nötig ist.
 
 \subsection{Eingefrorene Geometrie (staggered update)}
 \label{sec:frozen}
-Normalen $\bm n_I$ und Koppelmatrizen $\bm D,\bm M$ werden \emph{einmal} zu Increment-Beginn in der
-aktuellen (deformierten) Konfiguration berechnet und dann für alle Newton-Iterationen des Increments
-festgehalten (\file{mortarcontact.py:\allowbreak{}721--756}). Die Formulierung ist damit eine
+Normalen $\bm n_I$ und Koppelmatrizen $\bm D,\bm M$ werden \emph{einmal} je Increment berechnet und
+dann für alle Newton-Iterationen des Increments festgehalten. Die Formulierung ist damit eine
 \emph{gestaffelte} (staggered) Behandlung der Geometrienichtlinearität. Das hat zwei
-Konsequenzen, die sauber auseinandergehalten werden müssen.
+Konsequenzen, die sauber auseinandergehalten werden müssen -- und es setzt voraus, dass die
+Referenzkonfiguration eindeutig festgelegt ist, was einen eigenen Absatz wert ist.
+
+\paragraph{(0) Referenzkonfiguration: der letzte konvergierte Zustand.}
+Die Geometrie wird bei
+\begin{equation}
+\bm U_{\text{ref}} \;=\; \bm U_{n+1} - \Delta\bm U \;=\; \bm U_n
+\label{eq:frozenref}
+\end{equation}
+ausgewertet, also am Ende des letzten \emph{konvergierten} Increments
+(\file{mortarcontact.py:\allowbreak{}900--906}). Das ist keine Selbstverständlichkeit: die Löser
+von \code{EdelweissFE} extrapolieren das vorangegangene Increment, bevor sie zum ersten Mal
+assemblieren (Schlüsselwort \code{extrapolation}, \textbf{Standardwert \code{linear}}; damit ist
+schon in Iteration~0 $\bm U_{n+1}=\bm U_n+\Delta\bm U_{\text{extrap}}$,
+\file{nonlinearimplicitstatic.py:\allowbreak{}380--395}). Würde die Geometrie an diesem
+\emph{Prädiktor} eingefroren, so hinge die \emph{konvergierte} Kontaktlösung von einer
+Löser-Option ab, die sie nicht beeinflussen darf. Hinzu kämen zwei Inkonsistenzen: nach einem
+Cutback setzt der Löser $\Delta\bm U=\bm 0$, sodass Wiederholversuche eine andersartige Referenz
+benutzten als reguläre Increments; und die Fehleraussage des gestaffelten Verfahrens
+(Punkt~(2) unten) ist erster Ordnung in der Increment-Größe nur bezogen auf eine
+\emph{gleichgewichtige} Referenzkonfiguration. Da $\Delta\bm U$ dem Constraint ohnehin übergeben
+wird, ist \eqref{eq:frozenref} unmittelbar verfügbar.
+
+\emph{Zur Einordnung:} die Referenzformulierungen frieren überhaupt nicht ein.
+\citet{poppgeewall2009}, \citet{popp2010}, \citet{gitterle} und \citet[Kap.~4]{farah} werten
+$\bm D,\bm M,\bm n_I$ in \emph{jeder} Newton-Iteration neu aus und führen ihre Linearisierungen in
+$\bm K$ mit; MOOSE erzeugt die Mortar-Segmentierung auf dem verschobenen Netz neu und
+differenziert sie per algorithmischer Differentiation. Das ist der Zielzustand
+(Abschnitt~\ref{sec:ausblick:lin}), nicht das hier Umgesetzte. Solange gestaffelt gerechnet wird,
+ist der konvergierte Zustand die einzige wohldefinierte Referenz.
 
 \paragraph{(1) Exaktheit der Tangente bezüglich des eingefrorenen Residuums.}
 Behandelt man $\bm n_I,\bm D,\bm M$ innerhalb des Increments als Konstanten, so ist die
@@ -1242,6 +1342,17 @@ vernachlässigbaren Zusatzterm, sondern um eine bewusste Auslassung
         Der Fehler ist von erster Ordnung in der Increment-Größe und wird über die Schrittweite
         kontrolliert.
 \end{itemize}
+
+\paragraph{Größenordnung des Staffelungsfehlers.} Sie lässt sich beziffern, indem man die
+Referenzkonfiguration zwischen zwei zulässigen Wahlen umschaltet -- konvergierter Zustand
+gegenüber extrapoliertem Prädiktor (Punkt~(0)). Auf den Patch-Tests ändert das \emph{nichts}:
+dort ist die Lösung linear und die Geometrie über das Increment konstant, alle Varianten bleiben
+maschinengenau. Auf dem gekrümmten Hertz-Modell dagegen verschieben sich die Knotendrücke um
+relativ $6{,}5\cdot10^{-4}$ (\file{Control\_Tests/08\_hertz}, \code{hex8\_medium}: $11{,}3869$
+gegenüber $11{,}3795$ im Scheitel). Das ist die Grössenordnung, um die die Staffelung das
+Ergebnis bewegt -- gut drei Grössenordnungen unter dem Modellfehler gegenüber der
+Hertz-Lösung selbst ($4$--$7\,\%$ bei linearen Elementen), aber eben nicht null. Eine
+Increment-Grössen-Studie, die den Fehler über die Schrittweite ausmisst, steht aus.
 
 \medskip
 \noindent\textit{Bekannte Einschränkung.} An \emph{scharfen} Kanten ist die gemittelte
@@ -1591,11 +1702,95 @@ Ein rein geometrisch skaliertes Randwertproblem -- Längen und vorgeschriebene V
 $k$ multipliziert, $E$ unverändert -- besitzt dieselben Dehnungen, Spannungen und Kontaktdrücke;
 nur die Verschiebungen skalieren mit $k$. Test~11 rechnet das Zwei-Block-Problem für
 $k\in\{10^{-3},1,10^{3}\}$ und bestätigt diese Invarianz: Spannungen und Multiplikatoren stimmen
-über die drei Skalen bis $10^{-13}$ überein. Die absoluten Toleranzen der Segmentierung wirken sich
-somit nicht auf die Lösung aus. Für $k=10^{-3}$ übersteigt der Suchrand die Facettengröße um den
-Faktor $200$; die BVH-Anfrage liefert dann nahezu alle Masterfacetten zurück und die Nachbarsuche
-entartet zur vollständigen Paarung mit $\mathcal O(n^2)$ Kandidatenpaaren. Die Konstante bestimmt
-also den Aufwand, nicht das Ergebnis.
+über die drei Skalen bis $10^{-13}$ überein. Für $k=10^{-3}$ übersteigt der Suchrand die
+Facettengröße um den Faktor $200$; die BVH-Anfrage liefert dann nahezu alle Masterfacetten zurück
+und die Nachbarsuche entartet zur vollständigen Paarung mit $\mathcal O(n^2)$ Kandidatenpaaren. Die
+Konstante bestimmt also den Aufwand, nicht das Ergebnis.
+
+\paragraph{Welche Toleranzen der Test erreicht -- und welche nicht.} Die Aussage ist nach
+Rechenpfad zu trennen, denn 2D und 3D benutzen unterschiedliche Schnittroutinen:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{lllX}
+\toprule
+Toleranz & Einheit & Pfad & geprüft durch \\
+\midrule
+Suchmarge $\max(0{,}15\,L,\,0{,}1)$ & Länge & 2D+3D & Test~11 (beide Varianten) \\
+\code{tol} $=10^{-12}$ in \code{map\_2d\_to\_natural} & Länge & 2D+3D & Test~11 (beide Varianten) \\
+$-10^{-12}$ in \code{inside()} (Kreuzprodukt) & \textbf{Fläche} & \textbf{nur 3D} & 3D-Variante von Test~11 \\
+\code{area\_jac} $<10^{-14}$ & \textbf{Fläche} & \textbf{nur 3D} & 3D-Variante von Test~11 \\
+$|D_{jk}|>10^{-14}$ (Besetzungsmuster) & Fläche & 2D+3D & Test~11 (beide Varianten) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent Im 2D-Pfad wird \code{sutherland\_hodgman\_clip} gar nicht aufgerufen -- dort schneidet
+\code{clip\_1d\_segments} Intervalle. Eine reine 2D-Skalenstudie kann die beiden flächenwertigen
+Toleranzen des Clippings deshalb grundsätzlich nicht erreichen, gleichgültig wie weit sie die
+Skala spreizt. Test~11 führt daher beide Varianten.
+
+\paragraph{Grenze der Längenskala: das Residuum der Multiplikatorzeile.}
+\label{sec:scalelimit}
+Die vorstehende Invarianz betrifft die \emph{Lösung}. Das \emph{Konvergenzkriterium} ist dagegen
+nicht skaleninvariant, und das ist die praktisch bindendere Schranke.
+
+Das Residuum der Multiplikatorzeile ist der gewichtete Spalt
+$\tilde g_j = \tilde D_{jj}\,g_{\text{sep},j}$ (Abschnitt~\ref{sec:loesung}), trägt also die
+Einheit Länge~$\times$~Fläche. Sein durch die Maschinengenauigkeit der Koordinaten erreichbarer
+Boden ist
+\begin{equation}
+\big|\tilde g_j\big|_{\min} \;\sim\; \tilde D_{jj}\cdot|\bm x|\cdot\varepsilon
+\;\sim\; L^{\dim}\,\varepsilon ,
+\label{eq:gapfloor}
+\end{equation}
+wächst mit der Modellausdehnung $L$ also in dritter (2D: zweiter) Potenz. \code{EdelweissFE}
+prüft Skalarvariablen jedoch gegen eine \emph{absolute} Schranke
+(\file{config/phenomena.py}: \code{fluxResidualTolerance["scalar variables"]}${}=10^{-8}$, und der
+alternative Toleranzsatz ab Iteration~15 enthält denselben Wert), während die Knotenfelder relativ
+zum räumlich gemittelten Fluss geprüft werden. Ab einer gewissen Modellgröße ist das Kriterium
+damit unerreichbar -- nicht, weil die Lösung falsch wäre, sondern weil die Schranke es ist.
+Gemessen am Zwei-Block-Modell (Test~11, \code{C3D8}/\code{CONQUAD4}, $2$ gegen $3$):
+
+\begin{center}
+\small
+\begin{tabular}{rrrrl}
+\toprule
+$k$ & Ausdehnung & $\max|g_{\text{sep}}|$ & $\max|\tilde g_j|$ & gegen $10^{-8}$ \\
+\midrule
+$1$      & $2$    & $2{,}55\cdot10^{-15}$ & $1{,}60\cdot10^{-16}$ & erreichbar \\
+$10^{3}$ & $2000$ & $7{,}15\cdot10^{-13}$ & $1{,}79\cdot10^{-7}$  & \textbf{unerreichbar} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent In beiden Fällen ist die Lösung exakt: $\max|u_y-u_y^{\text{exakt}}|<10^{-12}$ und
+$|\lambda_j|=p$ auf zwölf Stellen. Die physikalische Knotenöffnung $g_{\text{sep}}$ verschwindet
+in beiden Fällen bis auf die Koordinatenrundung; nur ihr mit $\tilde D_{jj}$ gewichtetes Gegenstück
+tut es nicht. Ohne Eingriff bricht der Löser das erste Increment ab
+(\emph{``Failed zero increment''}), und zwar bei \emph{passenden} wie bei nichtpassenden Netzen
+gleichermaßen -- das schließt die Toleranzen der Schnittbildung als Ursache aus; der Monolith
+ohne Kontakt läuft bei derselben Ausdehnung maschinengenau durch.
+
+\medskip
+\noindent\textbf{Abhilfe im Anwendungsfall.} Die Schranke ist in der Eingabedatei einstellbar:
+\begin{lstlisting}[language=bash]
+*updateConfiguration, configuration=fluxResidualTolerance
+scalar variables=1e-4
+\end{lstlisting}
+Als Anhaltswert dient \eqref{eq:gapfloor} mit Sicherheitsfaktor, also
+$\sim\!10^2\,L^{\dim}\varepsilon$; Test~11 führt genau diesen Ausdruck mit und prüft, dass die
+Lösung über sechs Zehnerpotenzen der Längenskala unverändert bleibt. Ein Modell in Millimetern
+statt Metern ist damit unkritisch, ein Modell von einigen tausend Einheiten Ausdehnung nicht.
+
+\medskip
+\noindent\emph{Alternative, nicht umgesetzt:} skalierte man Zeile \emph{und} Spalte des
+Multiplikatorblocks mit $\tilde D_{jj}^{-1}$, so würde das Residuum zu $g_{\text{sep}}$, also einer
+Länge, und die Symmetrie des Sattelpunktsystems bliebe erhalten -- der Boden \eqref{eq:gapfloor}
+sänke um den Faktor $L^{\dim-1}$. Der Preis wäre, dass die Unbekannte dann die Knotenkraft
+$\tilde D_{jj}\lambda_j$ ist und nicht mehr der Druck $\lambda_j$, was sämtliche Auswertungen und
+die Deutung in Abschnitt~\ref{sec:sgnd} umstellen würde. Bewusst nicht gemacht; die einstellbare
+Schranke leistet dasselbe mit einer Zeile in der Eingabedatei.
 
 \paragraph{Dimension des Parameters $c_n$.}
 Im Indikator $s_{n,j}=p_{n,j}-c_n\,g_{\text{sep},j}$ ist $p_{n,j}$ eine Spannung, während
@@ -1657,7 +1852,7 @@ Slave-Facettennormale in den eigenen Körper, so kehren sich Spalt- und Druckvor
 Kontakt überträgt Zug statt Druck.
 
 \paragraph{Laufzeitdiagnosen.}
-Vier Zustände sind zulässig, aber tragen Voraussetzungen der Formulierung nicht mehr; sie werden
+Fünf Zustände sind zulässig, aber tragen Voraussetzungen der Formulierung nicht mehr; sie werden
 zur Laufzeit gemeldet, je Constraint und Ursache einmal, da sie nach ihrem ersten Auftreten in
 jedem weiteren Increment wiederkehren:
 
@@ -1668,7 +1863,9 @@ jedem weiteren Increment wiederkehren:
 Zustand & Verletzte Voraussetzung \\
 \midrule
 Nicht-konvexe Slave-Sub-Zelle & Konvexität des Clip-Fensters von Sutherland--Hodgman; das
-Integrationsgebiet wird zu klein (Abschnitt~\ref{sec:subcells}). \\
+Integrationsgebiet wird zu klein (Abschnitt~\ref{sec:subcells}, Fall (a)). \\
+Nicht-konvexe Master-Sub-Zelle & Konvexität des Überlappungspolygons, die die Fächer-Triangulierung
+voraussetzt; das Integrationsgebiet wird zu groß (Abschnitt~\ref{sec:subcells}, Fall (b)). \\
 $\mathrm{cond}(\bm M_t)\ge10^{12}$ & Biorthogonalität auf dem tatsächlichen Integrationsgebiet;
 es gilt nur noch die des Referenzelements (Abschnitt~\ref{sec:sliver}). \\
 $\tilde D_{jj}<0$ & Integral-Positivität nach \citet[Gl.~(4.2)]{popp2012}; der gewichtete Spalt
@@ -1701,7 +1898,8 @@ folgenden Bausteine belegen die Korrektheit der obigen Herleitungen.
 \toprule
 Eigenschaft & Prüfung \\
 \midrule
-\textbf{Polygon-Clipping} & Schnitt-/Triangulierungsgeometrie gegen analytische Überlappungen (\file{02\_polygon\_clipping}). \\
+\textbf{Knotennormalen} & Flächengewichtete Knotennormale gegen die \emph{analytische} Normale eines Zylinderausschnitts, mit Konvergenz unter Netzverfeinerung; dazu die Orientierung (nach außen) und die exakte 2D-Sehnenformel \eqref{eq:linefacetnormal} auf gekrümmten CONLINE3-Kanten (\file{01\_node\_normals}). \\
+\textbf{Polygon-Clipping} & Schnitt-/Triangulierungsgeometrie gegen analytische Überlappungen, einschließlich des Flächen\emph{gewinns} bei nicht-konvexem Subject (\file{02\_polygon\_clipping}). \\
 \textbf{Koppelmatrizen} & $\bm D,\bm M$, Zeilensummen-Identität \eqref{eq:rowsum} ($<10^{-14}$) und Überlappungsfläche gegen den analytischen Wert (\file{03\_coupling\_matrices}). \\
 \textbf{Biorthogonalität} & \eqref{eq:biorth} numerisch verifiziert (\file{04\_dual\_biorthogonality}). \\
 \textbf{Quadratische Segmentierung} & Sub-Cell-Zerlegung + Segmentquadratur für CONQUAD8/9, CONTRI6 (\file{05\_quadratic\_segmentation}). \\
@@ -1710,7 +1908,7 @@ Eigenschaft & Prüfung \\
 \textbf{Patch-Test hex20} & 3D-Patch-Test mit CONQUAD8, vier Netz-/Ordnungskombinationen mit geraden Kanten plus eine verzerrte Variante (\file{08\_patch\_test\_hex20}). \\
 \textbf{Konsistente Tangente} & $\bm K$ gegen zentrale Differenzen des Residuums, alle Freiheitsgrade, beide NCP-Zweige (\file{09\_consistent\_tangent}). \\
 \textbf{Signorini-Bedingungen} & Nachprüfung der \emph{konvergierten} Lösung: $p_n\ge0$, $g_{\text{sep}}\ge0$, $p_n\,g_{\text{sep}}=0$ je Slave-Knoten, in Lastfällen mit arbeitendem Active Set (\file{10\_signorini\_check}). \\
-\textbf{Skaleninvarianz} & Dieselbe Rechnung über sechs Zehnerpotenzen der Längenskala, als Test aller absoluten Toleranzen (\file{11\_scale\_invariance}). \\
+\textbf{Skaleninvarianz} & Dieselbe Rechnung über sechs Zehnerpotenzen der Längenskala, in 2D \emph{und} 3D (\file{11\_scale\_invariance}). Nur die 3D-Variante erreicht die flächenwertigen Toleranzen des Polygon-Clippings. Derselbe Test hält zudem die Grenze fest, ab der die \emph{absolute} Konvergenzschranke des Lösers für die Multiplikatorzeile unerreichbar wird (Abschnitt~\ref{sec:scalelimit}). \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -1745,6 +1943,20 @@ Eigenschaft & Prüfung \\
         bis $0{,}2$ \emph{inaktiv} bleiben und bei Durchdringung aktiv werden -- die von
         \citet[Abschn.~4.3]{popp2012} geforderte Vorzeichentreue des gewichteten Spalts
         (Abschnitt~\ref{sec:sgnd}).
+  \item \textbf{Knotennormalen gegen eine unabhängige Referenz.} Auf einem Zylinderausschnitt
+        vom Radius $4$ wird die flächengewichtete Knotennormale mit der analytischen verglichen.
+        Der Winkelfehler halbiert sich bei Halbierung der Elementgröße (gemessen $7{,}16^\circ$
+        bei $n=2$ auf $3{,}58^\circ$ bei $n=4$, Faktor $2{,}00$), und zwar für alle sieben
+        Elementtypen gleich -- die Facettennormale \eqref{eq:facetnormal} benutzt ausschließlich
+        Eckknoten, quadratische Facetten gewinnen dort also nichts. Zusätzlich wird geprüft, dass
+        keine Normale in den eigenen Körper zeigt, und dass die 2D-Sehnenformel
+        \eqref{eq:linefacetnormal} für \emph{jede} Mittelknotenlage exakt ist.
+
+        \emph{Warum das ausdrücklich dasteht:} die vorherige Fassung dieses Tests baute die
+        Formel des Codes nach und prüfte anschließend $\bm n_f\cdot\bm v=0$ -- eine Identität,
+        die für jede Eingabe gilt. Der Test konnte nicht fehlschlagen und hat den in
+        Abschnitt~\ref{sec:normalen} beschriebenen Fehler in der 2D-Facettennormale deshalb nicht
+        gesehen.
   \item \textbf{Zwei-Block-Referenztests} (\file{Control\_Tests/README.md}): verschiebungs- und
         lastgesteuerte Blöcke, konform und nichtkonform, mit Abgleich von Verschiebungsfeld,
         Spannungen und Kontaktbedingungen; dort sind auch die beobachteten Grenzen des
@@ -2164,7 +2376,7 @@ Der Mortar-Kontakt basiert auf expliziten Overlay-Kontaktelementen (\code{CONLIN
 
 \bibitem[Hintermüller et al.(2002)]{hik2002} M.~Hintermüller, K.~Ito, K.~Kunisch: \emph{The primal-dual active set strategy as a semismooth Newton method}, SIAM Journal on Optimization 13 (2002), 865--888. (Lokale Kopie: \path{meetings/literature/HintermuellerItoKunisch_2002_ThePrimalDualActiveSetStrategyAsASemismoothNewtonMethod.pdf})
 
-\bibitem[Hüeber \& Wohlmuth(2005)]{hueber2005} S.~H\"ueber, B.~I.~Wohlmuth: \emph{A primal-dual active set strategy for non-linear and contact problems}, Computer Methods in Applied Mechanics and Engineering 194 (2005), 3147--3166. (Lokale Kopie: \path{meetings/literature/HüeberWohlmuth_2005_APrimalDualActiveSetStrategyForNonLinearContactProblems.pdf})
+\bibitem[Hüeber \& Wohlmuth(2005)]{hueber2005} S.~H\"ueber, B.~I.~Wohlmuth: \emph{A primal--dual active set strategy for non-linear multibody contact problems}, Computer Methods in Applied Mechanics and Engineering 194 (2005), 3147--3166. (Lokale Kopie: \path{meetings/literature/HüeberWohlmuth_2005_APrimalDualActiveSetStrategyForNonLinearContactProblems.pdf} -- der Dateiname lässt ``multibody'' aus, der Titel auf der Titelseite lautet wie oben.)
 
 \bibitem[Lamichhane et al.(2005)]{lamichhane2005} B.~P.~Lamichhane, R.~P.~Stevenson, B.~I.~Wohlmuth: \emph{Higher order mortar finite element methods in 3D with dual Lagrange multiplier bases}, Numerische Mathematik 102 (2005), 93--121. (Lokale Kopie: \path{meetings/literature/LamichhaneStevensonWohlmuth_2005_HigherOrderMortarFiniteElementMethodsIn3DWithDualLagrangeMultiplierBases.pdf})
 

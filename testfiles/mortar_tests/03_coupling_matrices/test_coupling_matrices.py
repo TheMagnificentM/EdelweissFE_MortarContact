@@ -214,6 +214,9 @@ def run_coupling_assembly_test():
     print("\n[PASS] MORTAR COUPLING ASSEMBLY TEST SUCCESSFUL!")
     return True
 
+def test_coupling_matrices():
+    assert run_coupling_assembly_test(), "Assemblierung der Koppelmatrizen fehlgeschlagen"
+
+
 if __name__ == '__main__':
-    if not run_coupling_assembly_test():
-        sys.exit(1)
+    test_coupling_matrices()

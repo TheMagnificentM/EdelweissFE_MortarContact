@@ -265,31 +265,28 @@ nie maschinengenau. Mesh: ~11–22 Elemente über die halbe Kontaktbreite. Druck
 `08_hertz/hertz_profile_*.csv`, Punktwolke in `08_hertz/lambda_hertz_*.vtk`, Bild in
 `hertz_pressure_profile.png`.
 
-> **Offener Punkt – `hertz_hex20_medium` konvergiert nicht zuverlässig.** Von den vier
-> Hertz-Varianten laufen `hex8_medium`, `hex8_fine` und `hex20_fine` durch; `hex20_medium` ist
-> seit Einführung der semismooth NCP nur noch **marginal** konvergent und dabei
-> **nichtdeterministisch** (paralleler Solver → andere Rundungsreihenfolge): bei identischem
-> Input läuft derselbe Fall manchmal komplett durch (27 Inkremente, 1 Cutback) und bricht
-> manchmal ab. Mit der früheren heuristischen Aktiv-Set-Regel lief er deterministisch in
-> 10 Inkrementen.
+> **Erledigt – `hertz_hex20_medium` konvergiert wieder zuverlässig.** Frühere Fassungen dieses
+> README hielten fest, dieser eine Fall sei seit Einführung der semismooth NCP nur noch
+> **marginal** und **nichtdeterministisch** konvergent (manchmal 27 Inkremente mit einem Cutback,
+> manchmal Abbruch bei identischem Input). Das gilt nicht mehr.
 >
-> Was nachgemessen wurde und es **nicht** erklärt bzw. behebt:
-> - **c_n**: Sweep über c_n = 10 … 10⁶ – ändert nichts (wie es sein muss, c_n ist algorithmisch).
-> - **Geduld des Solvers**: `maxIter` 30 → 50 und `maxGrowIter` 10 → 25 – 2 von 4 Läufen durch,
->   2 abgebrochen, also keine Verbesserung.
-> - **Schrittweite**: `minInc` 10⁻⁴ → 10⁻⁷ mit `maxNumInc=2000` – 0 von 3 Läufen durch. Kleinere
->   Lastschritte helfen also gerade nicht; das schließt ein reines Lastpfad-/Schrittweitenproblem
->   aus und deutet auf Active-Set-Chattering.
+> Nachgemessen am Stand dieses Branches: **3 von 3 Läufen laufen durch, jedes Mal in 12
+> Inkrementen, ohne Cutback.** Auch der Gesamtreport meldet alle vier Hertz-Varianten als
+> konvergiert. Der Fall ist damit weder marginal noch nichtdeterministisch.
 >
-> Ursache ist der kleinere Konvergenzradius des semismooth-Newton-Verfahrens: genau hier
-> (quadratische Elemente, mittleres Netz) fällt die Knoten-zu-Knoten-Oszillation des
-> Kontaktdrucks am Kontaktrand mit ~10 % am stärksten aus (Ecke/Mittelknoten-Effekt, s. oben),
-> und die Aktiv-Menge wandert dort von Iteration zu Iteration. Das literaturkonforme Gegenmittel
-> ist eine Line-Search-/Damped-Newton-Globalisierung (Deuflhard 2004; De Luca–Facchinei–Kanzow
-> 1996), **nicht** ein Rückfall auf die Heuristik. Bis dahin wird dieser eine Fall bewusst
-> hingenommen; die Testeinstellungen bleiben deshalb unverändert (die obigen Werte sind nur
-> Messungen, sie stehen nicht im Input). Alle übrigen 21 Varianten der Testreihe sind unberührt,
-> insbesondere auch das feinere `hex20_fine`.
+> Ursache ist **nicht** eine Änderung am Kontakt in dieser Sitzung – geprüft: die Änderung der
+> Referenzkonfiguration der eingefrorenen Geometrie (letzter konvergierter Zustand statt
+> extrapolierter Prädiktor) liefert bei diesem Modell bitgleich dasselbe Ergebnis, 3 von 3 Läufen
+> in beiden Varianten; die übrigen Änderungen betreffen den 2D-Pfad bzw. nur eine Warnung.
+> Die Verbesserung stammt aus der vorangegangenen Arbeit auf diesem Branch (Vorzeichen-Guard bei
+> negativem Knotengewicht, Anti-Cycling, Inkrement-Abbruchkriterium der Rückabbildung); der
+> Kasten hier war schlicht nicht nachgeführt worden.
+>
+> Was davon unberührt bleibt: die Knoten-zu-Knoten-Oszillation des Kontaktdrucks am Kontaktrand
+> (~10 % bei `hex20_medium`, Ecke/Mittelknoten-Effekt, s. oben) besteht weiter – sie ist ein
+> Genauigkeits-, kein Konvergenzproblem. Das literaturkonforme Mittel gegen Active-Set-Chattering
+> bliebe eine Line-Search-/Damped-Newton-Globalisierung (Deuflhard 2004;
+> De Luca–Facchinei–Kanzow 1996); notwendig ist sie auf dieser Testreihe derzeit nicht.
 
 **Zusammengefasst:** Der Mortar-Kontakt arbeitet in allen geprüften Fällen korrekt: er überträgt
 Druck mit gleichmäßigem Kontaktdruck, trennt sich unter Zug, gleitet reibungsfrei, hält die
@@ -297,6 +294,6 @@ Steifigkeit elementunabhängig (auch bei Steifigkeitskontrast), ist auf einer um
 Fläche maschinengenau und reproduziert den Hertz'schen Kontakt im erwarteten Näherungsrahmen.
 Weggesteuert (03), Abheben (04), Gleiten (05) und der schiefe Test (06) sind maschinengenau ganz
 ohne Eingriff; bei den kraftgesteuerten Fällen (01, 02) steckt nur die dokumentierte, winzige
-Stabilisierungsfeder (~10⁻⁶) drin. Kein Restfehler stammt aus einem Fehler des Kontakts. Einzige
-Ausnahme im Konvergenzverhalten (nicht in der Genauigkeit) ist `hertz_hex20_medium` – siehe den
-Kasten oben.
+Stabilisierungsfeder (~10⁻⁶) drin. Kein Restfehler stammt aus einem Fehler des Kontakts, und
+sämtliche 22 Varianten konvergieren – einschließlich aller vier Hertz-Modelle (siehe den Kasten
+oben; die frühere Ausnahme `hertz_hex20_medium` besteht nicht mehr).

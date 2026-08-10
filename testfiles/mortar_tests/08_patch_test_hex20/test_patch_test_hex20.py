@@ -38,11 +38,13 @@ gilt dort nur näherungsweise, konvergiert aber mit Netzverfeinerung optimal
 (Farah 2018, App. A.2.2). Bei 5% Verzerrungsamplitude beträgt der beobachtete
 Fehler ~0.4%; die Toleranz ist entsprechend gesetzt.
 
-Kontrollen je Variante:
-  - max|u_x|, max|u_y| ~ 0
-  - u_z an jedem Knoten gleich der exakten linearen Lösung
+Kontrollen je Variante (die Belastungsrichtung ist y, nicht z):
+  - max|u_x|, max|u_z| ~ 0  (quer zur Belastung, per Dirichlet gehalten)
+  - u_y an jedem Knoten gleich der exakten linearen Lösung u_y = -p*y/E
   - alle Kontakt-Multiplikatoren aktiv, gleiches Vorzeichen, |lambda| = p
     (konstanter übertragener Kontaktdruck, keine Oszillationen)
+  - das mit den dualen Knotengewichten gewichtete Mittel der Multiplikatoren
+    (= übertragene Gesamtkraft / Fläche) gleich p
 """
 
 import os
@@ -166,13 +168,13 @@ def run_variant(name, elA, nxA, nzA, conA, elB, nxB, nzB, conB, distort=False,
     print(f"  max|u_y - u_y_exakt|      = {max_err_uy:.3e}  (Toleranz {tol_u * u_ref:.1e})")
     if max_err_lateral > tol_u * u_ref or max_err_uy > tol_u * u_ref:
         print(f"  [FAIL] Verschiebungsfeld weicht von der exakten Patch-Lösung ab!")
-        sys.exit(1)
+        raise AssertionError("Patch-Test fehlgeschlagen -- siehe [FAIL] oben")
 
     # --- Kontrolle 2: konstanter Kontaktdruck (Multiplikatoren) ---
     lambdas = np.array([v.value for v in model.scalarVariables.values()]).flatten()
     if len(lambdas) == 0:
         print("  [FAIL] Keine Kontakt-Multiplikatoren im Modell gefunden!")
-        sys.exit(1)
+        raise AssertionError("Patch-Test fehlgeschlagen -- siehe [FAIL] oben")
 
     lam_err = np.max(np.abs(np.abs(lambdas) - PRESSURE)) / PRESSURE
     same_sign = np.all(lambdas > 0) or np.all(lambdas < 0)
@@ -187,24 +189,20 @@ def run_variant(name, elA, nxA, nzA, conA, elB, nxB, nzB, conB, distort=False,
 
     if not same_sign:
         print(f"  [FAIL] Kontaktdruck oszilliert (unterschiedliche Vorzeichen)!")
-        sys.exit(1)
+        raise AssertionError("Patch-Test fehlgeschlagen -- siehe [FAIL] oben")
     if lam_err > tol_lam:
         print(f"  [FAIL] Kontaktdruck nicht konstant = p!")
-        sys.exit(1)
+        raise AssertionError("Patch-Test fehlgeschlagen -- siehe [FAIL] oben")
     if lam_mean_err > (tol_lam_mean if tol_lam_mean is not None else tol_lam):
         print(f"  [FAIL] Übertragene Gesamtkraft weicht von p*A ab!")
-        sys.exit(1)
+        raise AssertionError("Patch-Test fehlgeschlagen -- siehe [FAIL] oben")
 
     print(f"  [PASS] Variante '{name}' erfolgreich!")
     os.remove(inp_path)
     os.remove(setup_path)
 
 
-if __name__ == "__main__":
-    print("====================================================")
-    print("MORTAR KONTAKT-PATCH-TEST (HEX20 / SERENDIPITY)")
-    print("====================================================")
-
+def test_patch_test_hex20():
     run_variant("hex20_hex20_matching", "C3D20", 2, 2, "CONQUAD8", "C3D20", 2, 2, "CONQUAD8")
     run_variant("hex20_hex20_nonmatching", "C3D20", 2, 2, "CONQUAD8", "C3D20", 3, 3, "CONQUAD8")
     run_variant("hex20_slave_hex8_master", "C3D20", 2, 2, "CONQUAD8", "C3D8", 3, 3, "CONQUAD4")
@@ -216,6 +214,14 @@ if __name__ == "__main__":
     # maßgebliche Größe und bleibt auf ~1e-4 genau.
     run_variant("hex20_hex20_distorted", "C3D20", 2, 2, "CONQUAD8", "C3D20", 3, 3, "CONQUAD8",
                 distort=True, tol_u=1e-2, tol_lam=0.2, tol_lam_mean=1e-3)
+
+
+if __name__ == "__main__":
+    print("====================================================")
+    print("MORTAR KONTAKT-PATCH-TEST (HEX20 / SERENDIPITY)")
+    print("====================================================")
+
+    test_patch_test_hex20()
 
     print("\n====================================================")
     print("ALLE PATCH-TESTS ERFOLGREICH PASSIERT!")

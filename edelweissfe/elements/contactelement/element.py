@@ -425,11 +425,25 @@ class ContactElement(BaseElement):
         """Return the basis transformation matrix T_e for the construction of dual
         shape functions on second-order elements.
 
-        For quadratic elements the weighted integrals int(N_a) dGamma of the corner
-        node shape functions are negative or zero (e.g. exactly -1/12 * A for the
-        corner nodes of an undistorted CONQUAD8), so the dual weights D_II would
-        lose their meaning as positive area weights. Following Popp, Wohlmuth,
-        Gee & Wall (2012) and Farah (2018), Sec. 6.2.3.2, shape function
+        The transformation serves two distinct purposes, and which one applies
+        depends on the element type - the corner-node integrals int(N_a) dGamma are
+        NOT negative for every quadratic type:
+
+            CONQUAD8   -1/12 * A  (undistorted)   -> integral positivity violated
+            CONTRI6     0                          -> integral positivity violated
+            CONLINE3   +1/3 (on [-1,1])            -> integral positivity holds
+            CONQUAD9   +1/9 (reference square)     -> integral positivity holds
+
+        For CONQUAD8 and CONTRI6 the transformation is what makes the dual weights
+        D_II positive area weights at all (Popp, Wohlmuth, Gee & Wall 2012,
+        Eq. (4.2)-(4.4)). For CONLINE3 the full-element integral is already
+        positive; there the transformation buys the STRONGER property that matters
+        in a segment-based formulation, namely pointwise non-negativity of the
+        transformed basis - without it, N_corner = 1/2*xi*(xi-1) changes sign inside
+        the element and a partially covered facet can still produce a negative
+        nodal weight.
+
+        Following Popp et al. (2012) and Farah (2018), Sec. 6.2.3.2, shape function
         contributions of the mid-side nodes are shifted to their adjacent corner
         nodes with the factor alpha = 1/3:
 
@@ -442,9 +456,13 @@ class ContactElement(BaseElement):
 
         CONQUAD9 (full-Lagrangian, from hex27) is deliberately excluded: its
         corner-node integrals are already strictly positive (1/9 on the reference
-        square), so it needs no transformation, and the serendipity mid-to-corner
-        recipe does not even address its central node. The identity is returned
-        for it, as for all linear element types.
+        square), so Popp et al. (2012), p. B431, state explicitly that "no basis
+        transformation is needed in the case of quad9 surfaces", and the
+        serendipity mid-to-corner recipe does not even address its central node.
+        The identity is returned for it, as for all linear element types. The
+        price is that CONQUAD9 keeps no pointwise non-negativity either, so its
+        nodal weights CAN turn negative under partial coverage - that is the case
+        the sgn(D_II) handling in mortarcontact.py exists for.
         """
         n = self._nNodes
         T_e = np.eye(n)

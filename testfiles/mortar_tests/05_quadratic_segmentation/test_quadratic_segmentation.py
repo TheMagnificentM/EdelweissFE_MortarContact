@@ -109,7 +109,7 @@ def build_single_facet_model(el_type, slave_pts, master_pts, master_el_type=None
 def check(name, value, expected, tol=TOL):
     if abs(value - expected) > tol:
         print(f"  [FAIL] {name}: {value:.12f}, erwartet {expected:.12f}")
-        sys.exit(1)
+        raise AssertionError("Segmentierungspruefung fehlgeschlagen -- siehe [FAIL] oben")
     print(f"  [OK]   {name}: {value:.12f}")
 
 
@@ -125,7 +125,7 @@ def run_quad_test(el_type, points_func):
     lumped = np.sum(D, axis=1)
     if np.any(lumped <= 0.0):
         print(f"  [FAIL] Gelumpte Gewichte nicht strikt positiv: {lumped}")
-        sys.exit(1)
+        raise AssertionError("Segmentierungspruefung fehlgeschlagen -- siehe [FAIL] oben")
     print(f"  [OK]   Alle gelumpten Gewichte positiv (min = {np.min(lumped):.6f})")
 
     if el_type == "CONQUAD8":
@@ -133,7 +133,7 @@ def run_quad_test(el_type, points_func):
         expected = np.array([5.0 / 36.0] * 4 + [1.0 / 9.0] * 4)
         if not np.allclose(lumped, expected, atol=1e-10):
             print(f"  [FAIL] Gelumpte Gewichte {lumped} != analytisch {expected}")
-            sys.exit(1)
+            raise AssertionError("Segmentierungspruefung fehlgeschlagen -- siehe [FAIL] oben")
         print("  [OK]   Gelumpte Gewichte entsprechen analytischen Werten (5/36, 1/9)")
 
     print(f"* Teste {el_type}: Master um 0.3 in x verschoben...")
@@ -156,7 +156,7 @@ def run_quad_test(el_type, points_func):
         bound = -1e-12
     if np.any(lumped < bound):
         print(f"  [FAIL] Gelumpte Gewichte bei Teilüberdeckung zu negativ: {lumped}")
-        sys.exit(1)
+        raise AssertionError("Segmentierungspruefung fehlgeschlagen -- siehe [FAIL] oben")
     print(f"  [OK]   Gelumpte Gewichte bei Teilüberdeckung im zulässigen Bereich (min = {np.min(lumped):.6f})")
 
     print(f"  [PASS] {el_type} erfolgreich verifiziert!")
@@ -252,17 +252,17 @@ def run_subcell_convexity_test():
         )
         if warned == convex:
             print(f"  [FAIL] Laufzeitmeldung bei t = {t} passt nicht zur Konvexität")
-            sys.exit(1)
+            raise AssertionError("Segmentierungspruefung fehlgeschlagen -- siehe [FAIL] oben")
         if convex != expect_convex:
             print(f"  [FAIL] Konvexität bei t = {t} anders als erwartet ({convex})")
-            sys.exit(1)
+            raise AssertionError("Segmentierungspruefung fehlgeschlagen -- siehe [FAIL] oben")
         if convex and abs(loss) > 1e-10:
             print(f"  [FAIL] Flächenverlust {loss:.3e} bei KONVEXEN Sub-Zellen (t = {t})!")
-            sys.exit(1)
+            raise AssertionError("Segmentierungspruefung fehlgeschlagen -- siehe [FAIL] oben")
         if not convex and loss < 1e-3:
             print(f"  [FAIL] Nicht-konvexe Sub-Zelle ohne messbaren Verlust bei t = {t} -- "
                   "die dokumentierte Schwelle stimmt nicht mehr")
-            sys.exit(1)
+            raise AssertionError("Segmentierungspruefung fehlgeschlagen -- siehe [FAIL] oben")
 
     print("  CONQUAD9, Zentralknoten auf (s, s):")
     for s, expect_convex in [(0.5, True), (0.4, True), (0.3, True), (0.26, True), (0.15, False)]:
@@ -276,17 +276,17 @@ def run_subcell_convexity_test():
         )
         if warned == convex:
             print(f"  [FAIL] Laufzeitmeldung bei s = {s} passt nicht zur Konvexität")
-            sys.exit(1)
+            raise AssertionError("Segmentierungspruefung fehlgeschlagen -- siehe [FAIL] oben")
         if convex != expect_convex:
             print(f"  [FAIL] Konvexität bei s = {s} anders als erwartet ({convex})")
-            sys.exit(1)
+            raise AssertionError("Segmentierungspruefung fehlgeschlagen -- siehe [FAIL] oben")
         if convex and abs(loss) > 1e-10:
             print(f"  [FAIL] Flächenverlust {loss:.3e} bei KONVEXEN Sub-Zellen (s = {s})!")
-            sys.exit(1)
+            raise AssertionError("Segmentierungspruefung fehlgeschlagen -- siehe [FAIL] oben")
         if not convex and loss < 1e-3:
             print(f"  [FAIL] Nicht-konvexe Sub-Zelle ohne messbaren Verlust bei s = {s} -- "
                   "die dokumentierte Schwelle stimmt nicht mehr")
-            sys.exit(1)
+            raise AssertionError("Segmentierungspruefung fehlgeschlagen -- siehe [FAIL] oben")
 
     print("  [PASS] Flächenerhalt exakt, solange die Sub-Zellen konvex sind; "
           "Schwellen (CONQUAD8 t = 0.5, CONQUAD9 s = 0.25) bestätigt.")
@@ -324,16 +324,20 @@ def run_tri6_test():
     print("  [PASS] CONTRI6 erfolgreich verifiziert!")
 
 
-if __name__ == "__main__":
-    print("====================================================")
-    print("MORTAR SUB-ZELLEN-SEGMENTIERUNG VERIFIKATIONSTEST")
-    print("====================================================")
-
+def test_quadratic_segmentation():
     run_quad_test("CONQUAD4", lambda shift_x=0.0: quad8_points(shift_x)[:4])
     run_quad_test("CONQUAD8", quad8_points)
     run_quad_test("CONQUAD9", quad9_points)
     run_tri6_test()
     run_subcell_convexity_test()
+
+
+if __name__ == "__main__":
+    print("====================================================")
+    print("MORTAR SUB-ZELLEN-SEGMENTIERUNG VERIFIKATIONSTEST")
+    print("====================================================")
+
+    test_quadratic_segmentation()
 
     print("\n====================================================")
     print("ALLE SEGMENTIERUNGSTESTS ERFOLGREICH PASSIERT!")

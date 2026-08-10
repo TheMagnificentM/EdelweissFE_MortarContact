@@ -1,18 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Test 1: Verifizierung der Knotennormalen
-========================================
+Test 4: Verifizierung der Biorthogonalität der dualen Basis
+===========================================================
 
-Dieser Test prüft die geometrische Korrektheit der Knotennormalen auf der Slave-Fläche.
+Dieser Test prüft die Korrektheit der dualen Basisfunktionen auf den Slave-Grenzflächen.
 
-Was dieser Test schrittweise tut:
-1. Er erzeugt ein einfaches Blockgitter (2D oder 3D) mit EdelweissFE-Standardelementen.
-2. Er identifiziert die Ränder und legt die Geometrie-Kontaktelemente (CON-Elemente) darüber.
-3. Er verzerrt (skews) optional die Knotenpositionen mit Zufallswerten, um gekrümmte Oberflächen zu testen.
-4. Er initialisiert das MortarContact3D-Constraint.
-5. Er prüft, ob die berechneten Knotennormalen Einheitsvektoren sind (Länge = 1) und
-   ob sie senkrecht auf den Elementfacetten stehen.
+Die Biorthogonalität wird bezüglich der TRANSFORMIERTEN Basis N_tilde = T_e * N
+erzwungen (Basistransformation nach Popp et al. 2012 / Farah 2018, Abschn. 6.2.3.2;
+T_e = Identität für lineare Elemente):
+
+   integral( M_bar_i * N_tilde_j * dGamma ) = delta_ij * integral( N_tilde_i * dGamma )
+
+Der Test führt für jedes Kontaktelement vier Kontrollen durch:
+- Kontrolle A: Ist D_e eine echte Diagonalmatrix (Nebendiagonaleinträge = 0)?
+- Kontrolle B: Stimmt das Matrix-Produkt A_e * inv(T_e) * M_e exakt mit D_e überein?
+               (M_e ist die Massenmatrix der transformierten Basis, A_e bildet
+               Standard-Formfunktionswerte N auf duale Werte M_bar ab.)
+- Kontrolle C: Ergibt die punktweise Gauß-Integration des Produkts aus dualer Formfunktion
+               M_bar_i und transformierter Formfunktion N_tilde_j exakt die Diagonale D_e?
+- Kontrolle D: Sind alle dualen Gewichte D_e[i,i] strikt positiv? (Zweck der
+               Basistransformation; ohne sie wären z.B. die Eckknoten-Gewichte
+               eines CONQUAD8 negativ.)
 """
 
 import sys
@@ -33,8 +42,7 @@ from edelweissfe.points.node import Node
 def get_local_nodes(el, faceID):
     """
     Hilfsfunktion, um die Knoten einer bestimmten Außenfläche (faceID) eines 3D-Volumenelements
-    zu sammeln. Die Reihenfolge folgt der Abaqus-Konvention, was sicherstellt, 
-    dass die Normale am Ende nach außen zeigt.
+    zu sammeln. Die Reihenfolge folgt der Abaqus-Konvention.
     """
     elType = el.elType.upper()
     if "C3D8" in elType:
@@ -68,8 +76,6 @@ def get_local_nodes(el, faceID):
 def apply_contact_elements(model, surface_name, contact_el_type):
     """
     Erzeugt Kontaktelemente auf einer Oberfläche.
-    Teilt z. B. Vierecksflächen in Dreiecke auf, falls Dreieckskontakt (CONTRI3/CONTRI6) getestet wird,
-    und erstellt das Kontakt-Oberflächen-Set ("con_...").
     """
     ConClass = getElementClass(contact_el_type, "edelweiss")
     max_el_id = max(model.elements.keys()) if model.elements else 0
@@ -80,7 +86,7 @@ def apply_contact_elements(model, surface_name, contact_el_type):
         for el in elements:
             facet_nodes = get_local_nodes(el, faceID)
             
-            # Spezialfall CONQUAD9: benötigt einen zusätzlichen Mittelknoten
+            # Spezialfall CONQUAD9
             if contact_el_type == "CONQUAD9" and len(facet_nodes) == 8:
                 coords = np.array([node.coordinates for node in facet_nodes[:4]])
                 center_coords = np.mean(coords, axis=0)
@@ -89,7 +95,7 @@ def apply_contact_elements(model, surface_name, contact_el_type):
                 model.nodes[max_node_id] = center_node
                 facet_nodes.append(center_node)
                 
-            # Spezialfall CONTRI3: teilt Viereck in zwei Dreiecke
+            # Spezialfall CONTRI3
             if contact_el_type == "CONTRI3" and len(facet_nodes) == 4:
                 max_el_id += 1
                 con_el1 = ConClass(contact_el_type, max_el_id)
@@ -104,7 +110,7 @@ def apply_contact_elements(model, surface_name, contact_el_type):
                 contact_elements.append(con_el2)
                 continue
                 
-            # Spezialfall CONTRI6: teilt quadratisches Viereck in zwei quadratische Dreiecke
+            # Spezialfall CONTRI6
             if contact_el_type == "CONTRI6" and len(facet_nodes) == 8:
                 mid_coords = 0.5 * (facet_nodes[0].coordinates + facet_nodes[2].coordinates)
                 max_node_id += 1
@@ -134,9 +140,9 @@ def apply_contact_elements(model, surface_name, contact_el_type):
     model.surfaces[new_surface_name] = {1: contact_elements}
     return new_surface_name
 
-def run_contact_test(el_type, skewed=False, dim=3):
+def run_biorthogonality_test(el_type, skewed=False, dim=3):
     """
-    Führt den Normalen-Verifikationstest aus.
+    Verifiziert die Biorthogonalität für ein Kontaktelement.
     """
     config_name = "Skewed" if skewed else "Normal"
     print(f"\n* Teste Elementtyp: {el_type} ({config_name} Geometrie)...")
@@ -180,90 +186,90 @@ def run_contact_test(el_type, skewed=False, dim=3):
     kwargs = {"nonMortarSurface": slave_surf, "mortarSurface": master_surf, "field": "displacement"}
     contact = MortarContact3D(f"contact_{el_type}_{config_name.lower()}", model, **kwargs)
     
-    # 6. Normalen verifizieren
-    normals = contact.undeformed_normals
+    # 6. Berechnen der lokalen Biorthogonal-Matrizen
+    dual_matrices = contact.compute_local_dual_matrices()
     
-    # Test A: Prüfen, ob die Knotennormalen normiert sind (Länge = 1)
-    for i, node in enumerate(contact.non_mortar_nodes):
-        n = normals[i]
-        length = np.linalg.norm(n)
-        if not np.isclose(length, 1.0, atol=1e-7):
-            print(f"  [FAIL] Knotennormale an Knoten {node.label} nicht normiert: Länge = {length:.6f}")
-            sys.exit(1)
+    # 7. Kontrolle der Biorthogonalitäts-Bedingungen an jedem Element
+    for el, faceID in contact.non_mortar_facets:
+        M_e, D_e, A_e = dual_matrices[el.elNumber]
+        n_nodes = el.nNodes
+        T_e = el.getBasisTransformation()
+
+        # Kontrolle A: Ist D_e eine echte Diagonalmatrix?
+        # Nebendiagonalelemente müssen numerisch Null sein.
+        D_diag = np.diag(np.diag(D_e))
+        if not np.allclose(D_e, D_diag, atol=1e-14):
+            print(f"  [FAIL] D_e ist nicht diagonal für Element {el.elNumber}!")
+            raise AssertionError("Biorthogonalitaetspruefung fehlgeschlagen -- siehe [FAIL] oben")
+
+        # Kontrolle B: Prüfen der algebraischen Relation A_e * inv(T_e) * M_e = D_e
+        # (A_e = D_e * inv(M_e) * T_e, mit M_e als Massenmatrix der transformierten Basis)
+        B_e = A_e @ np.linalg.solve(T_e, M_e)
+        if not np.allclose(B_e, D_e, atol=1e-12):
+            print(f"  [FAIL] A_e @ inv(T_e) @ M_e ist ungleich D_e für Element {el.elNumber}!")
+            raise AssertionError("Biorthogonalitaetspruefung fehlgeschlagen -- siehe [FAIL] oben")
+
+        # Kontrolle C: Punktweise Gauß-Integration (physikalischer Biorthogonalitätstest)
+        # Wir integrieren integral( M_bar_i * N_tilde_j * dGamma ) explizit über die
+        # Gauß-Punkte. Dies ist der ultimative Test für die mathematische Richtigkeit
+        # der dualen Basisfunktion bezüglich der transformierten Basis.
+        points, weights = el.getQuadraturePoints()
+        coords = np.array([node.coordinates for node in el.nodes])
+        B_explicit = np.zeros((n_nodes, n_nodes))
+
+        for local_coords, w in zip(points, weights):
+            N = el.getShapeFunctions(local_coords)
+            N_tilde = T_e @ N
+            jac = el.getJacobianAndAreaWeight(local_coords, coords)
+            dGamma = jac * w
+
+            # Wert der dualen Formfunktion an diesem Punkt: M_bar = A_e * N
+            M_bar = A_e @ N
+            B_explicit += np.outer(M_bar, N_tilde) * dGamma
+
+        if not np.allclose(B_explicit, D_e, atol=1e-12):
+            print(f"  [FAIL] Explizite Biorthogonalitäts-Integration fehlgeschlagen für Element {el.elNumber}!")
+            raise AssertionError("Biorthogonalitaetspruefung fehlgeschlagen -- siehe [FAIL] oben")
+
+        # Kontrolle D: Positivität der dualen Gewichte (Popp et al. 2012)
+        if np.any(np.diag(D_e) <= 0.0):
+            print(f"  [FAIL] Duale Gewichte D_e[i,i] nicht strikt positiv für Element {el.elNumber}!")
+            print(f"         diag(D_e) = {np.diag(D_e)}")
+            raise AssertionError("Biorthogonalitaetspruefung fehlgeschlagen -- siehe [FAIL] oben")
             
-    # Test B: Richtungsprüfung auf ebener Fläche (muss straight nach unten zeigen: -Y)
-    if not skewed:
-        expected = np.zeros(dim)
-        expected[1] = -1.0  # In Y-Richtung nach unten
-        for i, node in enumerate(contact.non_mortar_nodes):
-            n = normals[i]
-            if not np.allclose(n, expected, atol=1e-7):
-                print(f"  [FAIL] Knoten {node.label} Normale falsch ausgerichtet: normal = {n}")
-                sys.exit(1)
-        print("  -> Ebener Ausrichtungstest: OK")
-        
-    # Test C: Orthogonalitätsprüfung auf verzerrter Geometrie
-    # Das Skalarprodukt zwischen der Normale und den Tangenten der Facette muss Null sein.
-    else:
-        all_orthogonal = True
-        for el, faceID in contact.non_mortar_facets:
-            coords = np.array([node.coordinates for node in el.nodes])
-            if dim == 3:
-                if len(el.nodes) in (3, 6):
-                    v1 = coords[1] - coords[0]
-                    v2 = coords[2] - coords[0]
-                else:
-                    v1 = coords[2] - coords[0]
-                    v2 = coords[3] - coords[1]
-                n_facet = np.cross(v1, v2)
-                dot1 = np.dot(n_facet, v1)
-                dot2 = np.dot(n_facet, v2)
-                if not (np.isclose(dot1, 0.0, atol=1e-12) and np.isclose(dot2, 0.0, atol=1e-12)):
-                    all_orthogonal = False
-            else: # dim == 2
-                t = coords[-1] - coords[0]
-                n_facet = np.array([t[1], -t[0]])
-                dot = np.dot(n_facet, t)
-                if not np.isclose(dot, 0.0, atol=1e-12):
-                    all_orthogonal = False
-                    
-        if all_orthogonal:
-            print("  -> Verzerrter Orthogonalitätstest: OK")
-        else:
-            print("  [FAIL] Orthogonalitätstest fehlgeschlagen für verzerrte Geometrie!")
-            sys.exit(1)
-            
-    print(f"  [PASS] Test für {el_type} ({config_name}) erfolgreich!")
+    print(f"  [PASS] Element {el_type} ({config_name}) erfolgreich verifiziert!")
+
+def test_dual_biorthogonality():
+    # 3D Vierecke
+    run_biorthogonality_test("CONQUAD4", skewed=False, dim=3)
+    run_biorthogonality_test("CONQUAD4", skewed=True, dim=3)
+    
+    run_biorthogonality_test("CONQUAD8", skewed=False, dim=3)
+    run_biorthogonality_test("CONQUAD8", skewed=True, dim=3)
+    
+    run_biorthogonality_test("CONQUAD9", skewed=False, dim=3)
+    run_biorthogonality_test("CONQUAD9", skewed=True, dim=3)
+    
+    # 3D Dreiecke
+    run_biorthogonality_test("CONTRI3", skewed=False, dim=3)
+    run_biorthogonality_test("CONTRI3", skewed=True, dim=3)
+    
+    run_biorthogonality_test("CONTRI6", skewed=False, dim=3)
+    run_biorthogonality_test("CONTRI6", skewed=True, dim=3)
+    
+    # 2D Linien
+    run_biorthogonality_test("CONLINE2", skewed=False, dim=2)
+    run_biorthogonality_test("CONLINE2", skewed=True, dim=2)
+    
+    run_biorthogonality_test("CONLINE3", skewed=False, dim=2)
+    run_biorthogonality_test("CONLINE3", skewed=True, dim=2)
+
 
 if __name__ == "__main__":
     print("====================================================")
-    print("MORTAR KONTAKT NORMALE VERIFIKATIONSTEST")
+    print("MORTAR KONTAKT BIORTHOGONALITÄT VERIFIKATIONSTEST")
     print("====================================================")
-    
-    # 3D Vierecke
-    run_contact_test("CONQUAD4", skewed=False, dim=3)
-    run_contact_test("CONQUAD4", skewed=True, dim=3)
-    
-    run_contact_test("CONQUAD8", skewed=False, dim=3)
-    run_contact_test("CONQUAD8", skewed=True, dim=3)
-    
-    run_contact_test("CONQUAD9", skewed=False, dim=3)
-    run_contact_test("CONQUAD9", skewed=True, dim=3)
-    
-    # 3D Dreiecke
-    run_contact_test("CONTRI3", skewed=False, dim=3)
-    run_contact_test("CONTRI3", skewed=True, dim=3)
-    
-    run_contact_test("CONTRI6", skewed=False, dim=3)
-    run_contact_test("CONTRI6", skewed=True, dim=3)
-    
-    # 2D Linien
-    run_contact_test("CONLINE2", skewed=False, dim=2)
-    run_contact_test("CONLINE2", skewed=True, dim=2)
-    
-    run_contact_test("CONLINE3", skewed=False, dim=2)
-    run_contact_test("CONLINE3", skewed=True, dim=2)
-    
+    test_dual_biorthogonality()
     print("\n====================================================")
-    print("ALLE GEOMETRISCHEN NORMALENTESTS ERFOLGREICH PASSIERT!")
+    print("ALLE BIORTHOGONALITÄTSTESTS ERFOLGREICH PASSIERT!")
     print("====================================================")
