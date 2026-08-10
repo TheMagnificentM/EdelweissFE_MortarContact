@@ -92,6 +92,21 @@ U_TOP = 0.02  # Betrag der aufgebrachten Oberseitenverschiebung
 RTOL_P = 1e-7
 RTOL_G = 1e-7
 
+# Schranke fuer die Pruefung an NEU gerechneter Geometrie. Sie ist notwendig
+# groesser als RTOL_G: dort wird nicht mehr geprueft, ob der Loeser seine eigenen
+# Gleichungen erfuellt (das tut er bis auf Loeserrauschen), sondern was davon im
+# TATSAECHLICHEN Zustand uebrig bleibt. Die Differenz ist der Staffelungsfehler
+# der eingefrorenen Geometrie.
+#
+# Der Wert ist deshalb KEINE Eigenschaft der Formulierung, sondern eine Schranke
+# fuer die hier verwendete Schrittweite (maxInc = 0.1, also rund zehn Increments).
+# Gemessen wird ueber die Lastfaelle hinweg maximal etwa 1.1e-4 der aufgebrachten
+# Verschiebung, im 3D-Zweig um Groessenordnungen weniger; die Schranke laesst
+# gut den Faktor vier Luft. Dass diese Groesse mit der Schrittweite faellt
+# (Ordnung ~1), misst 12_increment_size -- mit maxInc = 0.5 lagen dieselben
+# Faelle noch bei rund 9e-4.
+RTOL_G_FRESH = 5e-4
+
 
 # ===========================================================================
 # Die Nachprüfung
@@ -157,6 +172,60 @@ def check_signorini(model, constraint_name="contact"):
         "frozen": mc.active_set_frozen,
         "iterations": mc.current_iteration,
     }
+
+
+def check_signorini_fresh_geometry(model, constraint_name="contact"):
+    """Prueft den PHYSIKALISCHEN Spalt an neu gerechneter Geometrie.
+
+    ``check_signorini`` oben rekonstruiert die Bedingungen mit der im letzten
+    Increment EINGEFRORENEN Geometrie -- also mit genau den Groessen, mit denen der
+    Loeser sie aufgestellt hat. Das ist die richtige Pruefung dafuer, ob der Loeser
+    seine eigenen Gleichungen erfuellt, und genau deshalb kann sie den
+    Staffelungsfehler prinzipiell nicht sehen: eine Durchdringung, die erst dadurch
+    entsteht, dass D, M und n_I vom Increment-Beginn stammen, ist in diesen
+    Groessen unsichtbar.
+
+    Diese Funktion schliesst die Luecke: sie wertet Normalen und Koppelmatrizen an
+    der KONVERGIERTEN Konfiguration neu aus und misst den Spalt damit. Was
+    herauskommt, ist der tatsaechlich verbliebene Kontaktzustand -- die Groesse,
+    die den Staffelungsfehler traegt (Test 12 misst seine Ordnung).
+
+    Rueckgabe: max. Durchdringung (positiv = es dringt ein) an aktiven Knoten und
+    an inaktiven Knoten mit Gegenueber.
+    """
+    mc = model.constraints[constraint_name]
+    dim = model.domainSize
+    sf = mc.sizeField
+    nSlave = mc.nNonMortarNodes
+
+    nf = model.nodeFields[mc.field]
+    u_of_node = {node: u for node, u in zip(nf.nodes, nf["U"])}
+
+    # Zustandsvektor in der Constraint-eigenen Anordnung
+    U = np.zeros(mc.nDof)
+    for node, idx in mc.node_to_global_idx.items():
+        U[sf * idx : sf * idx + dim] = np.asarray(u_of_node[node])[:dim]
+
+    normals = mc.compute_normals(U)
+    D, C = mc.compute_mortar_coupling_matrices(U)
+    rowsum = np.sum(D, axis=1)
+
+    coords = mc._X + U[: sf * len(mc.nodes)].reshape(len(mc.nodes), sf)[:, :dim]
+    x_slave, x_master = coords[:nSlave], coords[nSlave:]
+
+    g_sep = np.zeros(nSlave)
+    for I in range(nSlave):
+        n_I = normals[I]
+        g_weak = -D[I] @ (x_slave @ n_I) + C[I] @ (x_master @ n_I)
+        g_sep[I] = g_weak / rowsum[I] if abs(rowsum[I]) > 1e-30 else 0.0
+
+    covered = np.abs(rowsum) > 1e-10 * np.max(np.abs(rowsum))
+    active = mc.active_set & covered
+    inactive = ~mc.active_set & covered
+
+    pen_active = float(-g_sep[active].min()) if active.any() else 0.0
+    pen_inactive = float(-g_sep[inactive].min()) if inactive.any() else 0.0
+    return pen_active, pen_inactive
 
 
 def report_and_assert(name, res, p_ref, g_ref):
@@ -287,7 +356,7 @@ cn={E}
 *solver, name=theSolver, solver=NISTParallel
 
 *step, solver=theSolver
-maxInc=0.5, minInc=1e-3, maxNumInc=100, maxIter=25, stepLength=1
+maxInc=0.1, minInc=1e-3, maxNumInc=100, maxIter=25, stepLength=1
 >>dirichlet, name=bot,  nSet=fixed_bottom, field=displacement, 2=0.0
 >>dirichlet, name=top,  nSet=load_top,     field=displacement, 2={utop}{topfield}
 >>dirichlet, name=symm, nSet=symm_x,       field=displacement, 1=0.0
@@ -314,6 +383,124 @@ def setup(model):
     mce.apply(model, 'surf_a_top', 'con_slave', '{con_type}', (0.0, 1.0))
     mce.apply(model, 'surf_b_bottom', 'con_master', '{con_type}', (0.0, -1.0))
 """
+
+
+INP_TEMPLATE_3D = """*modelGenerator, generator=boxGen, name=genA
+nX={nx_a}
+nY=1
+nZ={nx_a}
+lX={length}
+lY={height}
+lZ={length}
+elType={el_type}
+
+*modelGenerator, generator=boxGen, name=genB
+y0={height}
+nX={nx_b}
+nY=1
+nZ={nx_b}
+lX={length_b}
+lY={height}
+lZ={length}
+elType={el_type}
+
+*modelGenerator, generator=executePythonCode, name=contactgen
+import generated_setup_{name} as vs
+vs.setup(model)
+
+*material, name=LinearElastic, id=mat
+{E}, 0.0
+
+*section, name=secA, material=mat, type=solid
+genA_all
+*section, name=secB, material=mat, type=solid
+genB_all
+
+*constraint, type=mortarcontact, name=contact
+nonMortarSurface=con_slave
+mortarSurface=con_master
+cn={E}
+{fields}
+*job, name=signorinijob3d, domain=3d
+*solver, name=theSolver, solver=NISTParallel
+
+*step, solver=theSolver
+maxInc=0.1, minInc=1e-3, maxNumInc=100, maxIter=25, stepLength=1
+>>dirichlet, name=bot, nSet=genA_bottom, field=displacement, 2=0.0
+>>dirichlet, name=top, nSet=genB_top,    field=displacement, 2={utop}{topfield}
+>>dirichlet, name=lat, nSet=allnodes,    field=displacement, 1=0.0, 3=0.0
+"""
+
+SETUP_TEMPLATE_3D = """import sys
+sys.path.insert(0, r'{patchdir}')
+import make_contact_elements as mce
+from edelweissfe.sets.nodeset import NodeSet
+
+
+def setup(model):
+    mce.apply(model, 'genA_top', 'con_slave', '{con_type}', (0.0, 1.0, 0.0))
+    mce.apply(model, 'genB_bottom', 'con_master', '{con_type}', (0.0, -1.0, 0.0))
+    model.nodeSets['allnodes'] = NodeSet('allnodes', list(model.nodes.values()))
+"""
+
+PATCH3D_DIR = os.path.join(MORTARDIR, "08_patch_test_hex20")
+
+
+def run_case_3d(case, el_type, con_type, nx_a, nx_b, length_b, utop, tilt):
+    """Derselbe Lastfallkatalog in 3D, mit Flaechen- statt Linienelementen.
+
+    Damit laufen die Signorini-Bedingungen erstmals ueber den 3D-Pfad --
+    Hilfsebenen-Projektion, Sutherland--Hodgman und Dreiecksquadratur -- statt
+    ueber den 1D-Intervallschnitt des 2D-Pfads.
+    """
+    name = f"{case}_{el_type.lower()}_3d"
+    print(f"\n* Lastfall '{case}' mit {el_type}/{con_type} (3D)")
+
+    setup_path = os.path.join(TESTDIR, f"generated_setup_{name}.py")
+    with open(setup_path, "w") as f:
+        f.write(SETUP_TEMPLATE_3D.format(patchdir=PATCH3D_DIR, con_type=con_type))
+
+    if TESTDIR not in sys.path:
+        sys.path.insert(0, TESTDIR)
+
+    inp_path = os.path.join(TESTDIR, f"generated_{name}.inp")
+    with open(inp_path, "w") as f:
+        f.write(INP_TEMPLATE_3D.format(
+            name=name, el_type=el_type, nx_a=nx_a, nx_b=nx_b,
+            length=repr(LENGTH), length_b=repr(length_b), height=repr(BLOCK_HEIGHT),
+            E=E_MOD, utop=repr(utop),
+            fields=TILT_FIELD.format(length=LENGTH) if tilt else "",
+            topfield=", analyticalField=tilt" if tilt else "",
+        ))
+
+    model, _ = finiteElementSimulation(parseInputFile(inp_path), verbose=False, suppressPlots=True)
+
+    res = check_signorini(model)
+    p_ref = E_MOD * abs(utop) / (2.0 * BLOCK_HEIGHT)
+    ok = report_and_assert(name, res, p_ref, abs(utop))
+    ok = report_fresh_geometry(name, model, abs(utop)) and ok
+
+    if ok:
+        os.remove(inp_path)
+        os.remove(setup_path)
+    return ok, res
+
+
+def report_fresh_geometry(name, model, u_ref):
+    """Misst und bewertet die Durchdringung an NEU gerechneter Geometrie."""
+    pen_active, pen_inactive = check_signorini_fresh_geometry(model)
+    print(f"  Neu gerechnete Geometrie: max. Durchdringung aktiv {pen_active:+.3e}, "
+          f"offen {pen_inactive:+.3e}   (Schranke {RTOL_G_FRESH * u_ref:.1e})")
+
+    ok = True
+    if pen_active > RTOL_G_FRESH * u_ref:
+        print("  [FAIL] Aktiver Knoten dringt im tatsaechlichen Zustand ein -- der "
+              "Staffelungsfehler ist groesser als zugelassen!")
+        ok = False
+    if pen_inactive > RTOL_G_FRESH * u_ref:
+        print("  [FAIL] Inaktiver Knoten dringt im tatsaechlichen Zustand ein!")
+        ok = False
+    return ok
 
 
 def run_case(case, el_type, con_type, nx_a, nx_b, length_b, utop, tilt):
@@ -351,6 +538,7 @@ def run_case(case, el_type, con_type, nx_a, nx_b, length_b, utop, tilt):
     # die aufgebrachte Verschiebung.
     p_ref = E_MOD * abs(utop) / (2.0 * BLOCK_HEIGHT)
     ok = report_and_assert(name, res, p_ref, abs(utop))
+    ok = report_fresh_geometry(name, model, abs(utop)) and ok
 
     if ok:
         os.remove(inp_path)
@@ -372,6 +560,18 @@ CASES = [
 
 ELEMENTS = [("CPE4", "CONLINE2"), ("CPE8", "CONLINE3")]
 
+# 3D: dieselben Lastfaelle mit Flaechenelementen. Der 'schief'-Fall entfaellt, weil
+# die seitliche Dirichlet-Fixierung des 3D-Modells (u_x = u_z = 0 auf allen Knoten)
+# mit einer verkippten Oberseitenverschiebung nicht vertraeglich ist; Teilkontakt,
+# Abheben und volle Ueberdeckung decken beide Zweige des Active Sets ab.
+CASES_3D = [
+    ("teilkontakt", 3, 2, 0.5 * LENGTH, -U_TOP, False),
+    ("abheben", 2, 2, LENGTH, +U_TOP, False),
+    ("voll", 2, 3, LENGTH, -U_TOP, False),
+]
+
+ELEMENTS_3D = [("C3D8", "CONQUAD4"), ("C3D20", "CONQUAD8")]
+
 
 def test_signorini_conditions():
     print("\n=== Signorini-Nachpruefung der konvergierten Loesung ===")
@@ -381,6 +581,14 @@ def test_signorini_conditions():
     for case, nx_a, nx_b, length_b, utop, tilt in CASES:
         for el_type, con_type in ELEMENTS:
             ok, res = run_case(case, el_type, con_type, nx_a, nx_b, length_b, utop, tilt)
+            results.append(ok)
+            has_open |= bool(res["inactive"].any())
+            has_closed |= bool(res["active"].any())
+
+    print("\n--- 3D ---")
+    for case, nx_a, nx_b, length_b, utop, tilt in CASES_3D:
+        for el_type, con_type in ELEMENTS_3D:
+            ok, res = run_case_3d(case, el_type, con_type, nx_a, nx_b, length_b, utop, tilt)
             results.append(ok)
             has_open |= bool(res["inactive"].any())
             has_closed |= bool(res["active"].any())

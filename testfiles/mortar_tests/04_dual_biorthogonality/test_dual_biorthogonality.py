@@ -141,6 +141,52 @@ def apply_contact_elements(model, surface_name, contact_el_type):
     model.surfaces[new_surface_name] = {1: contact_elements}
     return new_surface_name
 
+def _reference_facet(el_type, y0):
+    """Referenzfacette je Elementtyp in der Ebene y = y0 (Master-Gegenstueck)."""
+    a, b = 0.0, 2.0
+    m = 0.5 * (a + b)
+    if el_type == "CONLINE2":
+        return [[a, y0], [b, y0]]
+    if el_type == "CONLINE3":
+        return [[a, y0], [b, y0], [m, y0]]
+    if el_type == "CONTRI3":
+        return [[a, y0, a], [b, y0, a], [a, y0, b]]
+    if el_type == "CONTRI6":
+        return [[a, y0, a], [b, y0, a], [a, y0, b],
+                [m, y0, a], [m, y0, m], [a, y0, m]]
+    corners = [[a, y0, a], [b, y0, a], [b, y0, b], [a, y0, b]]
+    if el_type == "CONQUAD4":
+        return corners
+    mids = [[m, y0, a], [b, y0, m], [m, y0, b], [a, y0, m]]
+    if el_type == "CONQUAD8":
+        return corners + mids
+    return corners + mids + [[m, y0, m]]  # CONQUAD9
+
+
+def _add_master_facet(model, el_type, y0):
+    """Einzelne Master-Kontaktfacette unterhalb der Slave-Flaeche.
+
+    Bewusst kein zweiter Generatoraufruf: ``planeRectQuad`` beginnt seine
+    Knotenlabels immer bei 1 und ueberschreibt bei einem zweiten Aufruf still das
+    erste Netz (``boxGen`` versetzt die Labels dagegen, siehe boxgen.py).
+    """
+    ConClass = getElementClass(el_type, "edelweiss")
+    next_node = (max(model.nodes.keys()) if model.nodes else 0) + 1
+    next_el = (max(model.elements.keys()) if model.elements else 0) + 1
+
+    nodes = []
+    for i, pt in enumerate(_reference_facet(el_type, y0)):
+        lbl = next_node + i
+        model.nodes[lbl] = Node(lbl, np.array(pt, dtype=float))
+        nodes.append(model.nodes[lbl])
+
+    el = ConClass(el_type, next_el)
+    el.setNodes(nodes)
+    model.elements[next_el] = el
+    model.surfaces["con_master"] = {1: [el]}
+    return "con_master"
+
+
 def run_biorthogonality_test(el_type, skewed=False, dim=3):
     """
     Verifiziert die Biorthogonalität für ein Kontaktelement.
@@ -174,9 +220,13 @@ def run_biorthogonality_test(el_type, skewed=False, dim=3):
             offset = np.random.uniform(-0.15, 0.15, size=dim)
             node.coordinates += offset
             
-    # 3. Kontaktelemente erzeugen
+    # 3. Kontaktelemente erzeugen. Slave ist die UNTERSEITE des Blocks
+    # (Aussennormale -e_y), Master eine einzelne Facette DARUNTER: nur so zeigen
+    # die Flaechen aufeinander zu, wie es die Vorzeichenkonvention des
+    # gewichteten Spalts verlangt. Geprueft werden ohnehin nur die
+    # Slave-Elementmatrizen; der Master ist das noetige Gegenstueck.
     slave_surf = apply_contact_elements(model, "gen_bottom", el_type)
-    master_surf = apply_contact_elements(model, "gen_top", el_type)
+    master_surf = _add_master_facet(model, el_type, -3.0)
     
     # 4. Verschiebungsfelder initialisieren
     from edelweissfe.variables.fieldvariable import FieldVariable

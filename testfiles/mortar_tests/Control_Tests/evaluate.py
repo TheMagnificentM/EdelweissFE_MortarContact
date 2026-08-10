@@ -448,24 +448,83 @@ def evaluate_inclined(model, foc):
 HERTZ_THICK = 0.1  # z-Dicke der Scheibe (muss zum .inp passen)
 
 
+def _full_facet_weights(c, model):
+    """Tributaere Flaeche je Slave-Knoten, ueber die VOLLEN Facetten integriert.
+
+    A_j = sum_{Facetten f, die j enthalten} int_f N_tilde_j dGamma.
+
+    Nicht zu verwechseln mit dem dualen Knotengewicht D_II = int_UEBERLAPPUNG:
+    an voll ueberdeckten Knoten sind beide gleich, an teilweise ueberdeckten ist
+    D_II kleiner -- genau das ist der Punkt der folgenden Auswertung.
+
+    Ausgewertet wird in der DEFORMIERTEN Konfiguration, weil D_II es ebenfalls ist.
+    Mit undeformierten Koordinaten traegt das Verhaeltnis D_II/A_j sonst die
+    Flaechenaenderung durch die Verformung mit und verfaelscht den Vergleich
+    systematisch (auf den Hertz-Modellen um rund ein Prozent).
+    """
+    dim = model.domainSize
+    nf = model.nodeFields[c.field]
+    u_of_node = {node: np.asarray(u)[:dim] for node, u in zip(nf.nodes, nf["U"])}
+
+    A = np.zeros(c.nNonMortarNodes)
+    for el, _ in c.non_mortar_facets:
+        coords = np.array([nd.coordinates + u_of_node[nd] for nd in el.nodes])
+        _, D_e, _ = el.computeLocalMassMatrices(coords)
+        for a, nd in enumerate(el.nodes):
+            A[c.slave_node_to_idx[nd]] += D_e[a, a]
+    return A
+
+
 def _hertz_slave_pressure(model):
-    """Slave-Knoten-x und Kontaktdruck p (>0) je EINDEUTIGEM x (ueber z gemittelt)."""
+    """Slave-Knoten-x und Kontaktdruck je EINDEUTIGEM x (ueber z gemittelt).
+
+    Rueckgabe: (x, p_lambda, p_kraft) -- ZWEI Lesarten desselben Ergebnisses:
+
+    p_lambda = -lambda_j
+        Der Multiplikator selbst. An voll ueberdeckten Knoten ist das der
+        Kontaktdruck. An TEILWEISE ueberdeckten Knoten nicht: dort ist lambda die
+        Amplitude einer dualen Formfunktion ueber schrumpfendem Traeger und
+        skaliert mit 1/D_II, waehrend die Knotenkraft lambda*D_II endlich bleibt
+        (nachgemessen in 10_signorini_check: D_II/max = 8.3e-6 bei lambda = 8.2e4).
+        Genau solche Knoten liegen am KONTAKTRAND -- dort, wo die Zickzack-
+        Oszillation quadratischer Elemente ausgewiesen wird.
+
+    p_kraft = -lambda_j * D_II,j / A_j
+        Die Knotenkraft, verteilt ueber die tributaere Flaeche der ganzen Facette.
+        An voll ueberdeckten Knoten ist D_II = A_j, beide Lesarten fallen zusammen.
+        An teilweise ueberdeckten Knoten ist p_kraft kleiner -- der Knoten traegt
+        seine Kraft eben nur ueber einen Teil seines Traegers. Die uebertragene
+        Gesamtkraft sum_j p_kraft_j * A_j = sum_j lambda_j * D_II,j ist in beiden
+        Lesarten dieselbe.
+
+    Der Vergleich beider Profile trennt den echten Ecke/Mittelknoten-Effekt vom
+    Auswertungsartefakt am Kontaktrand.
+    """
     c = model.constraints["contact"]
     slaves = c.non_mortar_nodes
     lam = _lambdas(model)
     xs = np.array([n.coordinates[0] for n in slaves])
-    p = -lam  # Druck positiv
+
+    D_II = np.asarray(c.current_D_rowsum)
+    A = _full_facet_weights(c, model)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        share = np.where(np.abs(A) > 1e-30, D_II / A, 0.0)
+
+    p_lam = -lam                  # Druck positiv
+    p_force = -lam * share
+
     # ueber gleiche x zusammenfassen (2 Knoten je x wegen z=0/0.1)
     xu = np.unique(np.round(xs, 6))
-    pu = np.array([p[np.isclose(xs, x)].mean() for x in xu])
-    return xu, pu
+    pu = np.array([p_lam[np.isclose(xs, x)].mean() for x in xu])
+    pfu = np.array([p_force[np.isclose(xs, x)].mean() for x in xu])
+    return xu, pu, pfu
 
 
 def evaluate_hertz(model):
     import contact_setup
     R = contact_setup.HERTZ_R
     Estar = 1.0 / ((1 - NU ** 2) / E + (1 - NU ** 2) / E)  # ebener Verzerrungszustand
-    x, p = _hertz_slave_pressure(model)
+    x, p, p_force = _hertz_slave_pressure(model)
 
     # uebertragene Last P' (Kraft je Laenge): Reaktion unten, Halbmodell -> *2
     nf = model.nodeFields["displacement"]
@@ -501,8 +560,18 @@ def evaluate_hertz(model):
     # Schwankung, die bei quadratischen Elementen (hex20) auftritt.
     pa_sorted = p[active][np.argsort(x[active])]
     zigzag = float(np.mean(np.abs(np.diff(pa_sorted, 2))) / p0_num) if pa_sorted.size >= 3 and p0_num > 0 else float("nan")
+
+    # Gegenrechnung mit der kraftbasierten Lesart (siehe _hertz_slave_pressure).
+    # Weicht das Zickzack der beiden Profile deutlich voneinander ab, so stammt
+    # ein Teil der Oszillation aus der Auswertung am Kontaktrand und nicht aus dem
+    # Ecke/Mittelknoten-Effekt.
+    pf_sorted = p_force[active][np.argsort(x[active])]
+    zigzag_force = (float(np.mean(np.abs(np.diff(pf_sorted, 2))) / p0_num)
+                    if pf_sorted.size >= 3 and p0_num > 0 else float("nan"))
+
     return dict(Pprime=float(Pprime), a_hertz=float(a), p0_hertz=float(p0),
                 a_num=a_num, p0_num=p0_num, p_peak=float(p.max()), zigzag=zigzag,
+                p0_force=float(p_force.max()), zigzag_force=zigzag_force,
                 peak_err_rel=float(abs(p0_num - p0) / p0),
                 a_err_rel=float(abs(a_num - a) / a) if a > 0 else float("nan"),
                 max_p_err=float(err.max()) if err.size else float("nan"),
@@ -515,7 +584,7 @@ def write_hertz_profile(model, path):
     import contact_setup
     R = contact_setup.HERTZ_R
     Estar = 1.0 / ((1 - NU ** 2) / E + (1 - NU ** 2) / E)
-    x, p = _hertz_slave_pressure(model)
+    x, p, p_force = _hertz_slave_pressure(model)
     nf = model.nodeFields["displacement"]
     P_react = np.asarray(nf["P"])
     co = np.array([n.coordinates for n in nf.nodes])
@@ -524,8 +593,8 @@ def write_hertz_profile(model, path):
     a = np.sqrt(4 * Pprime * R / (np.pi * Estar))
     p0 = 2 * Pprime / (np.pi * a)
     p_h = p0 * np.sqrt(np.clip(1 - (x / a) ** 2, 0.0, None))
-    rows = np.column_stack([x, p, p_h])
-    np.savetxt(path, rows, delimiter=",", header="x,pressure_num,pressure_hertz",
+    rows = np.column_stack([x, p, p_force, p_h])
+    np.savetxt(path, rows, delimiter=",", header="x,pressure_lambda,pressure_force,pressure_hertz",
                comments="", fmt="%.8e")
     return path
 

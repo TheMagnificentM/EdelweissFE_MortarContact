@@ -147,8 +147,67 @@ def apply_contact_elements(model, surface_name, contact_el_type):
     return new_surface_name
 
 
+# Referenzfacette je Elementtyp, in der Ebene y = y0 liegend. Dient als
+# Master-Gegenstueck; ihre Form ist fuer diesen Test bedeutungslos, ihre LAGE
+# nicht: sie muss UNTERHALB der Slave-Flaeche liegen, damit die Slave-Normale
+# (-e_y auf der Unterseite) zum Master zeigt. Der Constraint verlangt genau das --
+# der gewichtete Spalt
+#     g_weak = -sum_K D_IK (x_K . n_I) + sum_J C_IJ (x_J . n_I)
+# wird nur dann positiv bei geoeffnetem Kontakt, wenn n_I vom Slave zum Master
+# weist. Eine Paarung von Ober- UND Unterseite DESSELBEN Blocks erfuellt das nicht
+# und wird vom Eingabeschutz des Constraints gemeldet.
+def _reference_facet(el_type, y0):
+    a, b = 0.0, 2.0
+    m = 0.5 * (a + b)
+    if el_type == "CONLINE2":
+        return [[a, y0], [b, y0]]
+    if el_type == "CONLINE3":
+        return [[a, y0], [b, y0], [m, y0]]
+    if el_type == "CONTRI3":
+        return [[a, y0, a], [b, y0, a], [a, y0, b]]
+    if el_type == "CONTRI6":
+        return [[a, y0, a], [b, y0, a], [a, y0, b],
+                [m, y0, a], [m, y0, m], [a, y0, m]]
+    corners = [[a, y0, a], [b, y0, a], [b, y0, b], [a, y0, b]]
+    if el_type == "CONQUAD4":
+        return corners
+    mids = [[m, y0, a], [b, y0, m], [m, y0, b], [a, y0, m]]
+    if el_type == "CONQUAD8":
+        return corners + mids
+    return corners + mids + [[m, y0, m]]  # CONQUAD9
+
+
+def add_master_facet(model, el_type, y0):
+    """Legt eine einzelne Master-Kontaktfacette unterhalb der Slave-Flaeche an."""
+    ConClass = getElementClass(el_type, "edelweiss")
+    next_node = (max(model.nodes.keys()) if model.nodes else 0) + 1
+    next_el = (max(model.elements.keys()) if model.elements else 0) + 1
+
+    nodes = []
+    for i, pt in enumerate(_reference_facet(el_type, y0)):
+        lbl = next_node + i
+        model.nodes[lbl] = Node(lbl, np.array(pt, dtype=float))
+        nodes.append(model.nodes[lbl])
+
+    el = ConClass(el_type, next_el)
+    el.setNodes(nodes)
+    model.elements[next_el] = el
+    model.surfaces["con_master"] = {1: [el]}
+    return "con_master"
+
+
 def build_model(el_type, dim, n=2, warp=None):
-    """Zwei-Block-Modell mit Kontaktelementen auf Ober- und Unterseite.
+    """Ein Block mit Kontaktelementen auf der Unterseite, Master-Facette darunter.
+
+    Slave ist die UNTERSEITE des Blocks (Aussennormale -e_y), Master eine einzelne
+    Facette darunter (siehe ``_reference_facet``). Geprueft werden ausschliesslich
+    die Slave-Normalen; der Master ist das Gegenstueck, das der Constraint
+    braucht.
+
+    Der Master wird NICHT mit einem zweiten Generatoraufruf erzeugt:
+    ``planeRectQuad`` beginnt seine Knotenlabels immer bei 1 und ueberschreibt bei
+    einem zweiten Aufruf still das erste Netz (``boxGen`` versetzt die Labels
+    dagegen, siehe boxgen.py).
 
     warp: optionale Funktion coords -> coords, die die Knoten VOR dem Anlegen der
     Kontaktelemente verschiebt (fuer die gekruemmte Geometrie).
@@ -172,7 +231,8 @@ def build_model(el_type, dim, n=2, warp=None):
             node.coordinates = warp(node.coordinates)
 
     slave_surf = apply_contact_elements(model, "gen_bottom", el_type)
-    master_surf = apply_contact_elements(model, "gen_top", el_type)
+    # Deutlich unterhalb der (ggf. gekruemmten) Slave-Flaeche
+    master_surf = add_master_facet(model, el_type, -3.0 if warp is None else -3.0)
 
     for node in model.nodes.values():
         node.fields["displacement"] = FieldVariable(node, "displacement")
@@ -315,9 +375,11 @@ def run_line_chord_exactness():
         model = FEModel(dimension=2)
         ConClass = getElementClass("CONLINE3", "edelweiss")
 
-        # Knotenreihenfolge Ende - Ende - Mitte
+        # Knotenreihenfolge Ende - Ende - Mitte. Die Slave-Normale ist
+        # n = (t_y, -t_x) mit t = x_1 - x_0 = +e_x, zeigt also nach -y; der Master
+        # muss deshalb UNTERHALB liegen, damit die Flaechen aufeinander zu zeigen.
         slave_pts = [[0.0, 0.0], [1.0, 0.0], [0.5, bulge]]
-        master_pts = [[0.0, 1.0], [1.0, 1.0], [0.5, 1.0 + bulge]]
+        master_pts = [[0.0, -1.0], [1.0, -1.0], [0.5, -1.0 + bulge]]
         for i, p in enumerate(slave_pts + master_pts):
             lbl = i + 1
             model.nodes[lbl] = Node(lbl, np.array(p, dtype=float))

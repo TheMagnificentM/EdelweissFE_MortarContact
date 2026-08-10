@@ -19,6 +19,8 @@ discrete state has settled - NOT after a fixed number of iterations.
 
 import sys
 import os
+import warnings
+
 import numpy as np
 
 # Add local path of EdelweissFE to Python path
@@ -263,9 +265,24 @@ def test_active_set_pdass_termination():
     assert not np.any(constraint.active_set), "frozen set must not change within the increment"
 
     # The next increment restarts the semi-smooth iteration -> penetration detected.
+    #
+    # This step doubles as the check of the freeze safeguard. The state handed in
+    # here is precisely the case the safeguard exists for: the increment was frozen
+    # on "all inactive" and then acquired a penetration, so its set does NOT
+    # reproduce itself on the state it ended with. The constraint re-evaluates the
+    # indicator at the start of the following increment - the one moment where a
+    # converged state is available - and must say so.
     PExt.fill(0.0); K.fill(0.0)
-    constraint.applyConstraint(U_np, dU, PExt, K, TimeStep(2, 0.0, 0.0, 0.0, 0.0, 0.0))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        constraint.applyConstraint(U_np, dU, PExt, K, TimeStep(2, 0.0, 0.0, 0.0, 0.0, 0.0))
+    messages = [str(w.message) for w in caught]
     print("  Active set in the new increment:", constraint.active_set)
+    assert any("does not reproduce itself" in m for m in messages), (
+        "the constraint must report that the frozen active set of the previous increment "
+        f"does not reproduce itself on its converged state; got {messages}"
+    )
+    print("  [OK]   Der eingefrorene Satz wurde als nicht selbstkonsistent gemeldet")
     assert not constraint.active_set_frozen, "new increment must reset the freeze"
     assert np.all(constraint.active_set), "penetration must be detected again"
     print("[PASS] PDASS Termination Test Successful!")

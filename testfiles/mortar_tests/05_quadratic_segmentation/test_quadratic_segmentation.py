@@ -324,12 +324,87 @@ def run_tri6_test():
     print("  [PASS] CONTRI6 erfolgreich verifiziert!")
 
 
+def run_sliver_fallback_test():
+    """Ab wann greift der Rueckfallpfad -- und was kostet er?
+
+    Die dualen Koeffizienten werden auf dem TATSAECHLICHEN Ueberlappungsgebiet
+    gebildet (konsistente Randbehandlung nach Cichosz & Bischoff 2011). Bei sehr
+    schmalen Ueberlappungen wird die zugehoerige Massenmatrix M_t nahezu singulaer;
+    der Code prueft ihre Konditionszahl und faellt bei cond(M_t) >= 1e12 auf die
+    REFERENZELEMENT-Koeffizienten zurueck.
+
+    Das ist kein theoretischer Zweig: ueber die Control_Tests und Patch-Tests wird
+    er vier von 3989 Slave-Elementauswertungen betreten, ausschliesslich in den
+    gekruemmten Hertz-Modellen. Und er hat eine Konsequenz, die festgehalten
+    gehoert: die Positivitaet von D_II beruht darauf, dass auf dem konsistenten Weg
+    D_II = int_ueberlappung(N_tilde) gilt und die transformierte Basis punktweise
+    nicht-negativ ist. Auf dem Rueckfallpfad steht dort das Integral der dualen
+    Funktionen des VOLLEN Elements, und die wechseln punktweise das Vorzeichen --
+    CONQUAD8 verliert seine Positivitaetsgarantie also ebenso wie CONQUAD9.
+
+    Der Test misst den Uebergang, statt ihn zu behaupten.
+    """
+    print("\n* Rueckfallpfad bei entarteter Ueberlappung (CONQUAD8)")
+    print(f"  {'Ueberdeckung':>14} {'Rueckfall':>10} {'min D_II':>14} {'min/max':>10}")
+    print("  " + "-" * 52)
+
+    rows = []
+    for coverage in (1e-1, 1e-2, 1e-3, 1e-5):
+        slave_pts = quad8_points()
+        master_pts = quad8_points(shift_x=1.0 - coverage)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            constraint = build_single_facet_model("CONQUAD8", slave_pts, master_pts)
+            D, _ = constraint.compute_mortar_coupling_matrices()
+        fell_back = any("degenerate overlap" in str(w.message) for w in caught)
+
+        weights = np.sum(D, axis=1)
+        w_min = float(np.min(weights))
+        ratio = w_min / float(np.max(np.abs(weights)))
+        rows.append((coverage, fell_back, w_min, ratio))
+        print(f"  {coverage:>14.0e} {('ja' if fell_back else 'nein'):>10} "
+              f"{w_min:>14.3e} {ratio:>10.3f}")
+
+    # (1) Der Uebergang existiert und liegt zwischen 1e-2 und 1e-3 Ueberdeckung.
+    assert not rows[0][1] and not rows[1][1], (
+        "Bei 10 % und 1 % Ueberdeckung darf der Rueckfallpfad NICHT greifen; "
+        "die Konditionsschranke 1e12 hat sich verschoben"
+    )
+    assert rows[2][1] and rows[3][1], (
+        "Bei 0.1 % und 0.001 % Ueberdeckung MUSS der Rueckfallpfad greifen; "
+        "die Konditionsschranke 1e12 hat sich verschoben"
+    )
+
+    # (2) Solange konsistent gerechnet wird, bleiben die Gewichte positiv --
+    #     das ist die Aussage, die der Rueckfall aufgibt.
+    for coverage, fell_back, w_min, _ in rows[:2]:
+        assert w_min > 0.0, (
+            f"Ohne Rueckfall muessen alle Knotengewichte positiv sein, bei "
+            f"{coverage:.0e} Ueberdeckung ist min D_II = {w_min:.3e}"
+        )
+
+    # (3) Und mit Rueckfall eben nicht mehr. Das ist kein Fehler, sondern der
+    #     dokumentierte Preis: eine unbrauchbare Inverse gegen den Verlust der
+    #     Integral-Positivitaet. Der Vorzeichen-Guard im Constraint traegt das.
+    for coverage, fell_back, w_min, ratio in rows[2:]:
+        assert w_min < 0.0, (
+            f"Auf dem Rueckfallpfad wird bei {coverage:.0e} Ueberdeckung ein negatives "
+            f"Knotengewicht erwartet (dokumentierter Verlust der Positivitaet), "
+            f"gemessen min D_II = {w_min:.3e}"
+        )
+
+    print("  [PASS] Der Uebergang liegt zwischen 1 % und 0.1 % Ueberdeckung und faellt "
+          "mit dem Vorzeichenwechsel von D_II zusammen.")
+
+
 def test_quadratic_segmentation():
     run_quad_test("CONQUAD4", lambda shift_x=0.0: quad8_points(shift_x)[:4])
     run_quad_test("CONQUAD8", quad8_points)
     run_quad_test("CONQUAD9", quad9_points)
     run_tri6_test()
     run_subcell_convexity_test()
+    run_sliver_fallback_test()
 
 
 if __name__ == "__main__":

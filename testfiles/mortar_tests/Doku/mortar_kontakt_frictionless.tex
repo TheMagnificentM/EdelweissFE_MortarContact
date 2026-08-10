@@ -291,16 +291,34 @@ der Volumenelemente (z.\,B.\ CONQUAD8 auf der Oberfläche eines hex20).
 
 \begin{center}
 \small
-\begin{tabular}{lccc}
+\begin{tabular}{lcccc}
 \toprule
-Typ & Knoten & Geometrie & Ordnung \\
+Typ & Knoten & Geometrie & Ordnung & Verifikationstiefe \\
 \midrule
-CONLINE2 / CONLINE3 & 2 / 3 & 2D-Kante & linear / quadratisch \\
-CONQUAD4 / CONQUAD8 / CONQUAD9 & 4 / 8 / 9 & 3D-Fläche & linear / quadratisch \\
-CONTRI3 / CONTRI6 & 3 / 6 & 3D-Dreieck & linear / quadratisch \\
+CONLINE2 & 2 & 2D-Kante   & linear       & Bausteine + Löser \\
+CONLINE3 & 3 & 2D-Kante   & quadratisch  & Bausteine + Löser \\
+CONQUAD4 & 4 & 3D-Fläche  & linear       & Bausteine + Löser \\
+CONQUAD8 & 8 & 3D-Fläche  & quadratisch  & Bausteine + Löser \\
+CONQUAD9 & 9 & 3D-Fläche  & quadratisch  & \textbf{nur Bausteine} \\
+CONTRI3  & 3 & 3D-Dreieck & linear       & \textbf{nur Bausteine} \\
+CONTRI6  & 6 & 3D-Dreieck & quadratisch  & \textbf{nur Bausteine} \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\noindent\textbf{Zur letzten Spalte.} Die Verifikation (Abschnitt~\ref{sec:verif}) erfolgt auf
+zwei Ebenen: \emph{Bausteine} meint Knotennormalen, Koppelmatrizen, Biorthogonalität und
+Segmentierung, jeweils gegen analytisch bekannte Werte; \emph{Löser} meint einen vollständigen
+Kontakt-Patch-Test, also den Nachweis, dass ein konstanter Druckzustand über ein nichtkonformes
+Interface exakt übertragen wird.
+
+Für \code{CONQUAD9}, \code{CONTRI3} und \code{CONTRI6} liegt \textbf{kein} Löser-Patch-Test vor.
+Ihre Bausteine sind geprüft -- Normalen und Biorthogonalität für alle drei, die
+Sub-Cell-Segmentierung zusätzlich für \code{CONQUAD9} und \code{CONTRI6} --, das
+Zusammenspiel mit dem Newton-Verfahren und der Active-Set-Iteration dagegen nicht. Für
+\code{CONTRI3} fehlt darüber hinaus ein eigener Segmentierungstest. Wer diese Typen einsetzt,
+sollte das wissen; für \code{CONQUAD9} kommt die in Abschnitt~\ref{sec:quad9} beschriebene
+Einschränkung bei Teilüberdeckung hinzu.
 
 \subsection{Verarbeitungs-Pipeline}
 Die Berechnung folgt einer festen Pipeline; ihr folgt auch die Reihenfolge der
@@ -1847,13 +1865,28 @@ Facetten wird $\bm C=\bm D$ exakt, $\tilde g_j$ verschwindet für jede Konfigura
 die zugehörige $\lambda$-Zeile von $\bm K$ hebt sich auf, sobald ein solcher Knoten aktiv wird --
 das System ist dann singulär.
 
-Die Orientierung der Kontaktelement-Normalen wird dagegen \emph{nicht} verifiziert; sie muss beim
-Erzeugen der Overlay-Elemente korrekt gesetzt werden (Abschnitt~\ref{sec:inputfile}). Zeigt eine
-Slave-Facettennormale in den eigenen Körper, so kehren sich Spalt- und Druckvorzeichen um, und der
-Kontakt überträgt Zug statt Druck.
+Die Orientierung der Kontaktelement-Normalen ist eine \emph{Eingabe}-Eigenschaft: sie entscheidet
+die Richtung von $\bm n_I$ und damit die Vorzeichen von Spalt und Druck. Zeigt eine
+Slave-Facettennormale in den eigenen Körper, so überträgt der Kontakt Zug statt Druck, und keine
+nachgelagerte Stufe kann das wieder einfangen. Zwei voneinander unabhängige Prüfungen fangen die
+beiden Arten ab, auf die das schiefgehen kann:
+
+\begin{itemize}\itemsep2pt
+  \item \textbf{Umlaufsinn} (rein topologisch, ohne Geometrie): zwei Facetten, die sich eine Kante
+        teilen, müssen sie in \emph{entgegengesetzter} Richtung durchlaufen. Tun sie es gleich, ist
+        eine von beiden umgeklappt. In 3D werden dazu die gerichteten Eckkanten geführt, in 2D die
+        Start- und Endknoten der gerichteten Segmente.
+  \item \textbf{Relative Lage} beider Flächen: die gemittelte Slave-Normale muss zur Masterfläche
+        zeigen. Das fängt den Fall ab, der dem Umlaufsinn entgeht -- eine in sich einheitlich
+        umlaufende, aber als Ganzes nach innen gekehrte Fläche, oder eine Verwechslung von
+        \code{nonMortarSurface} und \code{mortarSurface}.
+\end{itemize}
+
+\noindent Beide sind Diagnosen, keine Abbrüche: ein zulässiges Netz darf geteilt, am Rand
+nicht-mannigfaltig oder bewusst einseitig sein.
 
 \paragraph{Laufzeitdiagnosen.}
-Sechs Zustände sind zulässig, aber tragen Voraussetzungen der Formulierung nicht mehr; sie werden
+Acht Zustände sind zulässig, aber tragen Voraussetzungen der Formulierung nicht mehr; sie werden
 zur Laufzeit gemeldet, je Constraint und Ursache einmal, da sie nach ihrem ersten Auftreten in
 jedem weiteren Increment wiederkehren:
 
@@ -1878,6 +1911,14 @@ Facette oder gegeneinander gefaltete Nachbarfacetten. \\
 Active Set über die Obergrenze eingefroren & Konvergenz der semiglatten Iteration; die
 Signorini-Bedingungen sind für dieses Increment nicht garantiert
 (Abschnitt~\ref{sec:loesung}). \\
+Active Set reproduziert sich am konvergierten Zustand nicht & Zulässigkeit des eingefrorenen
+Satzes. Der Indikator wird zu Beginn des \emph{nächsten} Increments auf dem konvergierten Zustand
+des vorigen neu ausgewertet -- dem einzigen Zeitpunkt, an dem das prüfbar ist. Kippt er dort, so
+hat das Increment an diesen Knoten den falschen Zweig erzwungen. \\
+Uneinheitlicher Umlaufsinn einer Fläche & Orientierung der Kontaktnormalen; die Facettennormale
+ist dort umgekehrt (siehe oben). \\
+Slave-Normale zeigt von der Masterfläche weg & Orientierung der Kontaktnormalen im Ganzen, oder
+Verwechslung von Slave- und Masterfläche (siehe oben). \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -2356,9 +2397,15 @@ Der Mortar-Kontakt basiert auf expliziten Overlay-Kontaktelementen (\code{CONLIN
 \code{prepare\_mortar\_mesh.py} gilt:
 \begin{itemize}
     \item \textbf{Normalenorientierung:} Elementnormalen müssen aus dem Kontinuumskörper nach außen
-          weisen (\code{prepare\_mortar\_mesh.py} stellt dies automatisch sicher).
+          weisen (\code{prepare\_mortar\_mesh.py} stellt dies automatisch sicher). Der Constraint
+          prüft zusätzlich zur Laufzeit, ob die Facetten einer Fläche einheitlich umlaufen und ob
+          die Slave-Normalen überhaupt zur Masterfläche zeigen
+          (Abschnitt~\ref{sec:implnotes}).
     \item \textbf{Slave/Master-Wahl:} Als Slave-Seite (\code{nonMortarSurface}) das feinere Netz
           bzw.\ das weichere Material wählen (Standardempfehlung der dualen Mortar-Methode).
+    \item \textbf{Elementtyp:} \code{CONLINE2/3} und \code{CONQUAD4/8} sind bis zum
+          Löser-Patch-Test verifiziert, \code{CONQUAD9}, \code{CONTRI3} und \code{CONTRI6} nur auf
+          Bausteinebene (Abschnitt~\ref{sec:architektur}).
 \end{itemize}
 
 % =====================================================================

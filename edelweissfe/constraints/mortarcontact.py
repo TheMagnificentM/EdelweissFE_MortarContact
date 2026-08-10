@@ -356,6 +356,9 @@ class Constraint(ConstraintBase):
         kwargs = CaseInsensitiveDict(kwargs)
 
         self._name = name
+        # Runtime diagnostics. Initialized early so that the input checks further
+        # down can already use them.
+        self._warned = set()
         self.field = kwargs["field"]
         self.sizeField = getFieldSize(self.field, model.domainSize)
 
@@ -452,6 +455,17 @@ class Constraint(ConstraintBase):
         # Precompute undeformed normals
         self.undeformed_normals = self.compute_normals()
 
+        # The orientation of the contact facets is an INPUT property: it decides
+        # the direction of n_I and with it the sign of gap and pressure. Nothing
+        # downstream can recover from getting it wrong - a slave normal pointing
+        # into its own body turns the contact into an adhesive bond that transmits
+        # tension. Two independent checks, both diagnostic rather than fatal,
+        # because a legitimate mesh may be split, non-manifold at its border, or
+        # deliberately one-sided.
+        self._check_facet_winding(self.non_mortar_facets, non_mortar_surf_name)
+        self._check_facet_winding(self.mortar_facets, mortar_surf_name)
+        self._check_surfaces_face_each_other()
+
         # Initialize PDASS variables
         self.active_set = np.zeros(self.nNonMortarNodes, dtype=bool)
         self.use_active_set = True
@@ -468,12 +482,13 @@ class Constraint(ConstraintBase):
         self._seen_states = set()
         self._last_state = None
 
-        # Runtime diagnostics. Every assumption below was measured over the
-        # Control_Tests and patch-test suite before being wired up here; the
-        # counts are recorded in the documentation. They are emitted through
-        # `warnings` rather than the journal because the constraint interface
-        # does not hand a Journal instance to constraints.
-        self._warned = set()
+        # NOTE: self._warned is initialized at the very top of __init__, because the
+        # input checks above already emit diagnostics through it. Every assumption
+        # behind those diagnostics was measured over the Control_Tests and
+        # patch-test suite before being wired up; the counts are recorded in the
+        # documentation. They are emitted through `warnings` rather than the
+        # journal because the constraint interface does not hand a Journal
+        # instance to constraints.
 
     def _warn_once(self, key: str, message: str):
         """Emit a runtime diagnostic at most once per constraint instance and cause.
@@ -486,6 +501,152 @@ class Constraint(ConstraintBase):
             return
         self._warned.add(key)
         warnings.warn(f"MortarContact '{self._name}': {message}", RuntimeWarning, stacklevel=3)
+
+    def _check_facet_winding(self, facets, surface_name: str):
+        """Whether the facets of one surface are wound consistently.
+
+        Purely topological, no geometry involved. Two facets sharing an edge must
+        traverse it in OPPOSITE directions; if they traverse it in the same
+        direction, one of them is flipped and its normal points the other way.
+
+        3D  the directed corner edges of a facet. A directed edge seen twice means
+            two facets walk it the same way.
+        2D  a line facet is the directed segment node0 -> node1. An interior node
+            is the end of one facet and the start of the next, so a node appearing
+            twice as a start (or twice as an end) marks a flipped facet.
+
+        This catches a locally inconsistent surface. It cannot catch a surface that
+        is consistently wound but globally inside-out - that is what
+        _check_surfaces_face_each_other is for.
+        """
+        dim = self.model.domainSize
+        culprits = []
+
+        if dim == 3:
+            seen = {}
+            for el, _ in facets:
+                nodes = el.nodes
+                nCorner = 3 if len(nodes) in (3, 6) else 4
+                corners = nodes[:nCorner]
+                for i in range(nCorner):
+                    edge = (corners[i].label, corners[(i + 1) % nCorner].label)
+                    if edge in seen:
+                        culprits.append((seen[edge], el.elNumber))
+                    seen[edge] = el.elNumber
+        else:
+            starts, ends = {}, {}
+            for el, _ in facets:
+                a, b = el.nodes[0].label, el.nodes[1].label
+                if a in starts:
+                    culprits.append((starts[a], el.elNumber))
+                if b in ends:
+                    culprits.append((ends[b], el.elNumber))
+                starts[a] = el.elNumber
+                ends[b] = el.elNumber
+
+        if culprits:
+            pairs = ", ".join(f"({a}, {b})" for a, b in culprits[:5])
+            self._warn_once(
+                f"winding_{surface_name}",
+                f"surface '{surface_name}' is not consistently wound: {len(culprits)} facet "
+                f"pair(s) traverse a shared edge in the SAME direction, first {pairs}. One facet "
+                f"of each pair has its normal reversed, so the weighted gap and the contact "
+                f"pressure change sign there and the contact transmits tension instead of "
+                f"compression. Fix the node ordering of the contact overlay elements.",
+            )
+
+    def _check_surfaces_face_each_other(self):
+        """Whether the slave normals point towards the master surface at all.
+
+        A surface can be wound perfectly consistently and still be inside-out as a
+        whole; the winding check cannot see that, but the relative position of the
+        two surfaces can. The contact normal must point away from the slave body,
+        i.e. roughly towards the master.
+
+        Deliberately a weak test with a wide margin: it is meant to catch a
+        surface that is flipped outright, not to police curved or partially
+        overlapping interfaces.
+        """
+        if not self.nNonMortarNodes or not self.nMortarNodes:
+            return
+
+        slave_centroid = np.mean(self._X[: self.nNonMortarNodes], axis=0)
+        master_centroid = np.mean(self._X[self.nNonMortarNodes :], axis=0)
+        towards_master = master_centroid - slave_centroid
+        separation = np.linalg.norm(towards_master)
+        if separation < 1e-14:
+            return  # coincident centroids: no information, and not our problem
+
+        mean_normal = np.mean(self.undeformed_normals, axis=0)
+        if np.linalg.norm(mean_normal) < 1e-8:
+            return  # normals cancel out (e.g. a closed surface) - nothing to say
+
+        cos = float(np.dot(mean_normal, towards_master) / (np.linalg.norm(mean_normal) * separation))
+        if cos < 0.0:
+            self._warn_once(
+                "surfaces_face_away",
+                f"the averaged slave normal points AWAY from the master surface "
+                f"(cos = {cos:.3f}). The contact normal must point out of the slave body, so "
+                f"this indicates that the non-mortar facets are oriented inwards - or that "
+                f"non-mortar and mortar surface are swapped. Gap and pressure then carry the "
+                f"wrong sign and the contact bonds the surfaces instead of separating them.",
+            )
+
+    def _check_converged_active_set(self, U_ref: np.ndarray):
+        """Re-evaluate the NCP indicator on the CONVERGED state of the last increment.
+
+        The active set is frozen once it has settled for two consecutive iterations
+        (or on a detected cycle, or at the iteration cap). The Newton iteration then
+        continues on that fixed set, so the state it finally converges to was
+        decided at an intermediate iterate. Usually that is exactly right - the set
+        settled because it had converged. It is not guaranteed, though, and nothing
+        in the increment itself notices.
+
+        This is the missing check, run at the start of the next increment when the
+        previous one has converged: with the geometry that was in force and the
+        displacements that came out, would the indicator still produce the same set?
+        If not, the increment enforced the wrong branch at those nodes and its
+        solution does not satisfy the Signorini conditions.
+        """
+        if not self.use_active_set:
+            return
+
+        dim = self.model.domainSize
+        sf = self.sizeField
+        nNodes = len(self._nodes)
+        nSlave = self.nNonMortarNodes
+
+        disp = U_ref[: sf * nNodes].reshape(nNodes, sf)[:, :dim]
+        coords = self._X + disp
+        x_slave, x_master = coords[:nSlave], coords[nSlave:]
+        idx_LM_0 = sf * nNodes
+
+        would_be = np.zeros(nSlave, dtype=bool)
+        for I in range(nSlave):
+            n_I = self.current_normals[I]
+            nzD, nzC = self.current_D_nz[I], self.current_C_nz[I]
+            g_weak = 0.0
+            if len(nzD):
+                g_weak -= self.current_D[I, nzD] @ (x_slave[nzD] @ n_I)
+            if len(nzC):
+                g_weak += self.current_C[I, nzC] @ (x_master[nzC] @ n_I)
+            D_II = self.current_D_rowsum[I]
+            inv_D = 1.0 / D_II if abs(D_II) > 1e-30 else 0.0
+            p_n = -U_ref[idx_LM_0 + I] * np.sign(D_II)
+            would_be[I] = bool(p_n - self.c_n * g_weak * inv_D > 0.0)
+
+        flipped = np.flatnonzero(would_be != self.active_set)
+        if len(flipped):
+            self._warn_once(
+                "active_set_unstable_at_convergence",
+                f"the active set of a converged increment does not reproduce itself: "
+                f"{len(flipped)} slave node(s) (first local index {flipped[0]}) would switch "
+                f"branch if the indicator were re-evaluated on the converged state. That "
+                f"increment enforced g_weak = 0 on a node that wants to open, or lambda = 0 on "
+                f"one that wants to close, so its solution does not satisfy the Signorini "
+                f"conditions. Reduce the increment size, or verify the result (see "
+                f"testfiles/mortar_tests/10_signorini_check).",
+            )
 
     @property
     def nodes(self) -> list:
@@ -923,6 +1084,12 @@ class Constraint(ConstraintBase):
         # with respect to an equilibrated reference configuration.
         step_key = (timeStep.number, timeStep.timeIncrement, timeStep.totalTime)
         if step_key != self.last_timestep_key or not hasattr(self, "current_normals"):
+            # The previous increment has converged and U_np - dU is its result.
+            # Before anything is reset, ask whether its active set reproduces
+            # itself on that result - the one moment where that is checkable.
+            if hasattr(self, "current_normals") and self.active_set_frozen:
+                self._check_converged_active_set(U_np - dU)
+
             self.last_timestep_key = step_key
             self.current_iteration = 0
             # The active set (Signorini) is re-evaluated in EVERY Newton iteration

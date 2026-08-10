@@ -242,8 +242,12 @@ QUAD8_MASTER = QUAD4_MASTER + [
 ]
 
 # 2D: quadratische Linienelemente, Knotenreihenfolge [Ende, Ende, Mitte].
+# Die Slave-Normale ist n = (t_y, -t_x) mit t = x_1 - x_0 = +e_x, zeigt also nach
+# -y. Der Master liegt deshalb DARUNTER, damit die Flaechen aufeinander zu zeigen
+# und ``normal_offsets > 0`` (Verschiebung entlang +n) wie in den 3D-Faellen eine
+# Durchdringung erzeugt.
 LINE3_SLAVE = [[0.0, 0.0], [1.0, 0.0], [0.5, 0.0]]
-LINE3_MASTER = [[0.2, 0.01], [1.2, 0.01], [0.7, 0.01]]
+LINE3_MASTER = [[0.2, -0.01], [1.2, -0.01], [0.7, -0.01]]
 
 
 def test_consistent_tangent():

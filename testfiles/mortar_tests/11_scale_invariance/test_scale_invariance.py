@@ -57,6 +57,9 @@ PATCH2D_DIR = os.path.join(MORTARDIR, "07_patch_test_2d")
 PATCH3D_DIR = os.path.join(MORTARDIR, "08_patch_test_hex20")
 sys.path.insert(0, os.path.abspath(os.path.join(MORTARDIR, "../..")))
 
+from contextlib import contextmanager
+
+from edelweissfe.config import phenomena
 from edelweissfe.drivers.inputfiledrivensimulation import finiteElementSimulation
 from edelweissfe.utils.inputfileparser import parseInputFile
 
@@ -106,6 +109,26 @@ UPDATE_CONFIG = """*updateConfiguration, configuration=fluxResidualTolerance
 scalar variables={tol}
 
 """
+
+
+@contextmanager
+def default_tolerances_restored():
+    """Stellt die Loeser-Toleranzen nach dem Test wieder her.
+
+    ``*updateConfiguration`` wirkt PROZESSWEIT und nicht nur auf den eigenen Job:
+    ``loadConfiguration`` reicht die Modul-Dicts aus ``config/phenomena.py`` per
+    Referenz durch, und ``updateConfiguration`` schreibt in genau dieses Objekt.
+    Ohne Wiederherstellung rechnet jeder spaeter im selben Python-Prozess gestartete
+    Job mit der hier gelockerten Schranke weiter -- was in einer Testreihe still
+    andere Ergebnisse erzeugt (nachgewiesen an 12_increment_size, dessen
+    Referenzlauf dadurch um 5e-5 relativ verschoben wurde).
+    """
+    saved = dict(phenomena.fluxResidualTolerance)
+    try:
+        yield
+    finally:
+        phenomena.fluxResidualTolerance.clear()
+        phenomena.fluxResidualTolerance.update(saved)
 
 # ===========================================================================
 # 2D-Variante (Linienelemente, clip_1d_segments)
@@ -400,79 +423,81 @@ def _sweep(tag, runner, el_type, con_type, nx_a, nx_b, dim, results, pressures):
 
 
 def test_lambda_residual_floor_is_scale_dependent():
-    """Haelt fest, WO die absolute Skalar-Schranke des Loesers unerreichbar wird.
+    with default_tolerances_restored():
+        """Haelt fest, WO die absolute Skalar-Schranke des Loesers unerreichbar wird.
 
-    Die Aussage ist nicht ``der Kontakt rechnet falsch``, sondern: das Residuum der
-    lambda-Zeile ist der GEWICHTETE Spalt und traegt deshalb die Einheit
-    Laenge x Flaeche, waehrend die Schranke absolut ist. Gemessen wird beides an
-    derselben, nachweislich exakten Loesung:
+        Die Aussage ist nicht ``der Kontakt rechnet falsch``, sondern: das Residuum der
+        lambda-Zeile ist der GEWICHTETE Spalt und traegt deshalb die Einheit
+        Laenge x Flaeche, waehrend die Schranke absolut ist. Gemessen wird beides an
+        derselben, nachweislich exakten Loesung:
 
-      * g_sep (die physikalische Knotenoeffnung) ist an aktiven Knoten null bis auf
-        die Koordinaten-Rundung -- die Kontaktbedingung ist also erfuellt;
-      * g_weak = D_II * g_sep ist es dem Betrage nach NICHT, weil D_II mit der
-        Flaeche waechst.
+          * g_sep (die physikalische Knotenoeffnung) ist an aktiven Knoten null bis auf
+            die Koordinaten-Rundung -- die Kontaktbedingung ist also erfuellt;
+          * g_weak = D_II * g_sep ist es dem Betrage nach NICHT, weil D_II mit der
+            Flaeche waechst.
 
-    Ab einer Modellausdehnung, bei der max|g_weak| die Standardschranke 1e-8
-    ueberschreitet, kann der Loeser das Increment nicht mehr als konvergiert
-    annehmen, obwohl die Loesung stimmt. Der Test belegt, dass genau das bei
-    k = 1e3 in 3D eintritt und bei k = 1 noch nicht.
-    """
-    print("\n=== Boden des lambda-Residuums ueber der Laengenskala (3D) ===")
-    rows = []
-    for k in (1.0, 1e3):
-        res = run_scaled_3d(f"floor_k{k:g}", "C3D8", "CONQUAD4", 2, 3, k)
-        rows.append((k, res))
-        print(f"\n* k = {k:g}")
-        print(f"  max|u_y - u_y_exakt|                = {res['err_uy']:.3e}")
-        print(f"  max|lambda| - p                     = "
-              f"{np.max(np.abs(np.abs(res['lambdas']) - PRESSURE)):.3e}")
-        print(f"  max|g_sep|  an aktiven Knoten       = {res['g_sep_active']:.3e}   (Laenge)")
-        print(f"  max|g_weak| an aktiven Knoten       = {res['g_weak_active']:.3e}   "
-              f"(Laenge x Flaeche)  <-- das prueft der Loeser")
-        print(f"  Standardschranke (phenomena.py)     = {DEFAULT_SCALAR_FLUX_TOL:.1e}")
-        print(f"  mitgefuehrte Schranke dieses Tests  = {scalar_flux_tolerance(k, 3):.3e}")
+        Ab einer Modellausdehnung, bei der max|g_weak| die Standardschranke 1e-8
+        ueberschreitet, kann der Loeser das Increment nicht mehr als konvergiert
+        annehmen, obwohl die Loesung stimmt. Der Test belegt, dass genau das bei
+        k = 1e3 in 3D eintritt und bei k = 1 noch nicht.
+        """
+        print("\n=== Boden des lambda-Residuums ueber der Laengenskala (3D) ===")
+        rows = []
+        for k in (1.0, 1e3):
+            res = run_scaled_3d(f"floor_k{k:g}", "C3D8", "CONQUAD4", 2, 3, k)
+            rows.append((k, res))
+            print(f"\n* k = {k:g}")
+            print(f"  max|u_y - u_y_exakt|                = {res['err_uy']:.3e}")
+            print(f"  max|lambda| - p                     = "
+                  f"{np.max(np.abs(np.abs(res['lambdas']) - PRESSURE)):.3e}")
+            print(f"  max|g_sep|  an aktiven Knoten       = {res['g_sep_active']:.3e}   (Laenge)")
+            print(f"  max|g_weak| an aktiven Knoten       = {res['g_weak_active']:.3e}   "
+                  f"(Laenge x Flaeche)  <-- das prueft der Loeser")
+            print(f"  Standardschranke (phenomena.py)     = {DEFAULT_SCALAR_FLUX_TOL:.1e}")
+            print(f"  mitgefuehrte Schranke dieses Tests  = {scalar_flux_tolerance(k, 3):.3e}")
 
-    (k1, r1), (k3, r3) = rows
+        (k1, r1), (k3, r3) = rows
 
-    # Beide Rechnungen sind exakt - die Loesung haengt nicht an der Schranke.
-    for k, r in rows:
-        assert r["err_uy"] < 1e-8 * r["u_ref"], f"k = {k:g}: Verschiebungsfeld nicht exakt"
-        assert np.max(np.abs(np.abs(r["lambdas"]) - PRESSURE)) / PRESSURE < RTOL, \
-            f"k = {k:g}: Kontaktdruck nicht exakt"
-        assert r["g_sep_active"] < 1e-9 * r["u_ref"], \
-            f"k = {k:g}: die physikalische Knotenoeffnung ist an aktiven Knoten nicht null"
+        # Beide Rechnungen sind exakt - die Loesung haengt nicht an der Schranke.
+        for k, r in rows:
+            assert r["err_uy"] < 1e-8 * r["u_ref"], f"k = {k:g}: Verschiebungsfeld nicht exakt"
+            assert np.max(np.abs(np.abs(r["lambdas"]) - PRESSURE)) / PRESSURE < RTOL, \
+                f"k = {k:g}: Kontaktdruck nicht exakt"
+            assert r["g_sep_active"] < 1e-9 * r["u_ref"], \
+                f"k = {k:g}: die physikalische Knotenoeffnung ist an aktiven Knoten nicht null"
 
-    # Und trotzdem liegt g_weak bei k = 1e3 ueber der Standardschranke, bei k = 1
-    # weit darunter. Das ist die Grenze, um die es geht.
-    assert r1["g_weak_active"] < DEFAULT_SCALAR_FLUX_TOL, (
-        "Bei k = 1 sollte die Standardschranke erreichbar sein "
-        f"(max|g_weak| = {r1['g_weak_active']:.3e})"
-    )
-    assert r3["g_weak_active"] > DEFAULT_SCALAR_FLUX_TOL, (
-        "Bei k = 1e3 sollte die Standardschranke unerreichbar sein; ist sie es nicht mehr, "
-        "wurde die Skalierung des lambda-Residuums geaendert und dieser Test ist "
-        f"anzupassen (max|g_weak| = {r3['g_weak_active']:.3e})"
-    )
-    print(f"\n  [PASS] Die Grenze liegt zwischen k = 1 (max|g_weak| = {r1['g_weak_active']:.2e}) "
-          f"und k = 1e3 ({r3['g_weak_active']:.2e}).")
-    print("         Beide Loesungen sind exakt; unerreichbar ist die SCHRANKE, nicht die Loesung.")
-    print("         Abhilfe im Anwendungsfall: *updateConfiguration, "
-          "configuration=fluxResidualTolerance / scalar variables=<passend>.")
+        # Und trotzdem liegt g_weak bei k = 1e3 ueber der Standardschranke, bei k = 1
+        # weit darunter. Das ist die Grenze, um die es geht.
+        assert r1["g_weak_active"] < DEFAULT_SCALAR_FLUX_TOL, (
+            "Bei k = 1 sollte die Standardschranke erreichbar sein "
+            f"(max|g_weak| = {r1['g_weak_active']:.3e})"
+        )
+        assert r3["g_weak_active"] > DEFAULT_SCALAR_FLUX_TOL, (
+            "Bei k = 1e3 sollte die Standardschranke unerreichbar sein; ist sie es nicht mehr, "
+            "wurde die Skalierung des lambda-Residuums geaendert und dieser Test ist "
+            f"anzupassen (max|g_weak| = {r3['g_weak_active']:.3e})"
+        )
+        print(f"\n  [PASS] Die Grenze liegt zwischen k = 1 (max|g_weak| = {r1['g_weak_active']:.2e}) "
+              f"und k = 1e3 ({r3['g_weak_active']:.2e}).")
+        print("         Beide Loesungen sind exakt; unerreichbar ist die SCHRANKE, nicht die Loesung.")
+        print("         Abhilfe im Anwendungsfall: *updateConfiguration, "
+              "configuration=fluxResidualTolerance / scalar variables=<passend>.")
 
 
 def test_scale_invariance():
-    print("\n=== Skaleninvarianz des Zwei-Block-Patch-Tests ===")
-    results = []
-    pressures = {}
+    with default_tolerances_restored():
+        print("\n=== Skaleninvarianz des Zwei-Block-Patch-Tests ===")
+        results = []
+        pressures = {}
 
-    for tag, el_type, con_type, nx_a, nx_b in VARIANTS_2D:
-        _sweep(tag, run_scaled_2d, el_type, con_type, nx_a, nx_b, 2, results, pressures)
+        for tag, el_type, con_type, nx_a, nx_b in VARIANTS_2D:
+            _sweep(tag, run_scaled_2d, el_type, con_type, nx_a, nx_b, 2, results, pressures)
 
-    for tag, el_type, con_type, nx_a, nx_b in VARIANTS_3D:
-        _sweep(tag, run_scaled_3d, el_type, con_type, nx_a, nx_b, 3, results, pressures)
+        for tag, el_type, con_type, nx_a, nx_b in VARIANTS_3D:
+            _sweep(tag, run_scaled_3d, el_type, con_type, nx_a, nx_b, 3, results, pressures)
 
-    n_fail = results.count(False)
-    assert n_fail == 0, f"{n_fail} Skalierungspruefungen fehlgeschlagen"
+        n_fail = results.count(False)
+        assert n_fail == 0, f"{n_fail} Skalierungspruefungen fehlgeschlagen"
 
 
 if __name__ == "__main__":

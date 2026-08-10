@@ -289,7 +289,7 @@ def _print_hertz(rows):
     print("# (C) HERTZ'SCHER KONTAKT: gekruemmter Indenter, Vergleich der Druckverteilung gegen Hertz")
     print("#" * 108)
     hdr = (f"{'Netz':<16}{'konv':>5}{'P_prime':>10}{'a_num':>9}{'a_Hertz':>9}{'a_err%':>8}"
-           f"{'p0_num':>9}{'p0_Hertz':>10}{'p0_err%':>9}{'rms_p':>8}{'zickzk%':>9}{'akt.':>6}")
+           f"{'p0_num':>9}{'p0_Hertz':>10}{'p0_err%':>9}{'rms_p':>8}{'zickzk%':>9}{'zz_F%':>8}{'akt.':>6}")
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
@@ -298,12 +298,18 @@ def _print_hertz(rows):
             continue
         print(f"{r['name']:<16}{'ja':>5}{r['Pprime']:>10.3f}{r['a_num']:>9.4f}{r['a_hertz']:>9.4f}"
               f"{r['a_err_rel'] * 100:>8.1f}{r['p0_num']:>9.3f}{r['p0_hertz']:>10.3f}"
-              f"{r['peak_err_rel'] * 100:>9.1f}{r['rms_p_err']:>8.3f}{r['zigzag'] * 100:>9.1f}{r['n_active']:>6}")
+              f"{r['peak_err_rel'] * 100:>9.1f}{r['rms_p_err']:>8.3f}{r['zigzag'] * 100:>9.1f}"
+              f"{r['zigzag_force'] * 100:>8.1f}{r['n_active']:>6}")
     print("\nhex8 (linear): GLATTES Druckprofil (kleiner zickzk), aber Maximum systematisch zu hoch")
     print("(p0_err), sinkt mit Verfeinerung. hex20 (quadratisch): Maximum sehr genau (~1%), aber")
     print("KNOTEN-ZU-KNOTEN-OSZILLATION (zickzk ~8-10%: Ecke/Mittelknoten-Effekt der quadratischen")
     print("Mortar-Kontaktdruecke, v.a. am Kontaktrand; sinkt nur langsam mit Verfeinerung). Die")
     print("uebertragene Gesamtkraft ist bei beiden korrekt. Druckprofile in hertz_profile_*.csv.")
+    print("\nzickzk% liest den Multiplikator lambda direkt als Druck, zz_F% die Knotenkraft")
+    print("lambda*D_II geteilt durch die tributaere Flaeche der ganzen Facette. An teilweise")
+    print("ueberdeckten Randknoten skaliert lambda mit 1/D_II, die beiden Lesarten koennen dort")
+    print("also auseinanderlaufen. Dass sie es NICHT tun, belegt: die Oszillation ist der")
+    print("Ecke/Mittelknoten-Effekt und kein Artefakt der Auswertung am Kontaktrand.")
 
 
 def _print_gp_note(rows):
