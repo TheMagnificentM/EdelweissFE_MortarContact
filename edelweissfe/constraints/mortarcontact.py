@@ -563,12 +563,31 @@ class Constraint(ConstraintBase):
                     normals[node_to_idx[node]] += n_facet
 
         # Normalize the normal vectors
+        degenerate = []
         for i in range(self.nNonMortarNodes):
             norm = np.linalg.norm(normals[i])
             if norm > 1e-14:
                 normals[i] /= norm
             else:
                 normals[i] = np.zeros(dim)
+                degenerate.append(i)
+
+        if degenerate:
+            # A zero normal is not a harmless special case: g_weak and p_n are both
+            # built by contracting with n_I, so both collapse to zero, the
+            # indicator s_n is zero, and the node can NEVER become active. It
+            # silently drops out of the contact. Causes are a degenerate facet
+            # (zero area) or facets whose area-weighted normals cancel, which is
+            # what a node on a sharp fold between two opposing facets does.
+            self._warn_once(
+                "degenerate_nodal_normal",
+                f"{len(degenerate)} slave node(s) with a vanishing area-weighted normal "
+                f"(first: local index {degenerate[0]}). Such nodes carry no contact at all - "
+                f"the weighted gap and the pressure both contract with n_I and vanish with it, "
+                f"so the active-set indicator can never turn them on. Usual causes: a "
+                f"degenerate (zero-area) contact facet, or adjacent facets whose normals "
+                f"cancel because they fold back onto each other.",
+            )
 
         return normals
 

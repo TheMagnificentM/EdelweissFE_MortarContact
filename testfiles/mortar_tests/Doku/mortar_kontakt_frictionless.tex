@@ -1852,7 +1852,7 @@ Slave-Facettennormale in den eigenen Körper, so kehren sich Spalt- und Druckvor
 Kontakt überträgt Zug statt Druck.
 
 \paragraph{Laufzeitdiagnosen.}
-Fünf Zustände sind zulässig, aber tragen Voraussetzungen der Formulierung nicht mehr; sie werden
+Sechs Zustände sind zulässig, aber tragen Voraussetzungen der Formulierung nicht mehr; sie werden
 zur Laufzeit gemeldet, je Constraint und Ursache einmal, da sie nach ihrem ersten Auftreten in
 jedem weiteren Increment wiederkehren:
 
@@ -1870,6 +1870,10 @@ $\mathrm{cond}(\bm M_t)\ge10^{12}$ & Biorthogonalität auf dem tatsächlichen In
 es gilt nur noch die des Referenzelements (Abschnitt~\ref{sec:sliver}). \\
 $\tilde D_{jj}<0$ & Integral-Positivität nach \citet[Gl.~(4.2)]{popp2012}; der gewichtete Spalt
 verliert die Deutung als mittlere Öffnung (Abschnitt~\ref{sec:sgnd}). \\
+Verschwindende Knotennormale & Eindeutigkeit der Normalen \eqref{eq:facetnormal}. Der Knoten
+trägt dann \emph{gar keinen} Kontakt: Spalt und Druck werden beide mit $\bm n_I$ kontrahiert und
+verschwinden mit ihr, der Aktivierungsindikator kann ihn nie einschalten. Ursachen: entartete
+Facette oder gegeneinander gefaltete Nachbarfacetten. \\
 Active Set über die Obergrenze eingefroren & Konvergenz der semiglatten Iteration; die
 Signorini-Bedingungen sind für dieses Increment nicht garantiert
 (Abschnitt~\ref{sec:loesung}). \\
@@ -1901,7 +1905,7 @@ Eigenschaft & Prüfung \\
 \textbf{Knotennormalen} & Flächengewichtete Knotennormale gegen die \emph{analytische} Normale eines Zylinderausschnitts, mit Konvergenz unter Netzverfeinerung; dazu die Orientierung (nach außen) und die exakte 2D-Sehnenformel \eqref{eq:linefacetnormal} auf gekrümmten CONLINE3-Kanten (\file{01\_node\_normals}). \\
 \textbf{Polygon-Clipping} & Schnitt-/Triangulierungsgeometrie gegen analytische Überlappungen, einschließlich des Flächen\emph{gewinns} bei nicht-konvexem Subject (\file{02\_polygon\_clipping}). \\
 \textbf{Koppelmatrizen} & $\bm D,\bm M$, Zeilensummen-Identität \eqref{eq:rowsum} ($<10^{-14}$) und Überlappungsfläche gegen den analytischen Wert (\file{03\_coupling\_matrices}). \\
-\textbf{Biorthogonalität} & \eqref{eq:biorth} numerisch verifiziert (\file{04\_dual\_biorthogonality}). \\
+\textbf{Biorthogonalität} & \eqref{eq:biorth} gegen \emph{unabhängige} Referenzen: geschlossene duale Basis des CONQUAD4, Nachrechnung mit einer höhergradigen Quadraturregel, und -- als einzige Prüfung des Produktionspfads -- Diagonalität von $\bm D\bm T_e^{\!\top}$ aus der echten Segmentquadratur, auch bei Teilüberdeckung (\file{04\_dual\_biorthogonality}). \\
 \textbf{Quadratische Segmentierung} & Sub-Cell-Zerlegung + Segmentquadratur für CONQUAD8/9, CONTRI6 (\file{05\_quadratic\_segmentation}). \\
 \textbf{Active-Set / PDASS} & Aktivierung bei Durchdringung, Freeze/Anti-Cycling sowie Vorzeichenbehandlung bei negativem Knotengewicht (\file{06\_active\_set\_pdass}). \\
 \textbf{Patch-Test 2D} & Bausteine \emph{und} Löser-Patch-Test: CPE4/CONLINE2 und CPE8/CONLINE3, je konform und nichtkonform (\file{07\_patch\_test\_2d}). \\

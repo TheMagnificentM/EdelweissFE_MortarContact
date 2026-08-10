@@ -169,6 +169,60 @@ class TestMortarIntersection(unittest.TestCase):
         clip_c = sutherland_hodgman_clip(covering, convex)
         self.assertAlmostEqual(shoelace(clip_c), shoelace(convex), places=12)
 
+    def test_nonconvex_subject_polygon_gains_area(self):
+        """Auch das GESCHNITTENE Polygon muss konvex sein -- aus einem anderen Grund.
+
+        Sutherland--Hodgman selbst akzeptiert ein beliebiges Subject: der Algorithmus
+        sei ``applicable to any polygon, convex or concave, planar or non-planar''
+        (Sutherland & Hodgman 1974, S. 33). Fuer das CLIPPING stimmt das auch.
+
+        Die anschliessende Faecher-Triangulierung stimmt es nicht: das
+        Ueberlappungspolygon erbt die Reflexecken des Subjects, und
+        ``triangulate_polygon`` faechert ab Ecke 0. Da die Zell-Jacobi-Determinante
+        in der Segmentierung als BETRAG je Dreieck eingeht, wird die Flaeche
+        ausserhalb des Polygons nicht abgezogen, sondern addiert.
+
+        Der Fehler ist damit GEGENLAEUFIG zum Verlust bei nicht-konvexem
+        Clip-Fenster (Test oben): dort fehlt Flaeche, hier ist zuviel da. Genau
+        deshalb werden beide Sub-Zellen getrennt geprueft
+        (``is_convex_polygon`` in mortarcontact.py).
+        """
+        # Reflexecke NICHT an Position 0, sonst faellt der Faecher zufaellig richtig aus
+        nonconvex_subject = np.array([[1.0, 0.5], [0.5, 1.0], [0.0, 0.5], [0.5, 0.75]])
+        covering = np.array([[-2.0, -2.0], [3.0, -2.0], [3.0, 3.0], [-2.0, 3.0]])
+
+        def shoelace(p):
+            x, y = p[:, 0], p[:, 1]
+            return 0.5 * np.abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+
+        true_area = shoelace(nonconvex_subject)
+        overlap = sutherland_hodgman_clip(nonconvex_subject, covering)
+
+        # So rechnet die Segmentierung: Betrag je Faecherdreieck
+        fan_area = 0.0
+        for tri in triangulate_polygon(overlap):
+            v0, v1, v2 = tri
+            fan_area += 0.5 * abs((v1[0] - v0[0]) * (v2[1] - v0[1]) - (v2[0] - v0[0]) * (v1[1] - v0[1]))
+
+        print("\n--- Test Non-Convex Subject Polygon ---")
+        print("Non-convex subject:\n", nonconvex_subject)
+        print("True area (shoelace):", true_area)
+        print("Fan-triangulated area (wie in der Segmentierung):", fan_area)
+        print("Ueberschaetzung:", f"{100 * (fan_area / true_area - 1):.1f} %")
+
+        self.assertAlmostEqual(true_area, 0.125, places=12)
+        # Der Gewinn ist gross, nicht marginal: hier das Dreifache der wahren Flaeche.
+        self.assertGreater(fan_area, 2.0 * true_area)
+
+        # Gegenprobe: konvexes Subject -> exakt.
+        convex_subject = np.array([[1.0, 0.5], [0.5, 1.0], [0.0, 0.5], [0.5, 0.0]])
+        ov_c = sutherland_hodgman_clip(convex_subject, covering)
+        fan_c = 0.0
+        for tri in triangulate_polygon(ov_c):
+            v0, v1, v2 = tri
+            fan_c += 0.5 * abs((v1[0] - v0[0]) * (v2[1] - v0[1]) - (v2[0] - v0[0]) * (v1[1] - v0[1]))
+        self.assertAlmostEqual(fan_c, shoelace(convex_subject), places=12)
+
 
 if __name__ == '__main__':
     unittest.main()

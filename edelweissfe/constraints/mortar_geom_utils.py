@@ -48,7 +48,16 @@ def sutherland_hodgman_clip(subject_polygon, clip_polygon):
         dp = [s[0] - e[0], s[1] - e[1]]
         n1 = cp1[0] * cp2[1] - cp1[1] * cp2[0]
         n2 = s[0] * e[1] - s[1] * e[0]
-        n3 = 1.0 / (dc[0] * dp[1] - dc[1] * dp[0])
+        den = dc[0] * dp[1] - dc[1] * dp[0]
+        if den == 0.0:
+            # Parallel edges. Reached only if `inside` classified the two endpoints
+            # differently, which its inclusive tolerance normally prevents for
+            # exactly collinear points - but "normally" is not "never", and without
+            # this guard the result would be inf/NaN and poison the whole cell.
+            # Falling back to the crossing endpoint keeps the polygon closed and
+            # degenerates the sliver to zero area, which the caller discards.
+            return [e[0], e[1]]
+        n3 = 1.0 / den
         return [(n1 * dp[0] - n2 * dc[0]) * n3, (n1 * dp[1] - n2 * dc[1]) * n3]
 
     output_list = list(subject_polygon)
