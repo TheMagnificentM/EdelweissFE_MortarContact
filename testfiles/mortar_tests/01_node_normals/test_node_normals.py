@@ -8,20 +8,17 @@ Die Knotennormale traegt den gewichteten Spalt und damit die Richtung der
 Kontaktkraft. Sie muss deshalb gegen eine *unabhaengige* Referenz geprueft
 werden -- nicht gegen die Formel, mit der der Code sie berechnet.
 
-Warum das ausdruecklich dasteht
--------------------------------
-Die frueheren Fassung dieses Tests prueft auf verzerrter Geometrie
+Die Referenz muss dabei von AUSSEN kommen. Eine Pruefung der Form
 
-    n_facet = cross(v1, v2)   und dann   dot(n_facet, v1) == 0,
+    n_facet = cross(v1, v2)   und dann   dot(n_facet, v1) == 0
 
-baute also die Formel des Codes im Test nach und verifizierte anschliessend eine
-Identitaet, die fuer JEDE Eingabe gilt. Der Test konnte nicht fehlschlagen. Er
-hat dadurch einen echten Fehler nicht gesehen: die 2D-Facettennormale benutzte
-`coords[-1] - coords[0]`, bei CONLINE3 (Knotenreihenfolge Ende-Ende-Mitte) also
-die Sehne der ersten Kantenhaelfte -- auf gekruemmten Kanten 16.7 Grad daneben.
+baut die Formel des Codes im Test nach und verifiziert anschliessend eine
+Identitaet, die fuer JEDE Eingabe gilt: sie kann nicht fehlschlagen und sagt
+ueber die Knotennormale nichts aus. Wer diesen Test erweitert, prueft bitte
+gegen eine geschlossene Loesung, nicht gegen die Konstruktion.
 
-Was jetzt geprueft wird
------------------------
+Geprueft wird
+-------------
 A  Einheitslaenge          |n| = 1 an jedem Slave-Knoten.
 B  Ebene Referenz          Auf einer ebenen Flaeche exakt -e_y.
 C  Analytische Normale     Auf einem ZYLINDERausschnitt gegen die exakte

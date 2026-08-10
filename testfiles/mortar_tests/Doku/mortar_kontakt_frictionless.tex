@@ -1249,15 +1249,13 @@ gilt. Die 2D-Facettennormale ist damit -- anders als ihr 3D-Gegenstück
 \eqref{eq:facetnormal}, das die Krümmung tatsächlich vernachlässigt -- nicht approximativ.
 
 \medskip
-\noindent\emph{Anmerkung zur Entwicklungsgeschichte.} Bis einschließlich Commit \code{7c0c078}
-stand hier $\bm t=\bm x_{\text{letzt}}-\bm x_0$, bei \code{CONLINE3} also die Sehne der
-\emph{ersten Kantenhälfte}. Auf geraden Kanten ist das folgenlos (die Richtung stimmt, der
-gemeinsame Faktor $\tfrac12$ kürzt sich in der Normierung heraus), auf gekrümmten dagegen nicht:
-für einen um $0{,}15$ aus der Sehne einer Einheitskante gerückten Mittelknoten ergab sich eine um
-$16{,}7^\circ$ verdrehte Knotennormale. Der Fehler war nicht auffindbar, weil der zugehörige Test
-(\file{01\_node\_normals}) die Formel des Codes nachbaute und anschließend $\bm n_f\cdot\bm t=0$
-prüfte -- eine Identität, die für jede Eingabe gilt. Er wird jetzt gegen die analytische Normale
-einer gekrümmten Fläche geprüft (Abschnitt~\ref{sec:verif}).
+\noindent Die Unterscheidung ist wesentlich, weil die Knotenreihenfolge sie nahelegt zu übersehen:
+setzte man $\bm t=\bm x_{\text{letzt}}-\bm x_0$, so wäre $\bm t$ bei \code{CONLINE3} die Sehne der
+\emph{ersten Kantenhälfte}. Auf geraden Kanten bliebe das folgenlos -- die Richtung stimmt dort,
+und der gemeinsame Faktor $\tfrac12$ kürzt sich in der Normierung heraus --, auf gekrümmten nicht:
+für einen um $0{,}15$ aus der Sehne einer Einheitskante gerückten Mittelknoten wäre die
+Knotennormale um $16{,}7^\circ$ verdreht. Die Exaktheit von \eqref{eq:linefacetnormal} wird für
+jede Mittelknotenlage nachgerechnet (Abschnitt~\ref{sec:verif}).
 
 Die gemittelte Normale garantiert ein stetiges Normalenfeld über Facettengrenzen hinweg, was für
 die Konsistenz des Kontakts an Elementkanten nötig ist.
@@ -1343,16 +1341,19 @@ vernachlässigbaren Zusatzterm, sondern um eine bewusste Auslassung
         kontrolliert.
 \end{itemize}
 
-\paragraph{Größenordnung des Staffelungsfehlers.} Sie lässt sich beziffern, indem man die
-Referenzkonfiguration zwischen zwei zulässigen Wahlen umschaltet -- konvergierter Zustand
-gegenüber extrapoliertem Prädiktor (Punkt~(0)). Auf den Patch-Tests ändert das \emph{nichts}:
-dort ist die Lösung linear und die Geometrie über das Increment konstant, alle Varianten bleiben
-maschinengenau. Auf dem gekrümmten Hertz-Modell dagegen verschieben sich die Knotendrücke um
-relativ $6{,}5\cdot10^{-4}$ (\file{Control\_Tests/08\_hertz}, \code{hex8\_medium}: $11{,}3869$
-gegenüber $11{,}3795$ im Scheitel). Das ist die Grössenordnung, um die die Staffelung das
-Ergebnis bewegt -- gut drei Grössenordnungen unter dem Modellfehler gegenüber der
-Hertz-Lösung selbst ($4$--$7\,\%$ bei linearen Elementen), aber eben nicht null. Eine
-Increment-Grössen-Studie, die den Fehler über die Schrittweite ausmisst, steht aus.
+\paragraph{Größenordnung des Staffelungsfehlers.} Sie lässt sich als Empfindlichkeit gegenüber der
+Referenzkonfiguration beziffern: Punkt~(0) nennt mit dem konvergierten Zustand und dem
+extrapolierten Prädiktor zwei Konfigurationen, die sich um $\mathcal O(\Delta t)$ unterscheiden
+und beide innerhalb der Staffelungsordnung liegen. Die Differenz der zugehörigen Lösungen ist
+damit ein Maß für den Staffelungsfehler selbst.
+
+Auf den Patch-Tests ist sie \emph{null}: dort ist die Lösung linear, die Geometrie über das
+Increment konstant, und beide Varianten bleiben maschinengenau. Auf dem gekrümmten Hertz-Modell
+beträgt sie relativ $6{,}5\cdot10^{-4}$ (\file{Control\_Tests/08\_hertz}, \code{hex8\_medium}:
+$11{,}3869$ gegenüber $11{,}3795$ im Scheitel des Druckprofils) -- gut drei Größenordnungen unter
+dem Modellfehler gegenüber der Hertz-Lösung selbst ($4$--$7\,\%$ bei linearen Elementen), aber
+nicht null. Eine Increment-Größen-Studie, die den Fehler über die Schrittweite als
+$\mathcal O(\Delta t)$ nachweist, liegt nicht vor.
 
 \medskip
 \noindent\textit{Bekannte Einschränkung.} An \emph{scharfen} Kanten ist die gemittelte
@@ -1956,11 +1957,9 @@ Eigenschaft & Prüfung \\
         keine Normale in den eigenen Körper zeigt, und dass die 2D-Sehnenformel
         \eqref{eq:linefacetnormal} für \emph{jede} Mittelknotenlage exakt ist.
 
-        \emph{Warum das ausdrücklich dasteht:} die vorherige Fassung dieses Tests baute die
-        Formel des Codes nach und prüfte anschließend $\bm n_f\cdot\bm v=0$ -- eine Identität,
-        die für jede Eingabe gilt. Der Test konnte nicht fehlschlagen und hat den in
-        Abschnitt~\ref{sec:normalen} beschriebenen Fehler in der 2D-Facettennormale deshalb nicht
-        gesehen.
+        Die Referenz ist dabei bewusst \emph{extern}: eine Prüfung der Form
+        $\bm n_f\cdot\bm v=0$ wäre für die Konstruktion \eqref{eq:facetnormal} eine Identität und
+        damit für jede Eingabe erfüllt.
   \item \textbf{Zwei-Block-Referenztests} (\file{Control\_Tests/README.md}): verschiebungs- und
         lastgesteuerte Blöcke, konform und nichtkonform, mit Abgleich von Verschiebungsfeld,
         Spannungen und Kontaktbedingungen; dort sind auch die beobachteten Grenzen des
@@ -2380,7 +2379,7 @@ Der Mortar-Kontakt basiert auf expliziten Overlay-Kontaktelementen (\code{CONLIN
 
 \bibitem[Hintermüller et al.(2002)]{hik2002} M.~Hintermüller, K.~Ito, K.~Kunisch: \emph{The primal-dual active set strategy as a semismooth Newton method}, SIAM Journal on Optimization 13 (2002), 865--888. (Lokale Kopie: \path{meetings/literature/HintermuellerItoKunisch_2002_ThePrimalDualActiveSetStrategyAsASemismoothNewtonMethod.pdf})
 
-\bibitem[Hüeber \& Wohlmuth(2005)]{hueber2005} S.~H\"ueber, B.~I.~Wohlmuth: \emph{A primal--dual active set strategy for non-linear multibody contact problems}, Computer Methods in Applied Mechanics and Engineering 194 (2005), 3147--3166. (Lokale Kopie: \path{meetings/literature/HüeberWohlmuth_2005_APrimalDualActiveSetStrategyForNonLinearContactProblems.pdf} -- der Dateiname lässt ``multibody'' aus, der Titel auf der Titelseite lautet wie oben.)
+\bibitem[Hüeber \& Wohlmuth(2005)]{hueber2005} S.~H\"ueber, B.~I.~Wohlmuth: \emph{A primal--dual active set strategy for non-linear multibody contact problems}, Computer Methods in Applied Mechanics and Engineering 194 (2005), 3147--3166. (Lokale Kopie: \path{meetings/literature/HüeberWohlmuth_2005_APrimalDualActiveSetStrategyForNonLinearContactProblems.pdf})
 
 \bibitem[Lamichhane et al.(2005)]{lamichhane2005} B.~P.~Lamichhane, R.~P.~Stevenson, B.~I.~Wohlmuth: \emph{Higher order mortar finite element methods in 3D with dual Lagrange multiplier bases}, Numerische Mathematik 102 (2005), 93--121. (Lokale Kopie: \path{meetings/literature/LamichhaneStevensonWohlmuth_2005_HigherOrderMortarFiniteElementMethodsIn3DWithDualLagrangeMultiplierBases.pdf})
 

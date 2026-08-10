@@ -24,8 +24,9 @@ Skala spreizt:
   |D_jk| > 1e-14 (Besetzungsmuster)           Fläche   2D+3D   beiden Varianten
 
 Im 2D-Pfad wird ``sutherland_hodgman_clip`` gar nicht aufgerufen -- dort schneidet
-``clip_1d_segments`` Intervalle. Die frühere Fassung dieses Tests lief nur in 2D
-und behauptete im Docstring trotzdem, ``inside()`` mitzuprüfen; das war falsch.
+``clip_1d_segments`` Intervalle. Eine reine 2D-Skalenstudie erreicht die beiden
+flächenwertigen Toleranzen deshalb grundsätzlich nicht, gleichgültig wie weit sie
+die Skala spreizt.
 
 Geprüft werden k = 1e-3, 1 und 1e3. Damit ist sowohl der Fall abgedeckt, in dem
 der relative Term der Suchmarge dominiert (grosse Modelle), als auch der, in dem
