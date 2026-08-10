@@ -2352,19 +2352,42 @@ Segmentierungskette. Der Reihe nach sind das:
   \item die Zell-Jacobi-Determinante der Integrationsdreiecke und die Lage der Gauß-Punkte;
   \item die Newton-Rückabbildung $\bm\xi(\bm x_{\text{gp}})$ in beide Naturkoordinaten, deren
         Ableitung über den Satz über implizite Funktionen aus der Element-Jacobi-Matrix folgt;
-  \item daraus schließlich $\partial N/\partial\bm x$ und damit
+  \item die \emph{dualen} Formfunktionen selbst: $\bm A_e$ wird aus der Segmentquadratur gebildet
+        (Abschnitt~\ref{sec:dual}) und hängt damit ebenfalls von den Koordinaten ab;
+  \item daraus schließlich $\partial N/\partial\bm x$, $\partial\Phi/\partial\bm x$ und damit
         $\partial\bm D/\partial\bm x$ und $\partial\bm M/\partial\bm x$.
 \end{enumerate}
-Die vollständige Herleitung findet sich bei \citet{popp2010} und \citet[Kap.~4]{farah}.
+Diese Gliederung ist keine eigene: \citet[Anh.~A]{popp2010} führen für dieselbe Formulierung
+genau sechs zu linearisierende Größen auf -- Normalen- und Tangentenvektoren, die Integrale der
+Mortar-Matrizen, die gewichteten Spalte, die Gauß-Punkt-Koordinaten, die Eckpunkte der
+Integrationszellen und die dualen Formfunktionen -- und geben die zugehörigen Richtungsableitungen
+in den Abschnitten A.1 bis A.6 an. \citet[Kap.~4]{farah} führt dieselbe Kette aus. Zum Aufwand
+äußern sich \citet[Anh.~A]{popp2010} unmissverständlich: ``the computation of directional
+derivatives accounts for a significant portion of the implementation effort associated with our
+method''.
 
 \paragraph{Zwei Eigenschaften, die dabei zu bedenken sind.}
 Erstens ist Schritt~4 nur \emph{stückweise} glatt: wandert ein Eckpunkt über eine Clip-Kante, so
 ändert sich die Anzahl der Polygonecken, und die Ableitung springt. Auch eine vollständige
-Linearisierung ist an diesen Übergängen unstetig. Zweitens ist eine konsistent linearisierte
-Mortar-Formulierung im Allgemeinen \emph{unsymmetrisch}; \citet{hiermeier2018} weisen das
-ausdrücklich aus und untersuchen, welche Terme in den veröffentlichten Formulierungen dafür
-vernachlässigt werden. Die heute symmetrische Sattelpunktstruktur (Abschnitt~\ref{sec:loesung}) ginge damit
-verloren, was auf die Wahl von Löser und Vorkonditionierer durchschlägt.
+Linearisierung ist an diesen Übergängen unstetig.
+
+Zweitens ist die \emph{Symmetrie} keine Selbstverständlichkeit. \citet{hiermeier2018} halten fest,
+dass die meisten Mortar-Formulierungen für reibungsfreien Kontakt in ihrer konsistent
+linearisierten Form auf eine unsymmetrische Jacobi-Matrix führen, obwohl sie von einem skalaren
+Potential ausgehen:
+\begin{quote}
+\small ``it is not immediately obvious why most mortar-type contact formulations for frictionless
+contact lead to a non-symmetric Jacobian matrix in their consistently linearized form \ldots\ Only
+a deeper insight reveals the neglected terms and certain assumptions in the published
+formulations.'' \hfill \citep[S.~3 des Manuskripts]{hiermeier2018}
+\end{quote}
+Sie zeigen zugleich, dass dies \emph{kein} notwendiger Preis der Konsistenz ist: eine strenge
+Variation des zugrunde liegenden Potentials führt sehr wohl auf ein symmetrisches System,
+allerdings um den Preis erheblich teurerer Terme zweiter Ordnung. Sie entwickeln daher beide
+Varianten nebeneinander -- die strenge, symmetrische und eine vereinfachte, unsymmetrische, die
+die Impulserhaltung dennoch wahrt. Für eine Umsetzung hier heißt das: die heute symmetrische
+Sattelpunktstruktur (Abschnitt~\ref{sec:loesung}) bliebe nur auf dem strengen Weg erhalten, und
+die Wahl zwischen beiden schlägt auf Löser und Vorkonditionierer durch.
 
 Günstig ist dagegen die Schnittstellenseite: die Linearisierungsterme sind \emph{additive}
 Beiträge zu $\bm K$ und damit genau das, was ein Constraint beisteuern kann. Anders als die
@@ -2454,14 +2477,19 @@ elements since the bounding volumes of adjacent subsurfaces always intersect wit
 \noindent Die Hüllkörper benachbarter Facetten schneiden sich stets, sodass eine reine
 Näherungssuche gerade jene Paare zurückliefert, die auszuschließen sind. \citet{yang2008} ergänzen
 sie um ein Krümmungskriterium als hinreichende Bedingung für die Abwesenheit von Selbstkontakt,
-das sie \citet{volino2000} entnehmen \citep[S.~764]{yang2008}:
+das sie \citet{volino2000} entnehmen \citep[S.~764]{yang2008}. Im Original lautet es
+\citep[Abschn.~3.2.2, S.~134]{volino2000} (dort als Aufzählung gesetzt):
 
 \begin{quote}
-\small ``for a continuous smooth surface $S$ with contour $C$, if there is a vector $\bm v$ and
-$\bm n\cdot\bm v>0$ for each normal vector $\bm n$ on the surface $S$, and the projection of $C$ on
-a plane orthogonal to $\bm v$ along the direction of $\bm v$ does not intersect with itself, then
-there is no self contact on surface $S$.''
+\small ``Let $S$ be a continuous surface in Euclidean space, delimited by one contour $C$. If
+there exists a vector $V$ for which $N\cdot V>0$ at (almost) every point of $S$ ($N$ being the
+normal vector of the surface at the considered point), and the projection of $C$ on a plane
+orthogonal to $V$ along the direction of $V$ has no self-intersections, then there are no
+self-collisions on the surface $S$.''
 \end{quote}
+
+\noindent \citet{yang2008} geben es sinngemäß wieder; die Einschränkung ``at (almost) every
+point'' entfällt dort.
 
 \noindent In Verbindung mit einem $\mathcal{O}(1)$-Adjazenztest lassen sich damit benachbarte
 Teilflächen ausschließen, ohne sie geometrisch zu schneiden. Hinzu kommt ein Facet-Sorting, das die
@@ -2642,9 +2670,9 @@ Der Mortar-Kontakt basiert auf expliziten Overlay-Kontaktelementen (\code{CONLIN
 
 \bibitem[Cichosz \& Bischoff(2011)]{cichosz} T.~Cichosz, M.~Bischoff: \emph{Consistent treatment of boundaries with mortar contact formulations using dual Lagrange multipliers}, Computer Methods in Applied Mechanics and Engineering 200 (2011), 1317--1332. (Lokale Kopie: \path{meetings/literature/CichoszBischoff_2011_ConsistentTreatmentOfBoundariesWithMortarContactFormulationsUsingDualLagrangeMultipliers.pdf})
 
-\bibitem[De Luca et al.(1996)]{deluca1996} T.~De~Luca, F.~Facchinei, C.~Kanzow: \emph{A semismooth equation approach to the solution of nonlinear complementarity problems}, Mathematical Programming 75 (1996), 407--439, \path{doi:10.1007/BF02592192}. (Nicht lokal vorliegend; als Beleg für die Globalisierung semiglatter Newton-Verfahren angeführt.)
+\bibitem[De Luca et al.(1996)]{deluca1996} T.~De~Luca, F.~Facchinei, C.~Kanzow: \emph{A semismooth equation approach to the solution of nonlinear complementarity problems}, Mathematical Programming 75 (1996), 407--439, \path{doi:10.1007/BF02592192}. (Lokale Kopie: \path{meetings/literature/DeLucaFacchineiKanzow_1996_ASemismoothEquationApproachToTheSolutionOfNonlinearComplementarityProblems.pdf})
 
-\bibitem[Deuflhard(2004)]{deuflhard2004} P.~Deuflhard: \emph{Newton Methods for Nonlinear Problems -- Affine Invariance and Adaptive Algorithms}, Springer Series in Computational Mathematics~35, Springer, Berlin, 2004, ISBN 978-3-540-21099-3. (Nicht lokal vorliegend.)
+\bibitem[Deuflhard(2004)]{deuflhard2004} P.~Deuflhard: \emph{Newton Methods for Nonlinear Problems -- Affine Invariance and Adaptive Algorithms}, Springer Series in Computational Mathematics~35, Springer, Berlin, 2004, ISBN 978-3-540-21099-7. (Lokale Kopie: \path{meetings/literature/Deuflhard_2004_NewtonMethodsForNonlinearProblemsAffineInvarianceAndAdaptiveAlgorithms.pdf} -- erster Softcover-Druck 2011 des Werks von 2004.)
 
 \bibitem[Dunavant(1985)]{dunavant1985} D.~A.~Dunavant: \emph{High degree efficient symmetrical Gaussian quadrature rules for the triangle}, International Journal for Numerical Methods in Engineering 21 (1985), 1129--1148. (Lokale Kopie: \path{meetings/literature/Dunavant_1985_HighDegreeEfficientSymmetricalGaussianQuadratureRulesForTheTriangle.pdf})
 
@@ -2656,7 +2684,7 @@ Der Mortar-Kontakt basiert auf expliziten Overlay-Kontaktelementen (\code{CONLIN
 
 \bibitem[Gitterle et al.(2010)]{gitterle} M.~Gitterle, A.~Popp, M.~W.~Gee, W.~A.~Wall: \emph{Finite deformation frictional mortar contact using a semi-smooth Newton method with consistent linearization}, International Journal for Numerical Methods in Engineering 84 (2010), 543--571. (Lokale Kopie: \path{meetings/literature/GitterlePoppGeeWall_2010_FiniteDeformationFrictionalMortarContactUsingASemiSmoothNewtonMethodWithConsistentLinearization.pdf})
 
-\bibitem[Hiermeier et al.(2018)]{hiermeier2018} M.~Hiermeier, W.~A.~Wall, A.~Popp: \emph{A truly variationally consistent and symmetric mortar-based contact formulation for finite deformation solid mechanics}, Computer Methods in Applied Mechanics and Engineering 342 (2018), \path{doi:10.1016/j.cma.2018.07.020}. (Nicht lokal vorliegend.)
+\bibitem[Hiermeier et al.(2018)]{hiermeier2018} M.~Hiermeier, W.~A.~Wall, A.~Popp: \emph{A truly variationally consistent and symmetric mortar-based contact formulation for finite deformation solid mechanics}, Computer Methods in Applied Mechanics and Engineering 342 (2018), \path{doi:10.1016/j.cma.2018.07.020}. (Lokale Kopie: \path{meetings/literature/HiermeierWallPopp_2018_ATrulyVariationallyConsistentAndSymmetricMortarBasedContactFormulationForFiniteDeformationSolidMechanics.pdf} -- angenommenes Manuskript, daher ohne endgueltige Seitenzahlen; Seitenangaben beziehen sich auf dieses.)
 
 \bibitem[Hintermüller et al.(2002)]{hik2002} M.~Hintermüller, K.~Ito, K.~Kunisch: \emph{The primal-dual active set strategy as a semismooth Newton method}, SIAM Journal on Optimization 13 (2002), 865--888. (Lokale Kopie: \path{meetings/literature/HintermuellerItoKunisch_2002_ThePrimalDualActiveSetStrategyAsASemismoothNewtonMethod.pdf})
 
@@ -2666,7 +2694,7 @@ Der Mortar-Kontakt basiert auf expliziten Overlay-Kontaktelementen (\code{CONLIN
 
 \bibitem[Popp et al.(2009)]{poppgeewall2009} A.~Popp, M.~W.~Gee, W.~A.~Wall: \emph{A finite deformation mortar contact formulation using a primal--dual active set strategy}, International Journal for Numerical Methods in Engineering 79 (2009), 1354--1391. (Lokale Kopie: \path{meetings/literature/PoppGeeWall_2009_AFiniteDeformationMortarContactFormulationUsingAPrimalDualActiveSetStrategy.pdf})
 
-\bibitem[Popp et al.(2010)]{popp2010} A.~Popp, M.~Gitterle, M.~W.~Gee, W.~A.~Wall: \emph{A dual mortar approach for 3D finite deformation contact with consistent linearization}, International Journal for Numerical Methods in Engineering 83 (2010), Heft~11, 1428--1465, \path{doi:10.1002/nme.2866}. (Nicht lokal vorliegend.)
+\bibitem[Popp et al.(2010)]{popp2010} A.~Popp, M.~Gitterle, M.~W.~Gee, W.~A.~Wall: \emph{A dual mortar approach for 3D finite deformation contact with consistent linearization}, International Journal for Numerical Methods in Engineering 83 (2010), Heft~11, 1428--1465, \path{doi:10.1002/nme.2866}. (Lokale Kopie: \path{meetings/literature/PoppGitterleGeeWall_2010_ADualMortarApproachFor3DFiniteDeformationContactWithConsistentLinearization.pdf})
 
 \bibitem[Popp et al.(2012)]{popp2012} A.~Popp, B.~I.~Wohlmuth, M.~W.~Gee, W.~A.~Wall: \emph{Dual quadratic mortar finite element methods for 3D finite deformation contact}, SIAM Journal on Scientific Computing 34 (2012), B421--B446. (Lokale Kopie: \path{meetings/literature/PoppWohlmuthGeeWall_2012_DualQuadraticMortarFiniteElementMethodsFor3DFiniteDeformationContact.pdf})
 
@@ -2676,7 +2704,7 @@ Der Mortar-Kontakt basiert auf expliziten Overlay-Kontaktelementen (\code{CONLIN
 
 \bibitem[Sutherland \& Hodgman(1974)]{sutherland1974} I.~E.~Sutherland, G.~W.~Hodgman: \emph{Reentrant polygon clipping}, Communications of the ACM 17 (1974), 32--42. (Lokale Kopie: \path{meetings/literature/SutherlandHodgam_1974_ReentrantPolygonClipping.pdf})
 
-\bibitem[Volino \& Magnenat-Thalmann(2000)]{volino2000} P.~Volino, N.~Magnenat-Thalmann: \emph{Virtual Clothing: Theory and Practice}, Springer, Berlin/Heidelberg, 2000, ISBN 3-540-67600-7. (Quelle des Krümmungskriteriums; zitiert nach \citealp{yang2008}, Ref.~[17] -- nicht lokal vorliegend.)
+\bibitem[Volino \& Magnenat-Thalmann(2000)]{volino2000} P.~Volino, N.~Magnenat-Thalmann: \emph{Virtual Clothing: Theory and Practice}, Springer, Berlin/Heidelberg, 2000, \path{doi:10.1007/978-3-642-57278-4}. (Quelle des Krümmungskriteriums, Abschn.~3.2.2, S.~134. Lokale Kopie: \path{meetings/literature/VolinoMagnenatThalmann_2000_VirtualClothingTheoryAndPractice.pdf})
 
 \bibitem[Wohlmuth(2000)]{wohlmuth2000} B.~I.~Wohlmuth: \emph{A mortar finite element method using dual spaces for the Lagrange multiplier}, SIAM Journal on Numerical Analysis 38 (2000), 989--1012. (Lokale Kopie: \path{meetings/literature/Wohlmuth_2000_AMortarFiniteElementMethodUsingDualSpacesForTheLagrangeMutliplier.pdf})
 
