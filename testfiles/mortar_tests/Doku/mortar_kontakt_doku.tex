@@ -2339,18 +2339,85 @@ $\partial\bm n_I/\partial\bm x$ --, und diese Terme sind mit $0{,}27\ldots2{,}0$
 $\max|\bm K|$ nicht klein.
 
 Sie zu ergänzen ist kein Zusatzterm, sondern erfordert Ableitungen entlang der \emph{gesamten}
-Segmentierungskette: der Knotennormalen, der Hilfsebene, der geclippten Polygoneckpunkte, der
-Zell-Jacobi-Determinante und der Newton-Rückabbildung in beide Naturkoordinaten. Die vollständige
-Herleitung dafür findet sich bei \citet{popp2010} und \citet[Kap.~4]{farah}. Der Gewinn wäre
-nicht Genauigkeit -- die liefert bereits die Schrittweitensteuerung --, sondern
-\emph{Robustheit}: quadratische Konvergenz nach Fixierung des Active Set und ein größerer
-Konvergenzradius, also weniger Cutbacks und weniger Abbrüche bei anspruchsvollen Lastpfaden.
+Segmentierungskette. Der Reihe nach sind das:
+\begin{enumerate}\itemsep2pt
+  \item die Knotennormale $\bm n_I$ nach \eqref{eq:facetnormal} -- die Ableitung einer normierten
+        Summe von Kreuzprodukten;
+  \item die Hilfsebene: Stützpunkt $\bm p_0$, Normale und Tangentenbasis $\bm t_1,\bm t_2$, die
+        alle von den Koordinaten der Slave-Sub-Zelle abhängen;
+  \item die Projektion beider Facetten in diese Ebene;
+  \item die Eckpunkte des geclippten Polygons: durchgereichte Ecken hängen unmittelbar von den
+        Facettenkoordinaten ab, Schnittpunkte über die Geradenschnittformel von je vier
+        Eckpositionen;
+  \item die Zell-Jacobi-Determinante der Integrationsdreiecke und die Lage der Gauß-Punkte;
+  \item die Newton-Rückabbildung $\bm\xi(\bm x_{\text{gp}})$ in beide Naturkoordinaten, deren
+        Ableitung über den Satz über implizite Funktionen aus der Element-Jacobi-Matrix folgt;
+  \item daraus schließlich $\partial N/\partial\bm x$ und damit
+        $\partial\bm D/\partial\bm x$ und $\partial\bm M/\partial\bm x$.
+\end{enumerate}
+Die vollständige Herleitung findet sich bei \citet{popp2010} und \citet[Kap.~4]{farah}.
 
-Als kleinerer Zwischenschritt bliebe die Möglichkeit, die Geometrie \emph{nicht} einzufrieren,
-sondern $\bm n_I,\bm D,\bm M$ in jeder Newton-Iteration neu zu berechnen. Dann entfällt der
-Staffelungsfehler des Residuums, die konvergierte Lösung ist geometrisch exakt -- aber $\bm K$
-wäre keine Jacobi-Matrix mehr, mit entsprechend langsamerer Konvergenz. Ob das ein Nettogewinn
-ist, müsste gemessen werden; Test~09 stellt dafür bereits die passende Messung bereit.
+\paragraph{Zwei Eigenschaften, die dabei zu bedenken sind.}
+Erstens ist Schritt~4 nur \emph{stückweise} glatt: wandert ein Eckpunkt über eine Clip-Kante, so
+ändert sich die Anzahl der Polygonecken, und die Ableitung springt. Auch eine vollständige
+Linearisierung ist an diesen Übergängen unstetig. Zweitens ist eine konsistent linearisierte
+Mortar-Formulierung im Allgemeinen \emph{unsymmetrisch}; \citet{hiermeier2018} weisen das
+ausdrücklich aus und untersuchen, welche Terme in den veröffentlichten Formulierungen dafür
+vernachlässigt werden. Die heute symmetrische Sattelpunktstruktur (Abschnitt~\ref{sec:loesung}) ginge damit
+verloren, was auf die Wahl von Löser und Vorkonditionierer durchschlägt.
+
+Günstig ist dagegen die Schnittstellenseite: die Linearisierungsterme sind \emph{additive}
+Beiträge zu $\bm K$ und damit genau das, was ein Constraint beisteuern kann. Anders als die
+statische Kondensation (Abschnitt~\ref{sec:ausblick:kondensation}) erfordert die Linearisierung
+\textbf{keine} Erweiterung des Rahmenwerks.
+
+\paragraph{Ein möglicher Weg in vier Stufen.}
+Der Übergang muss nicht in einem Schritt erfolgen. Jede der folgenden Stufen ist für sich lauffähig
+und -- das ist der eigentliche Punkt -- für sich \emph{messbar}: Test~09 beziffert die verbleibende
+Lücke zwischen $\bm K$ und dem Differenzenquotienten bei voller Geometrie, Test~12 den
+Staffelungsfehler. Nach jeder Stufe steht damit fest, wie viel sie gebracht hat.
+
+\begin{enumerate}\itemsep3pt
+  \item[\textbf{(I)}] \textbf{Geometrie nachführen, ohne zu linearisieren.} $\bm n_I,\bm D,\bm M$
+        werden in jeder Newton-Iteration neu ausgewertet statt einmal je Increment. Der
+        Staffelungsfehler (Abschnitt~\ref{sec:staffelordnung}) entfällt damit vollständig, die
+        konvergierte Lösung ist geometrisch exakt. Der Preis: $\bm K$ ist dann nicht einmal mehr
+        die Jacobi-Matrix des eingefrorenen Residuums, die Konvergenz also möglicherweise
+        schlechter. Ob es netto hilft, ist eine reine Messfrage -- und diese Stufe ist zugleich
+        diejenige, die den geringsten Eingriff erfordert. \emph{Zur Einordnung:} MOOSE erzeugt das
+        Mortar-Segment-Netz bei verschobenem Netz je Residuumsauswertung neu, \code{Abaqus/Standard}
+        stellt den Kontaktzustand dagegen je Increment fest und behandelt Statuswechsel als
+        \emph{severe discontinuity iteration}. Beide Vorgehensweisen sind in Gebrauch; Stufe~(I)
+        wechselt von der zweiten zur ersten.
+  \item[\textbf{(II)}] \textbf{$\partial\bm n_I/\partial\bm x$.} Der in sich geschlossenste Term
+        und der einzige, der ohne die Segmentierungskette auskommt. Er lässt sich isoliert
+        prüfen, indem man $\bm D$ und $\bm M$ im Differenzenquotienten festhält und nur die
+        Normalen mitführt.
+  \item[\textbf{(III)}] \textbf{$\partial\bm D/\partial\bm x$ und $\partial\bm M/\partial\bm x$
+        über die Rückabbildung} (Schritte 6 und 7 oben), bei zunächst als fest behandelter
+        Clip-Geometrie. Damit ist der überwiegende Teil der Formfunktionsabhängigkeit erfasst.
+  \item[\textbf{(IV)}] \textbf{Die Segmentierungsgeometrie} (Schritte 2 bis 5): Hilfsebene,
+        Projektion, Clip-Eckpunkte, Zell-Jacobi. Der aufwendigste und heikelste Teil, und der
+        einzige, der die stückweise Glattheit aus dem vorigen Absatz berührt.
+\end{enumerate}
+
+\noindent Als Abnahmekriterium eignet sich unmittelbar Test~09: Teil~2 dieses Tests differenziert
+das Residuum mit bei jeder Störung \emph{neu berechneter} Geometrie und weist die Abweichung
+gegenüber $\bm K$ aus. Sie beträgt heute $0{,}27\ldots2{,}0$ und müsste nach Stufe~(IV) auf das
+Niveau von Teil~1 fallen, also auf etwa $10^{-8}$. Solange sie das nicht tut, fehlt ein Term --
+ein Kriterium, das kein Ermessen zulässt.
+
+\paragraph{Abgrenzung: was die Linearisierung nicht leistet.}
+Sie verbessert weder die Genauigkeit über das Verschwinden des Staffelungsfehlers hinaus (der
+liegt bereits bei $10^{-4}\ldots10^{-3}$ und wird über die Schrittweite kontrolliert) noch die in
+Abschnitt~\ref{sec:scalelimit} beschriebene Skalengrenze des Multiplikator-Residuums noch das
+Verhalten des CONQUAD9 bei Teilüberdeckung. Und sie ist nicht das einzige Mittel gegen kleine
+Konvergenzradien: Produktionscodes fangen genäherte Tangenten mit einer
+\emph{Globalisierung} auf -- Line-Search oder gedämpftes Newton-Verfahren
+(\citealp{deuflhard2004}; \citealp{deluca1996}) --, die hier ebenfalls nicht umgesetzt ist und
+ungleich weniger Aufwand erfordert. Welcher der beiden Hebel im konkreten Fall der wirksamere
+ist, lässt sich vorab nicht entscheiden; Stufe~(I) liefert die Zahlen, an denen es sich
+beurteilen lässt.
 
 \subsection{Selbstkontakt}
 \label{sec:ausblick:selbst}
@@ -2575,6 +2642,10 @@ Der Mortar-Kontakt basiert auf expliziten Overlay-Kontaktelementen (\code{CONLIN
 
 \bibitem[Cichosz \& Bischoff(2011)]{cichosz} T.~Cichosz, M.~Bischoff: \emph{Consistent treatment of boundaries with mortar contact formulations using dual Lagrange multipliers}, Computer Methods in Applied Mechanics and Engineering 200 (2011), 1317--1332. (Lokale Kopie: \path{meetings/literature/CichoszBischoff_2011_ConsistentTreatmentOfBoundariesWithMortarContactFormulationsUsingDualLagrangeMultipliers.pdf})
 
+\bibitem[De Luca et al.(1996)]{deluca1996} T.~De~Luca, F.~Facchinei, C.~Kanzow: \emph{A semismooth equation approach to the solution of nonlinear complementarity problems}, Mathematical Programming 75 (1996), 407--439. (Nicht lokal vorliegend; als Beleg für die Globalisierung semiglatter Newton-Verfahren angeführt.)
+
+\bibitem[Deuflhard(2004)]{deuflhard2004} P.~Deuflhard: \emph{Newton Methods for Nonlinear Problems -- Affine Invariance and Adaptive Algorithms}, Springer Series in Computational Mathematics~35, Springer, Berlin, 2004. (Nicht lokal vorliegend.)
+
 \bibitem[Dunavant(1985)]{dunavant1985} D.~A.~Dunavant: \emph{High degree efficient symmetrical Gaussian quadrature rules for the triangle}, International Journal for Numerical Methods in Engineering 21 (1985), 1129--1148. (Lokale Kopie: \path{meetings/literature/Dunavant_1985_HighDegreeEfficientSymmetricalGaussianQuadratureRulesForTheTriangle.pdf})
 
 \bibitem[Ericson(2004)]{ericson2004} C.~Ericson: \emph{Real-Time Collision Detection}, Morgan Kaufmann, 2004. (Lokale Kopie: \path{meetings/literature/Ericson_2004_RealTimeCollisionDetection.pdf})
@@ -2584,6 +2655,8 @@ Der Mortar-Kontakt basiert auf expliziten Overlay-Kontaktelementen (\code{CONLIN
 \bibitem[Farah et al.(2015)]{farah2015} P.~Farah, A.~Popp, W.~A.~Wall: \emph{Segment-based vs.\ element-based integration for mortar methods in computational contact mechanics}, Computational Mechanics 55 (2015), 209--228. (Lokale Kopie: \path{meetings/literature/FarahPoppWall_2015_SegmentBasedVSElementBasedIntegrationForMortarMethodsInComputationalContactMechanics.pdf})
 
 \bibitem[Gitterle et al.(2010)]{gitterle} M.~Gitterle, A.~Popp, M.~W.~Gee, W.~A.~Wall: \emph{Finite deformation frictional mortar contact using a semi-smooth Newton method with consistent linearization}, International Journal for Numerical Methods in Engineering 84 (2010), 543--571. (Lokale Kopie: \path{meetings/literature/GitterlePoppGeeWall_2010_FiniteDeformationFrictionalMortarContactUsingASemiSmoothNewtonMethodWithConsistentLinearization.pdf})
+
+\bibitem[Hiermeier et al.(2018)]{hiermeier2018} M.~Hiermeier, W.~A.~Wall, A.~Popp: \emph{A truly variationally consistent and symmetric mortar-based contact formulation for finite deformation solid mechanics}, Computer Methods in Applied Mechanics and Engineering 342 (2018), \path{doi:10.1016/j.cma.2018.07.020}. (Nicht lokal vorliegend.)
 
 \bibitem[Hintermüller et al.(2002)]{hik2002} M.~Hintermüller, K.~Ito, K.~Kunisch: \emph{The primal-dual active set strategy as a semismooth Newton method}, SIAM Journal on Optimization 13 (2002), 865--888. (Lokale Kopie: \path{meetings/literature/HintermuellerItoKunisch_2002_ThePrimalDualActiveSetStrategyAsASemismoothNewtonMethod.pdf})
 
