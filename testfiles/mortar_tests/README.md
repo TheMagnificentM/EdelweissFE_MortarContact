@@ -2,7 +2,7 @@
 
 Verifikation des reibungsfreien Mortar-Normalkontakts (`edelweissfe/constraints/mortarcontact.py`,
 `mortar_geom_utils.py`, `elements/contactelement/element.py`). Die Theorie und die Begründung
-jedes einzelnen Bausteins stehen in `Doku/mortar_kontakt_frictionless.pdf`; dieses README sagt nur,
+jedes einzelnen Bausteins stehen in `Doku/mortar_kontakt_doku.pdf`; dieses README sagt nur,
 was hier liegt und wie man es ausführt.
 
 ## Ausführen
