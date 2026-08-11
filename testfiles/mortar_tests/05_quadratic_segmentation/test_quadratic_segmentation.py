@@ -117,6 +117,7 @@ def run_quad_test(el_type, points_func):
     print(f"\n* Teste {el_type}: identische Patches (Einheitsquadrat)...")
     constraint = build_single_facet_model(el_type, points_func(), points_func())
     D, C = constraint.compute_mortar_coupling_matrices()
+    D, C = D.toarray(), C.toarray()  # sparse -> dicht, nur fuer diesen Test
 
     check("sum(D) = Überlappungsfläche", np.sum(D), 1.0)
     check("sum(C) = Überlappungsfläche", np.sum(C), 1.0)
@@ -139,6 +140,7 @@ def run_quad_test(el_type, points_func):
     print(f"* Teste {el_type}: Master um 0.3 in x verschoben...")
     constraint = build_single_facet_model(el_type, points_func(), points_func(shift_x=0.3))
     D, C = constraint.compute_mortar_coupling_matrices()
+    D, C = D.toarray(), C.toarray()  # sparse -> dicht, nur fuer diesen Test
     check("sum(D) = Überlappungsfläche", np.sum(D), 0.7, tol=1e-10)
     check("max|rowsum(D)-rowsum(C)|", np.max(np.abs(np.sum(D, axis=1) - np.sum(C, axis=1))), 0.0, tol=1e-12)
 
@@ -201,6 +203,7 @@ def _integrated_vs_geometric_area(el_type, slave_pts):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         D, _ = constraint.compute_mortar_coupling_matrices()
+        D = D.toarray()  # sparse -> dicht, nur fuer diesen Test
     warned = any("non-convex sub-cell" in str(w.message) for w in caught)
     return float(np.sum(D)), geometric, all_convex, warned
 
@@ -317,6 +320,7 @@ def run_tri6_test():
 
     constraint = MortarContact("c", model, nonMortarSurface="slave", mortarSurface="master", field="displacement")
     D, C = constraint.compute_mortar_coupling_matrices()
+    D, C = D.toarray(), C.toarray()  # sparse -> dicht, nur fuer diesen Test
 
     check("sum(D) = Überlappungsfläche", np.sum(D), 1.0, tol=1e-10)
     check("sum(C) = Überlappungsfläche", np.sum(C), 1.0, tol=1e-10)
@@ -357,6 +361,7 @@ def run_sliver_fallback_test():
             warnings.simplefilter("always")
             constraint = build_single_facet_model("CONQUAD8", slave_pts, master_pts)
             D, _ = constraint.compute_mortar_coupling_matrices()
+            D = D.toarray()  # sparse -> dicht, nur fuer diesen Test
         fell_back = any("degenerate overlap" in str(w.message) for w in caught)
 
         weights = np.sum(D, axis=1)

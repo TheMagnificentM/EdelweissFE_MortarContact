@@ -474,6 +474,7 @@ def test_bvh_search_correctness():
     )
     
     D, C = constraint.compute_mortar_coupling_matrices()
+    D, C = D.toarray(), C.toarray()  # sparse -> dicht, nur fuer diesen Test
     print("Matrices assembled successfully using BVH tree search.")
     print("Matrix C non-zeros:", np.count_nonzero(C))
     assert np.count_nonzero(C) > 0, "Expected non-zero coupling terms in matrix C"

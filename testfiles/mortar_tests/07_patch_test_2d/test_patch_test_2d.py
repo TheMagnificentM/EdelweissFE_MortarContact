@@ -148,6 +148,7 @@ def test_2d_line2():
     assert np.allclose(np.abs(n[:, 1]), 1.0), "Normalen muessen vertikal sein"
 
     D, C = mc.compute_mortar_coupling_matrices()
+    D, C = D.toarray(), C.toarray()  # sparse -> dicht, nur fuer diesen Test
     print(f"D:\n{D}")
     print(f"C:\n{C}")
 
@@ -170,6 +171,7 @@ def test_2d_line3():
     assert np.allclose(np.abs(n[:, 1]), 1.0), "Normalen muessen vertikal sein"
 
     D, C = mc.compute_mortar_coupling_matrices()
+    D, C = D.toarray(), C.toarray()  # sparse -> dicht, nur fuer diesen Test
     print(f"D:\n{D}")
     print(f"C:\n{C}")
 
@@ -194,6 +196,7 @@ def test_2d_partial_overlap():
     print("\n=== Test 2D Teilüberdeckung (50 % Verschiebung) ===")
     mc = build_2d_contact_model("CONLINE2", line2_points(0.0, 0.0), line2_points(0.5, 0.0))
     D, C = mc.compute_mortar_coupling_matrices()
+    D, C = D.toarray(), C.toarray()  # sparse -> dicht, nur fuer diesen Test
 
     rowsum_D = np.sum(D, axis=1)
     rowsum_C = np.sum(C, axis=1)

@@ -521,6 +521,7 @@ def test_segment_consistent_dual_basis():
             c = MortarContact3D("c", model, nonMortarSurface="slave",
                                 mortarSurface="master", field="displacement")
             D, _ = c.compute_mortar_coupling_matrices()
+            D = D.toarray()  # sparse -> dicht, nur fuer diesen Test
 
             # Reihenfolge der Slave-Knoten im Constraint = Reihenfolge in s_el.nodes
             T_e = s_el.getBasisTransformation()

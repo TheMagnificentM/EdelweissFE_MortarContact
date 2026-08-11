@@ -136,8 +136,8 @@ def check_signorini(model, constraint_name="contact"):
 
     # Im letzten Increment eingefrorene Geometrie -- exakt die Größen, mit denen
     # der Löser die Bedingungen aufgestellt hat.
-    D = mc.current_D
-    C = mc.current_C
+    D = mc.current_D.toarray()  # sparse -> dicht, nur fuer diesen Test
+    C = mc.current_C.toarray()
     normals = mc.current_normals
     rowsum = mc.current_D_rowsum
 
@@ -208,6 +208,7 @@ def check_signorini_fresh_geometry(model, constraint_name="contact"):
 
     normals = mc.compute_normals(U)
     D, C = mc.compute_mortar_coupling_matrices(U)
+    D, C = D.toarray(), C.toarray()  # sparse -> dicht, nur fuer diesen Test
     rowsum = np.sum(D, axis=1)
 
     coords = mc._X + U[: sf * len(mc.nodes)].reshape(len(mc.nodes), sf)[:, :dim]

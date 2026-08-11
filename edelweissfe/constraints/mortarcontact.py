@@ -24,9 +24,11 @@
 #  the top level directory of EdelweissFE.
 #  ---------------------------------------------------------------------
 
+import math
 import warnings
 
 import numpy as np
+from scipy.sparse import coo_matrix, csr_matrix
 
 from edelweissfe.config.phenomena import getFieldSize
 from edelweissfe.constraints.base.constraintbase import ConstraintBase
@@ -50,12 +52,18 @@ complementarity function (NCP)
         <=>  active  iff  s_n,I = p_I - c_n D_II^-1 g_I > 0,
 
 solved by a primal-dual active set strategy = semi-smooth Newton method
-(Hueber & Wohlmuth 2005; Gitterle et al. 2010, Eq. (55); Farah 2018,
-Sec. 3.5.2). The active set is re-evaluated in EVERY Newton iteration and the
-outer (semi-smooth) loop is converged as soon as the set no longer changes;
-c_n > 0 is purely algorithmic (g_I -> 0 at convergence, hence the converged
-solution is c_n-independent) and is chosen at the order of Young's modulus of
-the softer body.
+(Hueber & Wohlmuth 2005, Eq. (3.9); Gitterle et al. 2010, Eq. (55); Popp et al.
+2012, Eq. (5.1); Farah 2018, Eq. (3.58)). The active set is re-evaluated in
+EVERY Newton iteration and the outer (semi-smooth) loop is converged as soon as
+the set no longer changes; c_n > 0 is purely algorithmic (g_I -> 0 at
+convergence, hence the converged solution is c_n-independent). The admissible
+values form a band: below the lower bound c_0 ~ E the active set does not
+converge (Hueber & Wohlmuth 2005, sec. 7), far above it it chatters (Gitterle et
+al. 2010, Table I). c_n therefore defaults to the smallest initial Young's
+modulus of the materials adjacent to the interface.
+
+D and C are stored as sparse matrices, which is what the dual basis is for
+(Popp et al. 2012, sec. 4.2 and 5).
 
 Only the saddle-point formulation (explicit multiplier DOFs) is implemented.
 A "dual condensation" variant (eliminating the multipliers via lambda_I =
@@ -102,12 +110,22 @@ module.addOptionalArg(
     "Purely algorithmic - no effect on the converged solution (g_sep -> 0 there), so "
     "the converged normal-contact result is identical to any admissible active-set "
     "rule. It MUST be chosen at the order of Young's modulus of the softer contacting "
-    "body (Hueber & Wohlmuth 2005; Farah 2018 Sec. 3.5.2, c_n ~ O(E)): a too-large "
-    "c_n makes the indicator gap-sign dominated, so near-boundary nodes flip "
-    "active/inactive every iteration -> active-set chattering / non-convergence. Set "
-    "it explicitly per problem; the default below is only a fallback.",
+    "body. The admissible values form a BAND, and both ends are documented: Hueber & "
+    "Wohlmuth (2005), sec. 7 and Table 7, report a lower bound c0 below which the "
+    "active set does not converge, note that 'for c > c0, the influence of c on Nl is "
+    "negligible', and find that 'c0 depends linearly on E'; Gitterle et al. (2010), "
+    "Table I, show the other end, where c_n = 1e5 and 1e6 produce repeated active-set "
+    "changes (chattering) and non-convergence. Popp & Gee & Wall (2009) suggest "
+    "'the order of Young's modulus E of the contacting bodies'. Farah (2018), text to "
+    "Eq. (3.58), repeats that suggestion but uses c_n = 1 for all examples. Purely "
+    "algorithmic either way - no effect on the converged solution (g_sep -> 0 there), "
+    "so the converged normal-contact result is identical to any admissible active-set "
+    "rule. "
+    "Leave it at 0 (the default) to derive it as the smallest initial Young's modulus "
+    "among the materials adjacent to the two contact surfaces; the derived value is "
+    "reported once so it stays checkable.",
     float,
-    1.0e6,
+    0.0,
 )
 
 documentation = [module]
@@ -115,6 +133,8 @@ documentation = [module]
 
 def map_2d_to_natural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
     """Map a 2D local plane coordinate point_2d to the element's natural space.
+
+    Returns (local_coords, converged).
 
     Termination. This is a (Gauss-)Newton solve for the natural coordinate, so the
     quantity it actually drives to zero is the UPDATE, not the residual. For 2D
@@ -131,50 +151,111 @@ def map_2d_to_natural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
 
     The update test is also the scale-invariant one - the natural coordinate is
     dimensionless, whereas the residual carries the model's length unit.
+
+    `converged` is True when either criterion was met. It is False only when the
+    iteration ran out of passes or hit a singular Jacobian - i.e. when the returned
+    coordinate is the last iterate rather than a solution. Nothing downstream can
+    tell those apart on its own (the value looks like any other), so the caller
+    counts them and reports them; see the `gp_projection_failed` diagnostic in
+    compute_mortar_coupling_matrices. That the closest-point projection need not be
+    solvable at all, and under which conditions it fails, is the subject of
+    Konyukhov & Schweizerhof (2008); the local Newton used here is the standard one
+    (Wriggers, Computational Contact Mechanics).
+
+    Implementation note. The linear algebra is written out in scalars instead of
+    calling np.linalg.norm / np.linalg.solve. Those are 2x2 and 2-vector operations
+    called several hundred thousand times per increment, where the numpy dispatch
+    overhead is many times the arithmetic (measured on hertz_hex20_fine: 5.0 s in
+    np.linalg.solve and 3.3 s in np.linalg.norm out of 31 s of segmentation).
+
+    This is NOT bit-identical to what it replaces, and the difference was measured
+    rather than assumed. The 2x2 solve follows LAPACK dgesv's operation order -
+    partial pivoting with IDAMAX tie-breaking towards the first row, the reciprocal
+    of the pivot formed once as dgetf2 does, then forward/back substitution - and
+    still differs from np.linalg.solve for 39 % of random 2x2 systems, by up to
+    5.5e-15 relative (dividing instead of using the reciprocal is worse: 9.9e-12).
+    math.sqrt(r0*r0 + r1*r1) differs from np.linalg.norm for 8 % of random 2-vectors,
+    by 1 ulp. Propagated through the Newton iteration and the segment quadrature,
+    that shows up as ~1e-12 relative in D and C and ~2e-10 in the converged
+    multipliers, with the active set unchanged (hertz_hex20_medium). The whole
+    verification suite passes with unchanged tolerances, but this is a deliberate
+    trade of exact reproducibility against roughly 10 % wall clock - if the
+    reproducibility matters more, this function is the single place to revert.
     """
     el_type = el.elType.upper()
 
     # 1D line elements
     if "LINE" in el_type:
+        xi = 0.0
         local_coords = np.zeros(1)
         for _ in range(max_iter):
+            local_coords[0] = xi
             N = el.getShapeFunctions(local_coords)
             x_mapped = N @ coords_2d
-            res = x_mapped - point_2d
-            if np.linalg.norm(res) < tol:
-                break
-            dN = el.getShapeFunctionDerivatives(local_coords) # shape (1, n_nodes)
-            J = dN @ coords_2d # shape (1, dim_of_coords_2d)
-            J_norm = np.dot(J[0], J[0])
+            r0 = x_mapped[0] - point_2d[0]
+            r1 = x_mapped[1] - point_2d[1]
+            if math.sqrt(r0 * r0 + r1 * r1) < tol:
+                return local_coords, True
+            dN = el.getShapeFunctionDerivatives(local_coords)  # shape (1, n_nodes)
+            J = dN @ coords_2d  # shape (1, dim_of_coords_2d)
+            j0, j1 = J[0, 0], J[0, 1]
+            J_norm = j0 * j0 + j1 * j1
             if J_norm < 1e-14:
-                break
-            delta = np.dot(J[0], res) / J_norm
-            local_coords[0] -= delta
+                return local_coords, False
+            delta = (j0 * r0 + j1 * r1) / J_norm
+            xi -= delta
+            local_coords[0] = xi
             if abs(delta) < tol:
-                break
-        return local_coords
+                return local_coords, True
+        return local_coords, False
 
     # 2D surface elements (Quads and Triangles)
-    local_coords = np.zeros(2)
     if "TRI" in el_type:
-        local_coords = np.array([1.0 / 3.0, 1.0 / 3.0])
+        xi = eta = 1.0 / 3.0
+    else:
+        xi = eta = 0.0
+    local_coords = np.array([xi, eta])
 
     for _ in range(max_iter):
+        local_coords[0] = xi
+        local_coords[1] = eta
         N = el.getShapeFunctions(local_coords)
         x_mapped = N @ coords_2d
-        res = x_mapped - point_2d
-        if np.linalg.norm(res) < tol:
-            break
-        dN = el.getShapeFunctionDerivatives(local_coords) # shape (2, n_nodes)
-        J = (dN @ coords_2d).T # shape (2, 2)
-        try:
-            delta = np.linalg.solve(J, res)
-        except np.linalg.LinAlgError:
-            break
-        local_coords -= delta
-        if np.linalg.norm(delta) < tol:
-            break
-    return local_coords
+        r0 = x_mapped[0] - point_2d[0]
+        r1 = x_mapped[1] - point_2d[1]
+        if math.sqrt(r0 * r0 + r1 * r1) < tol:
+            return local_coords, True
+        dN = el.getShapeFunctionDerivatives(local_coords)  # shape (2, n_nodes)
+        Jm = dN @ coords_2d  # (2, 2); the Jacobian is its transpose
+        a00, a01 = Jm[0, 0], Jm[1, 0]
+        a10, a11 = Jm[0, 1], Jm[1, 1]
+
+        # 2x2 LU with partial pivoting, in LAPACK dgesv's operation order.
+        if abs(a10) > abs(a00):  # IDAMAX picks the first maximum, so ties keep row 0
+            a00, a01, a10, a11 = a10, a11, a00, a01
+            b0, b1 = r1, r0
+        else:
+            b0, b1 = r0, r1
+        if a00 == 0.0:
+            return local_coords, False  # singular column: np.linalg.solve would raise
+        # dgetf2 forms the RECIPROCAL of the pivot once and multiplies by it; that is
+        # not the same in floating point as dividing, so dividing here would already
+        # cost bit-identity with np.linalg.solve.
+        m = a10 * (1.0 / a00)
+        u11 = a11 - m * a01
+        if u11 == 0.0:
+            return local_coords, False
+        y1 = b1 - m * b0
+        d1 = y1 / u11
+        d0 = (b0 - a01 * d1) / a00
+
+        xi -= d0
+        eta -= d1
+        local_coords[0] = xi
+        local_coords[1] = eta
+        if math.sqrt(d0 * d0 + d1 * d1) < tol:
+            return local_coords, True
+    return local_coords, False
 
 
 # Decomposition of contact facets into linear sub-cells for the mortar
@@ -194,6 +275,40 @@ SUB_CELL_MAP = {
     "CONQUAD9": [[0, 4, 8, 7], [4, 1, 5, 8], [8, 5, 2, 6], [7, 8, 6, 3]],
     "CONTRI6": [[0, 3, 5], [3, 4, 5], [3, 1, 4], [5, 4, 2]],
 }
+
+
+def _coo_to_csr(vals: list, rows: list, cols: list, shape: tuple) -> csr_matrix:
+    """Build a CSR matrix from lists of per-block triples, summing duplicates."""
+    if not vals:
+        return csr_matrix(shape)
+    return coo_matrix(
+        (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+        shape=shape,
+    ).tocsr()
+
+
+def _nonzero_rows(A: csr_matrix, n_rows: int) -> tuple[list, list]:
+    """Per-row (column indices, values) of a CSR matrix, filtered at 1e-14.
+
+    The threshold is part of the formulation's arithmetic, not of the storage: it
+    decides which coupling terms enter the weak gap and the stiffness, and a stored
+    CSR entry can be below it (coo -> csr sums duplicates, it does not prune). It is
+    therefore kept exactly as it was applied to the dense rows before.
+
+    Caching the VALUES next to the indices - rather than re-indexing A[I, nz] on every
+    Newton iteration - is the other half of the point: the pattern and the values are
+    fixed for the whole increment (frozen geometry), while applyConstraint runs once
+    per iteration.
+    """
+    idx_per_row, val_per_row = [], []
+    indptr, indices, data = A.indptr, A.indices, A.data
+    for I in range(n_rows):
+        lo, hi = indptr[I], indptr[I + 1]
+        cols, vals = indices[lo:hi], data[lo:hi]
+        keep = np.abs(vals) > 1e-14
+        idx_per_row.append(cols[keep])
+        val_per_row.append(vals[keep])
+    return idx_per_row, val_per_row
 
 
 def is_convex_polygon(poly_2d, tol: float = 1e-14) -> bool:
@@ -440,9 +555,14 @@ class Constraint(ConstraintBase):
         self.active = True
 
         # Semi-smooth-Newton complementarity parameter of the normal contact NCP
-        # (Gitterle et al. 2010 Eq. 55; Hueber & Wohlmuth 2005). Purely
-        # algorithmic; must be ~O(E) of the softer body (Farah 2018 Sec. 3.5.2).
+        # (Gitterle et al. 2010 Eq. 55; Hueber & Wohlmuth 2005). Purely algorithmic,
+        # but it carries a UNIT, so a fixed numeric default is only ever right for one
+        # system of units. A non-positive value therefore means "derive it", which is
+        # done lazily at the first assembly: sections are assigned to elements in
+        # model.prepareYourself(), i.e. after the constraints are constructed, so the
+        # materials are not reachable yet at this point.
         self.c_n = float(kwargs["cn"])
+        self._derive_c_n = self.c_n <= 0.0
 
         # Node index lookups for fast access
         self.node_to_global_idx = {node: i for i, node in enumerate(self._nodes)}
@@ -592,6 +712,84 @@ class Constraint(ConstraintBase):
                 f"wrong sign and the contact bonds the surfaces instead of separating them.",
             )
 
+    def _resolve_c_n(self):
+        """Set c_n to the smallest initial Young's modulus adjacent to the interface.
+
+        Why the initial one: Hueber & Wohlmuth (2005), sec. 7, find a lower bound c0
+        for convergence of the active set that "depends linearly on E", with
+        negligible influence above it, while Gitterle et al. (2010), Table I, show
+        that far above it the active set starts to chatter. E therefore fixes the
+        order of magnitude, not the value. Taking E at the start of the computation is
+        well defined even for a damaging material (GCDP), because no damage has
+        accumulated yet - and since c_n is purely algorithmic, its later evolution
+        does not matter.
+
+        Why only the ADJACENT materials: the global minimum over the model would be
+        the wrong direction. A soft material somewhere far from the interface would
+        push c_n BELOW the c0 of the contacting pair, which is exactly the regime
+        Hueber & Wohlmuth report as non-convergent.
+
+        Marmot materials carry their parameters as a flat array whose first entry is
+        the Young's modulus (LINEARELASTIC, GCDP, ...). That is a convention, not a
+        guarantee, which is why the resolved value is always reported.
+        """
+        contact_nodes = set(self._nodes)
+        candidates = {}
+        for name, section in self.model.sections.items():
+            material = getattr(section, "material", None)
+            if material is None:
+                continue
+            touches = False
+            for elSet in getattr(section, "elSets", []):
+                for el in elSet:
+                    if contact_nodes.intersection(el.nodes):
+                        touches = True
+                        break
+                if touches:
+                    break
+            if not touches:
+                continue
+            if isinstance(material, dict):
+                # Marmot: flat parameter array, first entry is E by convention
+                props = material.get("properties")
+                E = float(props[0]) if props is not None and len(props) else None
+                mat_name = material.get("name", "?")
+            else:
+                # EdelweissFE-native material classes keep it as _E (see e.g.
+                # materials/linearelastic); materialProperties is the fallback.
+                mat_name = type(material).__name__
+                E = getattr(material, "_E", None)
+                if E is None:
+                    props = getattr(material, "materialProperties", None)
+                    E = float(props[0]) if props is not None and len(props) else None
+                E = float(E) if E is not None else None
+            if E is not None and E > 0.0:
+                candidates[f"{name}/{mat_name}"] = E
+
+        if not candidates:
+            self.c_n = 1.0e6
+            self._warn_once(
+                "cn_not_derivable",
+                "no Young's modulus could be determined for the materials adjacent to the "
+                f"contact surfaces, so c_n falls back to {self.c_n:.3e}. That value carries a "
+                "unit and is only meaningful for a model in MPa. Set 'cn' explicitly - it must "
+                "be at the order of the Young's modulus of the softer contacting body, and "
+                "larger is the safe direction (Hueber & Wohlmuth 2005, Sec. 7).",
+            )
+            return
+
+        chosen = min(candidates, key=candidates.get)
+        self.c_n = candidates[chosen]
+        listed = ", ".join(f"{k} = {v:.4g}" for k, v in sorted(candidates.items(), key=lambda kv: kv[1]))
+        self._warn_once(
+            "cn_derived",
+            f"c_n was not given and has been derived as {self.c_n:.4g}, the smallest initial "
+            f"Young's modulus adjacent to the interface ({chosen}). Considered: {listed}. This "
+            f"assumes the first material constant is the Young's modulus, which is the Marmot "
+            f"convention but not guaranteed - check it, or set 'cn' explicitly. Larger is the "
+            f"safe direction (Hueber & Wohlmuth 2005, Sec. 7).",
+        )
+
     def _check_converged_active_set(self, U_ref: np.ndarray):
         """Re-evaluate the NCP indicator on the CONVERGED state of the last increment.
 
@@ -627,9 +825,9 @@ class Constraint(ConstraintBase):
             nzD, nzC = self.current_D_nz[I], self.current_C_nz[I]
             g_weak = 0.0
             if len(nzD):
-                g_weak -= self.current_D[I, nzD] @ (x_slave[nzD] @ n_I)
+                g_weak -= self.current_D_row[I] @ (x_slave[nzD] @ n_I)
             if len(nzC):
-                g_weak += self.current_C[I, nzC] @ (x_master[nzC] @ n_I)
+                g_weak += self.current_C_row[I] @ (x_master[nzC] @ n_I)
             D_II = self.current_D_rowsum[I]
             inv_D = 1.0 / D_II if abs(D_II) > 1e-30 else 0.0
             p_n = -U_ref[idx_LM_0 + I] * np.sign(D_II)
@@ -790,8 +988,16 @@ class Constraint(ConstraintBase):
         n_slave = self.nNonMortarNodes
         n_master = self.nMortarNodes
 
-        D = np.zeros((n_slave, n_slave))
-        C = np.zeros((n_slave, n_master))
+        # D and C are assembled sparsely from the element-local blocks. The sparsity
+        # is a property of the dual formulation, not an implementation detail: Popp,
+        # Wohlmuth, Gee & Wall (2012), sec. 4.2, note that dual Lagrange multipliers
+        # yield slave-side nodal basis functions "which have only local support",
+        # algebraically visible as D becoming diagonal; sec. 5 adds that the
+        # biorthogonality reduces D^-1 "either to a diagonal matrix ... or to at
+        # least a sparse matrix". Dense storage would therefore cost O(n_slave^2) for
+        # a structurally sparse object.
+        D_rows, D_cols, D_vals = [], [], []
+        C_rows, C_cols, C_vals = [], [], []
 
         # Reference-element dual matrices, used only as fallback for degenerate overlaps
         dual_mats = self.compute_local_dual_matrices(U_np)
@@ -838,6 +1044,13 @@ class Constraint(ConstraintBase):
         seg_records = {}  # slave elNumber -> list of records
         seg_masters = {}  # slave elNumber -> {master elNumber: m_el}
         slave_els = {}  # slave elNumber -> (s_el, s_idx)
+
+        # Gauss point back-mapping failures (see map_2d_to_natural): a non-converged
+        # natural coordinate is indistinguishable from a converged one and goes
+        # straight into N_s / N_m and thus into D and C, so it has to be counted here
+        # - nothing downstream can notice it.
+        n_proj_failed = 0
+        first_proj_failure = None
 
         for s_el, s_faceID in self.non_mortar_facets:
             s_nodes = s_el.nodes
@@ -928,8 +1141,16 @@ class Constraint(ConstraintBase):
                                     L1, L2 = gp[0], gp[1]
                                     x_gp_2d = (1.0 - L1 - L2) * v0 + L1 * v1 + L2 * v2
 
-                                    local_s = map_2d_to_natural(s_el, s_full_2d, x_gp_2d)
-                                    local_m = map_2d_to_natural(m_el, m_full_2d, x_gp_2d)
+                                    local_s, ok_s = map_2d_to_natural(s_el, s_full_2d, x_gp_2d)
+                                    local_m, ok_m = map_2d_to_natural(m_el, m_full_2d, x_gp_2d)
+                                    if not ok_s:
+                                        n_proj_failed += 1
+                                        if first_proj_failure is None:
+                                            first_proj_failure = ("slave", s_el.elNumber, s_el.elType)
+                                    if not ok_m:
+                                        n_proj_failed += 1
+                                        if first_proj_failure is None:
+                                            first_proj_failure = ("master", m_el.elNumber, m_el.elType)
 
                                     N_s = s_el.getShapeFunctions(local_s)
                                     N_m = m_el.getShapeFunctions(local_m)
@@ -960,8 +1181,16 @@ class Constraint(ConstraintBase):
                                 x_gp = sc_coords[0] + s_gp * t_vec
                                 dG = half_len * w_1d
 
-                                local_s = map_2d_to_natural(s_el, s_coords, x_gp)
-                                local_m = map_2d_to_natural(m_el, m_coords, x_gp)
+                                local_s, ok_s = map_2d_to_natural(s_el, s_coords, x_gp)
+                                local_m, ok_m = map_2d_to_natural(m_el, m_coords, x_gp)
+                                if not ok_s:
+                                    n_proj_failed += 1
+                                    if first_proj_failure is None:
+                                        first_proj_failure = ("slave", s_el.elNumber, s_el.elType)
+                                if not ok_m:
+                                    n_proj_failed += 1
+                                    if first_proj_failure is None:
+                                        first_proj_failure = ("master", m_el.elNumber, m_el.elType)
 
                                 N_s = s_el.getShapeFunctions(local_s)
                                 N_m = m_el.getShapeFunctions(local_m)
@@ -973,6 +1202,20 @@ class Constraint(ConstraintBase):
                                     slave_els[s_num] = (s_el, s_idx)
                                 seg_records[s_num].append((N_s, m_el.elNumber, N_m, dG))
                                 seg_masters[s_num][m_el.elNumber] = m_el
+
+        if n_proj_failed:
+            side, el_num, el_type = first_proj_failure
+            self._warn_once(
+                "gp_projection_failed",
+                f"the Gauss point back-mapping did not converge for {n_proj_failed} integration "
+                f"point(s) (first on the {side} facet {el_num}, element type {el_type}). For those "
+                f"points the last Newton iterate was used as the natural coordinate, so the shape "
+                f"function values entering D and C are wrong by an unknown amount - a "
+                f"non-converged coordinate is indistinguishable from a converged one. The closest "
+                f"point projection is not solvable for arbitrarily distorted or strongly curved "
+                f"facets (Konyukhov & Schweizerhof 2008); check the facets around the one named "
+                f"above.",
+            )
 
         # ------------------------------------------------------------------
         # PASS 2: Dual coefficients from the actual segment quadrature
@@ -1026,10 +1269,22 @@ class Constraint(ConstraintBase):
                     C_blks[m_num] = np.zeros((n_s, len(seg_masters[s_num][m_num].nodes)))
                 C_blks[m_num] += np.outer(M_bar, N_m) * dG
 
-            D[np.ix_(s_idx, s_idx)] += D_blk
+            rr, cc = np.meshgrid(s_idx, s_idx, indexing="ij")
+            D_rows.append(rr.ravel())
+            D_cols.append(cc.ravel())
+            D_vals.append(D_blk.ravel())
             for m_num, C_blk in C_blks.items():
                 m_idx = np.array([self.master_node_to_idx[nd] for nd in seg_masters[s_num][m_num].nodes])
-                C[np.ix_(s_idx, m_idx)] += C_blk
+                rr, cc = np.meshgrid(s_idx, m_idx, indexing="ij")
+                C_rows.append(rr.ravel())
+                C_cols.append(cc.ravel())
+                C_vals.append(C_blk.ravel())
+
+        # coo -> csr sums duplicate entries, which is exactly what the dense "+="
+        # accumulation did. The summation ORDER differs, so the result agrees with the
+        # dense one to round-off rather than bit for bit.
+        D = _coo_to_csr(D_vals, D_rows, D_cols, (n_slave, n_slave))
+        C = _coo_to_csr(C_vals, C_rows, C_cols, (n_slave, n_master))
 
         return D, C
 
@@ -1043,6 +1298,10 @@ class Constraint(ConstraintBase):
     ):
         if not self.active:
             return
+
+        if self._derive_c_n:
+            self._derive_c_n = False
+            self._resolve_c_n()
 
         dim = self.model.domainSize
         sf = self.sizeField
@@ -1123,7 +1382,7 @@ class Constraint(ConstraintBase):
             self.current_D = D_full
             self.current_C = C_full
             # Positive by construction: sum_K D_IK = int(Phi_I) = int(N_tilde_I) > 0
-            self.current_D_rowsum = np.sum(D_full, axis=1)
+            self.current_D_rowsum = np.asarray(D_full.sum(axis=1)).ravel()
             # The sign-consistent contact measures below carry a negative D_II
             # correctly, but the weighted gap loses its reading as a mean opening
             # there - so it is worth saying out loud that it happened.
@@ -1149,15 +1408,15 @@ class Constraint(ConstraintBase):
                         f"partially covered CONQUAD9, or a sliver overlap that triggered the "
                         f"reference-element fallback.",
                     )
-            # Precompute the sparsity patterns once per increment
-            self.current_D_nz = [np.flatnonzero(np.abs(D_full[I]) > 1e-14) for I in range(nSlave)]
-            self.current_C_nz = [np.flatnonzero(np.abs(C_full[I]) > 1e-14) for I in range(nSlave)]
+            # Precompute the sparsity patterns AND the row values once per increment.
+            # The geometry is frozen for the increment, so both are constant while
+            # applyConstraint runs once per Newton iteration.
+            self.current_D_nz, self.current_D_row = _nonzero_rows(D_full, nSlave)
+            self.current_C_nz, self.current_C_row = _nonzero_rows(C_full, nSlave)
         else:
             self.current_iteration += 1
 
         normals = self.current_normals
-        D = self.current_D
-        C = self.current_C
 
         # Current coordinates of all constraint nodes in the deformed configuration
         disp = U_np[: sf * nNodes].reshape(nNodes, sf)[:, :dim]
@@ -1179,12 +1438,14 @@ class Constraint(ConstraintBase):
             n_I = normals[I]
             nzD = self.current_D_nz[I]
             nzC = self.current_C_nz[I]
+            dRow = self.current_D_row[I]
+            cRow = self.current_C_row[I]
 
             g_I_weak = 0.0
             if len(nzD):
-                g_I_weak -= D[I, nzD] @ (x_slave[nzD] @ n_I)
+                g_I_weak -= dRow @ (x_slave[nzD] @ n_I)
             if len(nzC):
-                g_I_weak += C[I, nzC] @ (x_master[nzC] @ n_I)
+                g_I_weak += cRow @ (x_master[nzC] @ n_I)
 
             # Sign-consistent contact measures, valid for BOTH signs of the nodal
             # weight D_II = int(Phi_I). D_II is positive by construction for
@@ -1226,29 +1487,37 @@ class Constraint(ConstraintBase):
                 # standard PDASS = semi-smooth-Newton formulation with local
                 # superlinear convergence. c_n is purely algorithmic: at
                 # convergence g_sep -> 0, so the converged result is c_n-
-                # independent and identical to any admissible active-set rule;
-                # c_n ~ O(E) of the softer body (Farah 2018 Sec. 3.5.2). Note that
-                # g_sep is the D_II-normalized (i.e. length-valued) opening, not the
-                # weighted gap itself; that normalization makes c_n*g_sep a pressure
-                # directly comparable to p_n and is a deliberate deviation from the
-                # literature form c_n*g_weak.
+                # independent and identical to any admissible active-set rule.
+                #
+                # Which gap measure enters the indicator differs WITHIN the
+                # literature, and the form used here is the one of Hueber & Wohlmuth
+                # (2005), Eq. (3.9), who write C = lambda_n - max{0, lambda_n +
+                # c (u_n - g)} with the POINTWISE gap (u_n - g), i.e. a length.
+                # g_sep = g_weak/D_II is exactly that: the physical nodal opening.
+                # Popp et al. (2012), Eq. (5.1), Gitterle et al. (2010), Eq. (55),
+                # and Farah (2018), Eq. (3.58), instead insert the mortar-weighted
+                # gap g_weak, which carries length x area. Both are admissible - the
+                # indicator only decides the branch, and at convergence either gap
+                # vanishes - but only the length-valued form makes c_n*g_sep a
+                # pressure comparable to p_n, and only for it is the recommendation
+                # c_n ~ O(E) dimensionally meaningful.
                 s_n = p_n - self.c_n * g_sep
                 self.active_set[I] = bool(s_n > 0.0)
 
             if self.active_set[I]:
                 PExt[idx_LM_I] -= g_I_weak
 
-                for K_nd in nzD:
+                for K_nd, D_IK in zip(nzD, dRow):
                     s_dofs = slice(sf * K_nd, sf * K_nd + dim)
-                    D_IK_n = D[I, K_nd] * n_I
+                    D_IK_n = D_IK * n_I
                     PExt[s_dofs] += lambda_I * D_IK_n
                     K[s_dofs, idx_LM_I] -= D_IK_n
                     K[idx_LM_I, s_dofs] -= D_IK_n
 
-                for J in nzC:
+                for J, C_IJ in zip(nzC, cRow):
                     m_global = nSlave + J
                     m_dofs = slice(sf * m_global, sf * m_global + dim)
-                    C_IJ_n = C[I, J] * n_I
+                    C_IJ_n = C_IJ * n_I
                     PExt[m_dofs] -= lambda_I * C_IJ_n
                     K[m_dofs, idx_LM_I] += C_IJ_n
                     K[idx_LM_I, m_dofs] += C_IJ_n

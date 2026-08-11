@@ -136,6 +136,7 @@ def run_coupling_assembly_test():
     
     # 3. Assemble coupling matrices D and C
     D, C = constraint.compute_mortar_coupling_matrices()
+    D, C = D.toarray(), C.toarray()  # sparse -> dicht, nur fuer diesen Test
 
     # ------------------------------------------------------------------
     # Verification

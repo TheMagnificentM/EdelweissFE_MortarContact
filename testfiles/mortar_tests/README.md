@@ -55,27 +55,39 @@ cd Control_Tests && python final_report.py
 
 ## Laufzeitdiagnosen
 
-Der Constraint meldet acht Zustände über `warnings.warn`, je Constraint und Ursache einmal:
+Der Constraint meldet zehn Zustände über `warnings.warn`, je Constraint und Ursache einmal:
 nicht-konvexe Slave-Sub-Zelle, nicht-konvexe Master-Sub-Zelle, Sliver-Rückfall
-(`cond(M_t) ≥ 1e12`), negatives Knotengewicht `D_II`, verschwindende Knotennormale, ein über die
-Iterationsobergrenze eingefrorenes Active Set, ein Active Set, das sich am konvergierten Zustand
-nicht reproduziert, sowie die beiden Orientierungsprüfungen (uneinheitlicher Umlaufsinn einer
-Fläche; Slave-Normalen zeigen von der Masterfläche weg).
+(`cond(M_t) ≥ 1e12`), **nicht konvergierte Gauß-Punkt-Rückabbildung**, negatives Knotengewicht
+`D_II`, verschwindende Knotennormale, ein über die Iterationsobergrenze eingefrorenes Active Set,
+ein Active Set, das sich am konvergierten Zustand nicht reproduziert, sowie die beiden
+Orientierungsprüfungen (uneinheitlicher Umlaufsinn einer Fläche; Slave-Normalen zeigen von der
+Masterfläche weg).
+
+Dazu zwei **informative** Meldungen, die keine Voraussetzung verletzen: der aus den angrenzenden
+Materialien abgeleitete Wert von `c_n`, bzw. der Hinweis, dass er sich nicht ableiten ließ.
 
 Über die Testreihe hinweg sprechen sie nur dort an, wo sie sollen — auf den Hertz-Modellen mit
 CONQUAD8 (Sliver + negatives Gewicht) und in den beiden Regressionsfällen von
-`06_active_set_pdass`. Was sie jeweils bedeuten, steht in der Doku, Abschnitt
-„Eingabeprüfungen und Laufzeitdiagnosen".
+`06_active_set_pdass`. Auf dem Ausziehversuch (`POT_Dejori`, CONQUAD4) meldet sich als einzige
+Diagnose die Active-Set-Selbstprüfung, auf allen sechs Kontaktpaaren an je einem bis zwei Knoten.
+Was sie jeweils bedeuten, steht in der Doku, Abschnitt „Eingabeprüfungen und Laufzeitdiagnosen".
 
 ## Zwei Fallstricke außerhalb des Kontakts
 
-Beide sind hier beim Testen aufgefallen und in den Tests umgangen, im Kern aber **nicht** behoben:
-
-- **`planeRectQuad` versetzt die Knotenlabels nicht.** `boxGen` erhöht `currentNodeLabel` um
+- **`*updateConfiguration` wirkte prozessweit — behoben.** `loadConfiguration` reichte die Dicts aus
+  `config/phenomena.py` per Referenz durch, und `updateConfiguration` schrieb hinein; eine in einer
+  Eingabedatei gelockerte Toleranz galt danach für jeden weiteren Job im selben Python-Prozess. Ein
+  Verifikationslauf nach einem Produktionsmodell wurde also mit dessen gelockerten Schranken
+  bewertet, ohne dass das irgendwo sichtbar war. `loadConfiguration` kopiert die Dicts jetzt
+  (`configurator.py`). Die manuelle Wiederherstellung in `11_scale_invariance` ist damit redundant,
+  aber harmlos, und bleibt als zusätzliche Absicherung stehen.
+- **`planeRectQuad` versetzt die Knotenlabels nicht — offen.** `boxGen` erhöht `currentNodeLabel` um
   `max(model.nodes)`, wenn das Modell schon Knoten hat (`boxgen.py:145–147`); `planeRectQuad` tut
   das nicht und beginnt immer bei 1. Zwei Aufrufe im selben Modell überschreiben sich damit still.
-- **`*updateConfiguration` wirkt prozessweit.** `loadConfiguration` reicht die Dicts aus
-  `config/phenomena.py` per Referenz durch, `updateConfiguration` schreibt hinein. Eine in einer
-  Eingabedatei gelockerte Toleranz gilt danach für jeden weiteren Job im selben Python-Prozess —
-  also auch für alle Folgeläufe von `final_report.py`. `11_scale_invariance` stellt die Werte
-  deshalb selbst wieder her.
+  In der Testreihe wird das umgangen, im Kern ist es nicht behoben.
+
+## Wenn du einen neuen Test schreibst
+
+`compute_mortar_coupling_matrices` liefert `D` und `C` als **scipy-sparse** (CSR), ebenso
+`current_D` / `current_C`. Wer sie dicht braucht, ruft `.toarray()` an der Verbrauchsstelle — so
+machen es die bestehenden Tests. `current_D_rowsum` ist unverändert ein `ndarray`.

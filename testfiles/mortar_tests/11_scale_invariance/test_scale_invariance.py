@@ -256,9 +256,11 @@ def _weighted_gaps(model, dim):
     coords = mc._X + np.array([u_of_node[node][:dim] for node in mc.nodes])
     x_s, x_m = coords[:nSlave], coords[nSlave:]
 
+    D_dense = mc.current_D.toarray()  # sparse -> dicht, nur fuer diesen Test
+    C_dense = mc.current_C.toarray()
     g_weak = np.array([
-        -mc.current_D[I] @ (x_s @ mc.current_normals[I])
-        + mc.current_C[I] @ (x_m @ mc.current_normals[I])
+        -D_dense[I] @ (x_s @ mc.current_normals[I])
+        + C_dense[I] @ (x_m @ mc.current_normals[I])
         for I in range(nSlave)
     ])
     rowsum = mc.current_D_rowsum

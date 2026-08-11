@@ -663,8 +663,28 @@ $P_h:\gamma_{c,h}^{(1)}\!\to\!\gamma_{c,h}^{(2)}$ die diskrete Kontaktabbildung 
 Integrale laufen über die \emph{Slave}-Fläche. $\bm D$ (Slave--Slave) ist quadratisch, $\bm M$
 (Slave--Master) im Allgemeinen rechteckig~\citep[S.~B427]{popp2012}. Die algebraische Kontaktkraft ist
 $\bm f_c = [\,\bm 0\;\;-\bm M\;\;\bm D\,]^{\!\top}\bm z$ \citep[Gl.~(3.38)]{farah}. Im Code werden
-$\bm D,\bm M$ in \file{mortarcontact.py:\allowbreak{}487--690} assembliert (die Slave--Master-Matrix heißt dort
-\code{C}; vgl.\ Notationskonvention).
+$\bm D,\bm M$ in \code{compute\_mortar\_coupling\_matrices} assembliert (die Slave--Master-Matrix
+heißt dort \code{C}; vgl.\ Notationskonvention).
+
+\paragraph{Speicherform.}
+Beide Matrizen werden \emph{schwach besetzt} gehalten (CSR). Das ist keine Implementierungslaune,
+sondern der Zweck der dualen Basis: \citet[Abschn.~4.2]{popp2012} halten fest, dass duale
+Lagrange-Multiplikatoren auf der Slave-Seite knotenweise Verschiebungs-Basisfunktionen liefern
+\emph{``which have only local support''}, algebraisch sichtbar daran, dass $\bm D$ zur Diagonalmatrix
+wird; Abschnitt~5 derselben Arbeit ergänzt, dass die Biorthogonalität $\bm D^{-1}$ \emph{``either to
+a diagonal matrix \ldots\ or to at least a sparse matrix''} reduziert. Dichte Speicherung kostete
+$\mathcal O(n_{\text{slave}}^2)$ für ein strukturell dünn besetztes Objekt.
+
+Zu beachten ist dabei, dass $\bm D$ für \emph{quadratische} Elemente gerade \emph{nicht} diagonal
+ist: die Biorthogonalität gilt bezüglich der transformierten Basis $\tilde{\bm N}$
+(Abschnitt~\ref{sec:basistrafo}), und ein Lumping würde die exakte Übertragung eines konstanten
+Drucks zerstören. Die Assemblierung summiert daher die vollen Elementblöcke; nachgemessen an
+\file{hertz\_hex20\_medium} (CONQUAD8) entfallen $326$ der $599$ Einträge von $\bm D$, also
+$54{,}4\,\%$, auf Nebendiagonalen, mit
+$\max|\tilde D_{jk}|/\max|\tilde D_{jj}| = \tfrac13$ -- gerade der Wert $\alpha$ der
+Basistransformation. Die im Code verwendete Größe $\tilde D_{jj}$ ist konsistent dazu die
+\emph{Zeilensumme} $\sum_k \bm D[j,k]$ und nicht das Diagonalelement; beide unterscheiden sich auf
+diesem Modell um den Faktor $1{,}6$.
 
 \subsection{Gewichteter (schwacher) Normalspalt}
 Die diskrete schwache Nichtdurchdringung wird pro Slave-Knoten $j$ zu einem \emph{gewichteten Spalt}
@@ -1472,15 +1492,28 @@ s_{n,j} = p_{n,j} - c_n\,\tilde D_{jj}^{-1}\,\tilde g_{j},
 mit dem physikalischen Druck $p_{n,j}=-\lambda_j\,\mathrm{sgn}(\tilde D_{jj})$. Beide Faktoren sind
 \emph{vorzeichenbehaftet} zu lesen: $\tilde D_{jj}^{-1}$ ist der Kehrwert des \emph{signierten}
 Gewichts, nicht sein Betrag. Warum das so sein muss und warum ausgerechnet hier ein Vorzeichenfehler
-naheliegt, steht in Abschnitt~\ref{sec:sgnd}. \emph{Bemerkung:} der
-Faktor $\tilde D_{jj}^{-1}$ ist \emph{nicht} Teil der Originalgleichung~(55)/(3.58) -- dort steht
-$c_n\tilde g_j$ mit dem \emph{gewichteten} Spalt direkt. Da $\tilde g_j$ ein volumetrisches,
-über $\tilde D_{jj}$ skaliertes Maß ist (Abschnitt~\ref{sec:koppelmatrizen}), macht die Division
-durch $\tilde D_{jj}$ den Term $c_n\tilde D_{jj}^{-1}\tilde g_j$ \emph{druckartig} und damit
-dimensionell vergleichbar mit $p_{n,j}$. Es ist eine bewusste, dimensionell konsistente
-\emph{Normierungsentscheidung} der Implementierung (im Einklang mit der $D^{-1}$-Skalierung der
-dualen Mortar-Methode), kein Wortzitat aus Gitterle. Die Struktur der NCP und der
-Aktivierungsindikator \eqref{eq:indicator} sind dadurch unberührt.
+naheliegt, steht in Abschnitt~\ref{sec:sgnd}.
+
+\paragraph{Welches Spaltmaß in den Indikator gehört, ist in der Literatur nicht einheitlich.}
+Die Normierung mit $\tilde D_{jj}^{-1}$ ist keine Erfindung der Implementierung, sondern die
+Mortar-Entsprechung genau jener Form, die \citet[Gl.~(3.13)]{hueber2005} verwenden. Dort lautet die
+Active-Set-Aktualisierung
+\begin{equation}
+\mathcal A_{k+1} := \{p\in\mathcal S:\ \lambda^k_{n,p} + c\,(u^k_{n,p}-g_p) > 0\},
+\label{eq:hueber_indicator}
+\end{equation}
+also mit dem \emph{punktweisen} Spalt $(u_{n,p}-g_p)$ -- einer \emph{Länge}. Und $\tilde
+D_{jj}^{-1}\tilde g_j$ ist genau das: die physikalische Knotenöffnung
+(Abschnitt~\ref{sec:koppelmatrizen}). \citet[Gl.~(55)]{gitterle}, \citet[Gl.~(5.1)]{popp2012} und
+\citet[Gl.~(3.58)]{farah} setzen stattdessen den \emph{gewichteten} Spalt $\tilde g_j$ direkt ein,
+der Länge~$\times$~Fläche trägt.
+
+Beide Formen sind zulässig, denn der Indikator entscheidet nur den Zweig, und bei Konvergenz
+verschwindet ohnehin entweder $\tilde g_j$ oder $\lambda_{n,j}$; die Struktur der NCP und der
+Aktivierungsindikator \eqref{eq:indicator} sind unberührt. Nur die längenwertige Form macht
+$c_n\,\tilde D_{jj}^{-1}\tilde g_j$ jedoch \emph{druckartig} und damit dimensionell vergleichbar mit
+$p_{n,j}$ -- und nur für sie ist die Empfehlung $c_n\sim\mathcal O(E)$ des folgenden Abschnitts
+dimensionell überhaupt sinnvoll. Der Code folgt daher \eqref{eq:hueber_indicator}.
 
 \subsection{Der Parameter $c_n$}
 $c_n>0$ ist ein rein \emph{algorithmischer} Parameter: bei Konvergenz ist entweder $\tilde g_j=0$
@@ -1495,12 +1528,40 @@ empfohlen (\citealp[S.~1367]{poppgeewall2009}: \emph{``$c_{\mathrm n}$ is sugges
 of Young's modulus $E$ of the contacting bodies''}; \citealp[S.~38]{farah}; \citealp[S.~565]{gitterle}:
 Parameter ``in the range of material parameters''). Der Grund ist eine Skalenbalance: $\lambda_{n,j}$
 ist druckartig ($\sim E\cdot$Dehnung), $\tilde g_j$ längen-/volumenartig; $c_n\sim E$ (bzw.\ nach der
-Normierung \eqref{eq:indicator_code} $c_n/\tilde D_{jj}\sim E$) bringt beide auf dieselbe Skala. Zu
-\emph{großes} $c_n$ destabilisiert dagegen die Active-Set-Iteration: \citet[Tab.~I, S.~565]{gitterle}
-zeigt für $c_n\in\{10^5,10^6\}$ mehrfache Aktiv-Mengen-Wechsel (\emph{Chattering}, dort mit $^*$
-markiert) bis hin zur Nichtkonvergenz, während ein breites mittleres Band robust in wenigen Schritten
-konvergiert. Im Code ist $c_n$ mit $\tilde D_{jj}$ normiert und in der Größenordnung von $E$ gewählt
-(\file{mortarcontact.py:\allowbreak{}92--108}), mit demselben Chattering-Argument im Kommentar.
+Normierung \eqref{eq:indicator_code} $c_n/\tilde D_{jj}\sim E$) bringt beide auf dieselbe Skala.
+
+\paragraph{Die zulässigen Werte bilden ein Band, und beide Enden sind belegt.}
+Nach \emph{unten} begrenzt eine Konvergenzschranke: \citet[Abschn.~7, Tab.~7]{hueber2005} berichten
+eine Schranke $c_0$, unterhalb derer die Active-Set-Strategie nicht konvergiert, halten fest, dass
+oberhalb davon der Einfluss vernachlässigbar ist (\emph{``for $c>c_0$, the influence of $c$ on $N_l$
+is negligible''}) und dass $c_0$ \emph{``depends linearly on $E$''}. Nach \emph{oben} begrenzt die
+Stabilität der Iteration: \citet[Tab.~I, S.~565]{gitterle} zeigt für $c_n\in\{10^5,10^6\}$ mehrfache
+Aktiv-Mengen-Wechsel (\emph{Chattering}, dort mit $^*$ markiert) bis hin zur Nichtkonvergenz, während
+ein breites mittleres Band robust in wenigen Schritten konvergiert. $E$ legt damit die
+\emph{Größenordnung} fest, nicht den Wert; dass diese Größenordnung in der Praxis großzügig ist,
+zeigt \citet[S.~38]{farah}, der sämtliche Beispiele seiner Arbeit mit $c_n=1$ rechnet.
+
+\paragraph{Voreinstellung im Code.} Wird \code{cn} in der Eingabedatei nicht angegeben, so leitet der
+Constraint den Wert selbst ab: als kleinsten \emph{Anfangs}-Elastizitätsmodul der Materialien, deren
+Elemente einen Knoten mit einer der beiden Kontaktflächen teilen
+(\file{mortarcontact.py}, Methode \code{\_resolve\_c\_n}). Drei Punkte dazu:
+
+\begin{itemize}
+  \item \textbf{Warum der Anfangswert.} Er ist auch für ein schädigendes Material eindeutig, weil zu
+        Rechenbeginn keine Schädigung vorliegt. Da $c_n$ rein algorithmisch ist, spielt seine spätere
+        Entwicklung ohnehin keine Rolle.
+  \item \textbf{Warum nur die angrenzenden Materialien.} Das globale Minimum über das Modell wäre die
+        falsche Richtung: ein weiches Material weit weg vom Interface würde $c_n$ unter die Schranke
+        $c_0$ des Kontaktpaars drücken -- genau den nichtkonvergenten Fall aus
+        \citet[Abschn.~7]{hueber2005}.
+  \item \textbf{Warum der Wert gemeldet wird.} Dass die erste Materialkonstante der
+        Elastizitätsmodul ist, ist Marmot-Konvention und keine Garantie. Der abgeleitete Wert wird
+        deshalb über die Laufzeitdiagnosen ausgegeben und bleibt damit prüfbar. Eine explizite
+        Angabe von \code{cn} hat weiter Vorrang und löst keine Meldung aus.
+\end{itemize}
+
+\noindent Eine dimensionsbehaftete Zahlenkonstante als Voreinstellung wäre nur für ein einziges
+Einheitensystem richtig; die Ableitung ersetzt sie.
 
 \subsection{PDASS als semismooth Newton}
 Die $\max$-Funktion in \eqref{eq:ncp} ist \emph{semismooth}; ihre verallgemeinerte Ableitung ist
@@ -1986,13 +2047,41 @@ der Mittelpunkt $\xi=0$ und der Viertelpunkt $\xi=-\tfrac12$ auf Maschinengenaui
 Inkrementkriterium ist zugleich das dimensionsfreie: $\bm\xi$ ist einheitenlos, $\|\bm r\|$ trägt
 die Längeneinheit des Modells (vgl.\ Abschnitt~\ref{sec:implnotes}, Absatz zur Skalierung).
 
-\paragraph{Grenzen.}
-Wird keine der beiden Schranken innerhalb von zehn Schritten erreicht, wird der letzte Iterationswert
-zurückgegeben. Für die hier auftretenden Abbildungen -- Facetten mit regulärer Jacobi-Matrix und
-Startwerten im Elementinneren -- konvergiert das Verfahren quadratisch und in wenigen Schritten; auf
-den Zwei-Block- und Hertz-Modellen wurde kein Fall beobachtet, in dem die Schranken nicht erreicht
-werden. Eine Diagnose für den Fehlschlag existiert nicht, da ein nicht konvergierter Wert sich von
-einem konvergierten nicht unterscheiden lässt, ohne die Iteration zu wiederholen.
+\paragraph{Grenzen und ihre Meldung.}
+Wird keine der beiden Schranken innerhalb von zehn Schritten erreicht -- oder bricht die Iteration an
+einer singulären Jacobi-Matrix ab --, so wird der letzte Iterationswert zurückgegeben. Für die hier
+auftretenden Abbildungen (Facetten mit regulärer Jacobi-Matrix, Startwerte im Elementinneren)
+konvergiert das Verfahren quadratisch und in wenigen Schritten.
+
+Dieser Fehlschlag ist \emph{nicht} selbstanzeigend: eine nicht konvergierte Naturkoordinate ist von
+einer konvergierten nicht zu unterscheiden, und sie geht über die Formfunktionswerte $\bm N_s$,
+$\bm N_m$ unmittelbar in $\bm D$ und $\bm C$ ein. Keine nachgelagerte Stufe kann ihn bemerken.
+Die Rückabbildung liefert deshalb neben der Koordinate ein \emph{Konvergenzkennzeichen}; die
+Fehlschläge werden je Increment gezählt und über die Laufzeitdiagnose
+\code{gp\_projection\_failed} gemeldet. Dass die Projektion überhaupt versagen kann, ist keine
+theoretische Sorge: \citet{wriggers} unterscheidet für die Punktprojektion die drei Lagen
+\emph{Fläche}, \emph{Kante} und \emph{Knoten} des Masterelements, und in den letzten beiden Fällen
+existiert im Inneren der Naturkoordinaten des Elements gar keine Lösung, auf die das Newton-Verfahren
+zulaufen könnte.
+
+Nicht als Fehlschlag gezählt werden die im 2D-Pfad regulären Fälle bei offenem Spalt, die über das
+Inkrementkriterium terminieren -- sonst würde die Diagnose gerade dort Alarm schlagen, wo das
+Verfahren korrekt arbeitet. Über die gesamte Testreihe und auf dem Ausziehversuch spricht die Meldung
+nicht an; sie erzeugt also kein Rauschen und belegt zugleich, dass dieser Pfad auf den gerechneten
+Modellen durchweg konvergiert.
+
+\paragraph{Auswertung der $2\times2$-Systeme.}
+Die Newton-Korrektur $\bm J\,\Delta\bm\xi=\bm r$ ist ein $2\times2$-System, das je Increment
+mehrere Hunderttausend Mal gelöst wird. Sie ist daher in Skalaren ausgeschrieben (LU mit
+Spaltenpivotierung in der Operationsreihenfolge von LAPACKs \code{dgesv}) statt über
+\code{numpy.linalg.solve}, ebenso die Normbildung. Das ist \emph{nicht} bitgleich zur
+Bibliotheksroutine: nachgemessen an $10^5$ Zufallssystemen weichen $39\,\%$ der Lösungen um bis zu
+$5{,}5\cdot10^{-15}$ relativ ab, die Norm bei $8\,\%$ der Fälle um ein ULP. Fortgepflanzt durch die
+Newton-Iteration und die Segmentquadratur ergibt das relativ $\sim10^{-12}$ in $\bm D$ und $\bm C$
+und $\sim10^{-10}$ in den konvergierten Multiplikatoren, bei \emph{unverändertem} Active Set; auf dem
+Ausziehversuch bleibt der Verschiebungspfad über alle Increments bitgleich und die Reaktionskraft
+weicht um relativ $7{,}3\cdot10^{-9}$ ab. Die Verifikation in Abschnitt~\ref{sec:verif} hält mit
+unveränderten Schranken.
 
 \subsection{Eingabeprüfungen und Laufzeitdiagnosen}
 Der Konstruktor weist Konfigurationen zurück, in denen Slave- und Masterfläche Knoten gemeinsam
@@ -2022,7 +2111,7 @@ beiden Arten ab, auf die das schiefgehen kann:
 nicht-mannigfaltig oder bewusst einseitig sein.
 
 \paragraph{Laufzeitdiagnosen.}
-Acht Zustände sind zulässig, aber tragen Voraussetzungen der Formulierung nicht mehr; sie werden
+Zehn Zustände sind zulässig, tragen aber Voraussetzungen der Formulierung nicht mehr; sie werden
 zur Laufzeit gemeldet, je Constraint und Ursache einmal, da sie nach ihrem ersten Auftreten in
 jedem weiteren Increment wiederkehren:
 
@@ -2038,6 +2127,9 @@ Nicht-konvexe Master-Sub-Zelle & Konvexität des Überlappungspolygons, die die 
 voraussetzt; das Integrationsgebiet wird zu groß (Abschnitt~\ref{sec:subcells}, Fall (b)). \\
 $\mathrm{cond}(\bm M_t)\ge10^{12}$ & Biorthogonalität auf dem tatsächlichen Integrationsgebiet;
 es gilt nur noch die des Referenzelements (Abschnitt~\ref{sec:sliver}). \\
+Rückabbildung eines Gauß-Punkts nicht konvergiert & Exaktheit der Naturkoordinate. Der zurückgegebene
+letzte Iterationswert geht über $\bm N_s$, $\bm N_m$ direkt in $\bm D$ und $\bm C$ ein und ist von
+einem konvergierten Wert nicht zu unterscheiden (Abschnitt~\ref{sec:rueckabbildung}). \\
 $\tilde D_{jj}<0$ & Integral-Positivität nach \citet[Gl.~(4.2)]{popp2012}; der gewichtete Spalt
 verliert die Deutung als mittlere Öffnung (Abschnitt~\ref{sec:sgnd}). \\
 Verschwindende Knotennormale & Eindeutigkeit der Normalen \eqref{eq:facetnormal}. Der Knoten
@@ -2061,11 +2153,27 @@ Verwechslung von Slave- und Masterfläche (siehe oben). \\
 
 \noindent Die Ausgabe erfolgt über \code{warnings.warn} und nicht über das \code{Journal} des
 Rahmenwerks, da die Constraint-Schnittstelle den Constraints kein \code{Journal}-Objekt übergibt.
-Über die Testreihe hinweg spricht genau eine dieser Diagnosen an -- das negative Knotengewicht im
-Regressionsfall von \file{06\_active\_set\_pdass}, der eben diese Konfiguration erzeugt. Auf den
-Hertz-Modellen mit CONQUAD8 sprechen Sliver-Rückfall und negatives Knotengewicht gemeinsam an, was
-den in Abschnitt~\ref{sec:sliver} beschriebenen Zusammenhang bestätigt; auf den Modellen mit
-CONQUAD4 bleiben beide stumm.
+
+Hinzu kommen zwei \emph{informative} Meldungen, die keine Voraussetzung verletzen, sondern eine
+Voreinstellung offenlegen: der aus den angrenzenden Materialien abgeleitete Wert von $c_n$
+(Abschnitt~\ref{sec:ncp}) beziehungsweise der Hinweis, dass er sich nicht ableiten ließ und ein
+Rückfallwert verwendet wird.
+
+\paragraph{Was tatsächlich anspricht.}
+Über die Testreihe hinweg meldet sich das negative Knotengewicht im Regressionsfall von
+\file{06\_active\_set\_pdass}, der eben diese Konfiguration erzeugt, sowie -- auf den Hertz-Modellen
+mit CONQUAD8 -- Sliver-Rückfall und negatives Knotengewicht gemeinsam, was den in
+Abschnitt~\ref{sec:sliver} beschriebenen Zusammenhang bestätigt. Auf den Modellen mit CONQUAD4
+bleiben beide stumm: dort ist die Basistransformation die Identität und die bilinearen
+Formfunktionen sind punktweise nichtnegativ, sodass $\tilde D_{jj}>0$ auch bei Teilüberdeckung gilt.
+
+Auf dem Ausziehversuch (Abschnitt~\ref{sec:testbeispiel}, CONQUAD4) spricht als einzige Diagnose
+die Selbstprüfung des Active Sets an, und zwar auf allen sechs Kontaktpaaren an je einem bis zwei
+Slave-Knoten. Diese Increments haben dort den falschen Zweig erzwungen; die Signorini-Bedingungen
+sind für sie nicht strikt erfüllt. Das ist keine Randerscheinung, sondern genau der Befund, den eine
+Globalisierung des semiglatten Newton-Verfahrens adressieren würde
+(Abschnitt~\ref{sec:ausblick:lin}). Weder Sliver-Rückfall noch negatives Knotengewicht noch eine
+fehlgeschlagene Rückabbildung treten dort auf.
 
 % =====================================================================
 \section{Verifikation}
@@ -2640,7 +2748,7 @@ Bedeutung und Begründung stehen in Abschnitt~\ref{sec:ncp}.
 \code{nonMortarSurface=\path{<string>}} & Pflicht. Name der \textbf{Non-Mortar-Fläche (Slave)}. Trägt die Kontaktknoten, Normalen $\bm n_I$ und dualen Formfunktionen $\bm\Phi$. \\
 \code{mortarSurface=\path{<string>}} & Pflicht. Name der \textbf{Mortar-Fläche (Master)}, auf die der Spalt gemessen wird. \\
 \code{field=displacement} & Optional (Standard \code{displacement}). Verschiebungs-Vektorfeld, auf das der Kontakt wirkt. \\
-\code{cn=\path{<float>}} & Optional (Standard $10^6$). Komplementaritätsparameter $c_n$ der Normal-NCP (Abschnitt~\ref{sec:ncp}). \emph{Sollte} pro Problem in der Größenordnung $\mathcal O(E)$ des weicheren Kontaktpartners gesetzt werden; der Default ist nur ein Rückfallwert. \\
+\code{cn=\path{<float>}} & Optional (Standard $0$, d.\,h.\ \emph{ableiten}). Komplementaritätsparameter $c_n$ der Normal-NCP (Abschnitt~\ref{sec:ncp}). Ohne Angabe wird der kleinste Anfangs-Elastizitätsmodul der an die Kontaktflächen angrenzenden Materialien angesetzt und der verwendete Wert gemeldet. Eine explizite Angabe hat Vorrang und sollte in der Größenordnung $\mathcal O(E)$ des weicheren Kontaktpartners liegen. \\
 \bottomrule
 \end{tabularx}
 \caption{Parameter des \code{mortarcontact}-Constraints auf Branch \code{0\_mortarcontact}.}
