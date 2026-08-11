@@ -1402,9 +1402,9 @@ class Constraint(ConstraintBase):
             # outside the covered region integrates to a value that is zero up to
             # round-off, and whether that lands at +1e-19 or -1e-19 says nothing.
             # Measured range of the real cases: -0.031 (CONQUAD9 at 70 % coverage,
-            # 06_active_set_pdass) down to -0.18 (sliver fallback, Hertz hex20),
-            # so a relative threshold of 1e-6 separates them from the dust by
-            # orders of magnitude.
+            # 06_active_set_pdass) down to -0.60 (sliver fallback,
+            # hertz_hex20_medium), so a relative threshold of 1e-6 separates them
+            # from the dust by orders of magnitude.
             weights = self.current_D_rowsum
             weight_scale = np.max(np.abs(weights))
             if weight_scale > 0.0:
