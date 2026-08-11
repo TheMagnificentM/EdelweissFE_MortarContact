@@ -2748,7 +2748,7 @@ Bedeutung und Begründung stehen in Abschnitt~\ref{sec:ncp}.
 \code{nonMortarSurface=\path{<string>}} & Pflicht. Name der \textbf{Non-Mortar-Fläche (Slave)}. Trägt die Kontaktknoten, Normalen $\bm n_I$ und dualen Formfunktionen $\bm\Phi$. \\
 \code{mortarSurface=\path{<string>}} & Pflicht. Name der \textbf{Mortar-Fläche (Master)}, auf die der Spalt gemessen wird. \\
 \code{field=displacement} & Optional (Standard \code{displacement}). Verschiebungs-Vektorfeld, auf das der Kontakt wirkt. \\
-\code{cn=\path{<float>}} & Optional (Standard $0$, d.\,h.\ \emph{ableiten}). Komplementaritätsparameter $c_n$ der Normal-NCP (Abschnitt~\ref{sec:ncp}). Ohne Angabe wird der kleinste Anfangs-Elastizitätsmodul der an die Kontaktflächen angrenzenden Materialien angesetzt und der verwendete Wert gemeldet. Eine explizite Angabe hat Vorrang und sollte in der Größenordnung $\mathcal O(E)$ des weicheren Kontaktpartners liegen. \\
+\code{cn=\path{<float>}} & Optional. Komplementaritätsparameter $c_n$ der Normal-NCP (Abschnitt~\ref{sec:ncp}); die Formulierung verlangt $c_n>0$. \textbf{Ohne Angabe} wird $c_n$ aus dem kleinsten Anfangs-Elastizitätsmodul der an die Kontaktflächen angrenzenden Materialien abgeleitet, und der verwendete Wert wird zur Laufzeit gemeldet. Eine explizite Angabe hat Vorrang und sollte in der Größenordnung $\mathcal O(E)$ des weicheren Kontaktpartners liegen. \\
 \bottomrule
 \end{tabularx}
 \caption{Parameter des \code{mortarcontact}-Constraints auf Branch \code{0\_mortarcontact}.}
