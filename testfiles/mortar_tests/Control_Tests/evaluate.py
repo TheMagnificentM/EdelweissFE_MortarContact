@@ -14,7 +14,9 @@ EdelweissFE aus und wertet aus:
        - Vergleich jeder GP-Spannung mit der analytischen Loesung
        - schreibt gp_report_<variante>.csv (fuer jeden GP alles: sigma, strain, Fehler)
   3. Kontaktbedingungen ("springen sie?")
-       - Lagrange-Multiplikatoren lambda (= Kontaktdruck) je Slave-Knoten
+       - Lagrange-Multiplikatoren lambda je Slave-Knoten. lambda folgt der
+         Literaturkonvention (Popp et al., Farah): Druck POSITIV, an voll
+         ueberdeckten Knoten also unmittelbar der Kontaktdruck.
        - gleiches Vorzeichen? |lambda| = p? gewichtetes Mittel = p? Oszillationsamplitude?
 
 Nutzung (aus dem jeweiligen Testordner heraus, z.B. 02_pressure/):
@@ -324,12 +326,14 @@ def evaluate_contact(model, test=None):
     p = analytical_pressure(test)
     c = model.constraints["contact"]
     rowsum = np.asarray(c.current_D_rowsum)
-    same_sign = bool(np.all(lam > 0) or np.all(lam < 0))
-    absdev = np.max(np.abs(np.abs(lam) - p)) / p
-    weighted_mean = np.sum(np.abs(lam) * rowsum) / np.sum(rowsum)
+    # lambda folgt der Literaturkonvention: Druck POSITIV. Geprueft wird daher
+    # der vorzeichenrichtige Wert, nicht sein Betrag.
+    same_sign = bool(np.all(lam > 0))
+    absdev = np.max(np.abs(lam - p)) / p
+    weighted_mean = np.sum(lam * rowsum) / np.sum(rowsum)
     wm_err = abs(weighted_mean - p) / p
     osc = (lam.max() - lam.min()) / abs(np.mean(lam))
-    return dict(n=int(lam.size), same_sign=same_sign, abs_mean=float(np.mean(np.abs(lam))),
+    return dict(n=int(lam.size), same_sign=same_sign, abs_mean=float(np.mean(lam)),
                 max_rel_dev=float(absdev), weighted_mean=float(weighted_mean),
                 weighted_mean_rel_err=float(wm_err), oscillation=float(osc),
                 lam_min=float(lam.min()), lam_max=float(lam.max()))
@@ -427,7 +431,7 @@ def evaluate_inclined(model, foc):
     l2 = l2_disp_vs_analytical(model, "inclined")
     lam = _lambdas(model)
     active = lam[np.abs(lam) > 1e-6]
-    same_sign = bool(np.all(active > 0) or np.all(active < 0)) if active.size else True
+    same_sign = bool(np.all(active > 0)) if active.size else True
     # Axialspannung sigma_aa = a^T sigma a soll -10 sein (Kontaktnormale = gedrehte Achse)
     sig = np.asarray(foc.fieldOutputs["stressGP"].getLastResult()).reshape(-1, 6)
     a = AXIS
@@ -480,7 +484,7 @@ def _hertz_slave_pressure(model):
 
     Rueckgabe: (x, p_lambda, p_kraft) -- ZWEI Lesarten desselben Ergebnisses:
 
-    p_lambda = -lambda_j
+    p_lambda = lambda_j
         Der Multiplikator selbst. An voll ueberdeckten Knoten ist das der
         Kontaktdruck. An TEILWEISE ueberdeckten Knoten nicht: dort ist lambda die
         Amplitude einer dualen Formfunktion ueber schrumpfendem Traeger und
@@ -489,7 +493,7 @@ def _hertz_slave_pressure(model):
         Genau solche Knoten liegen am KONTAKTRAND -- dort, wo die Zickzack-
         Oszillation quadratischer Elemente ausgewiesen wird.
 
-    p_kraft = -lambda_j * D_II,j / A_j
+    p_kraft = lambda_j * D_II,j / A_j
         Die Knotenkraft, verteilt ueber die tributaere Flaeche der ganzen Facette.
         An voll ueberdeckten Knoten ist D_II = A_j, beide Lesarten fallen zusammen.
         An teilweise ueberdeckten Knoten ist p_kraft kleiner -- der Knoten traegt
@@ -510,8 +514,8 @@ def _hertz_slave_pressure(model):
     with np.errstate(divide="ignore", invalid="ignore"):
         share = np.where(np.abs(A) > 1e-30, D_II / A, 0.0)
 
-    p_lam = -lam                  # Druck positiv
-    p_force = -lam * share
+    p_lam = lam                   # Druck positiv (Literaturkonvention)
+    p_force = lam * share
 
     # ueber gleiche x zusammenfassen (2 Knoten je x wegen z=0/0.1)
     xu = np.unique(np.round(xs, 6))
@@ -684,7 +688,7 @@ def main(argv):
             print(f"    max|sigma_yy + 10|        = {s['max_syy_err']:.3e}")
             print(f"    max|Schub sigma_xy|       = {s['max_shear']:.3e}   (-> 0, reibungsfrei)")
             print(f"    max|u_x| unterer Block    = {s['ux_lowerblock']:.3e}   (-> 0, nicht mitgeschleppt)")
-            print(f"    Kontaktdruck lambda Mittel= {s['lam_mean']:.5f}   (-> -10)")
+            print(f"    Kontaktdruck lambda Mittel= {s['lam_mean']:.5f}   (-> +10, Druck positiv)")
         else:  # inclined
             s = evaluate_inclined(model, foc)
             print("\n[Schiefes Interface 30 Grad]  Normalen-Test (Patch-Loesung auf dem Aussenrand)")

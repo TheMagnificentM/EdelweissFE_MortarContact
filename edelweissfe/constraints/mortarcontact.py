@@ -44,6 +44,18 @@ from edelweissfe.utils.misc import (
 """
 A mortar contact constraint with Lagrange multipliers and dual basis functions.
 
+SIGN CONVENTION. The multiplier follows the contact literature (Popp, Gee & Wall
+2009; Gitterle et al. 2010; Popp et al. 2012; Farah 2018): lambda_I is the
+NEGATIVE slave traction, hence lambda_I >= 0 in compression, and the contact
+force it applies to the slave node is -lambda_I * D_IK * n_I, i.e. directed
+against the outward slave normal. For a positive nodal weight D_II - the regular
+case - lambda_I therefore IS the nodal contact pressure and can be read as such;
+p_n = lambda_I * sgn(D_II) generalizes that to the negative weights a partially
+covered CONQUAD9 can produce. This is the convention every formula in the cited
+references uses, which is what makes them transferable without sign surgery -
+notably the frictional NCP, where the same expression sits inside nested max()
+functions and its sign decides a branch rather than a scaling.
+
 The Signorini conditions (normal pressure p_I >= 0, weighted gap g_I >= 0,
 complementarity p_I g_I = 0) are enforced through a single non-smooth
 complementarity function (NCP)
@@ -67,7 +79,7 @@ D and C are stored as sparse matrices, which is what the dual basis is for
 
 Only the saddle-point formulation (explicit multiplier DOFs) is implemented.
 A "dual condensation" variant (eliminating the multipliers via lambda_I =
--g_weak,I / D_II, evaluated fresh from the current gap each iteration) was
+g_weak,I / D_II, evaluated fresh from the current gap each iteration) was
 implemented and removed again: it is not the algebraic elimination described
 in Farah (2018), Sec. 3.5.3, Eqs. (3.62)-(3.65)/Popp et al. (2012). The
 correct elimination is a Schur complement of the *already assembled* slave
@@ -830,7 +842,7 @@ class Constraint(ConstraintBase):
                 g_weak += self.current_C_row[I] @ (x_master[nzC] @ n_I)
             D_II = self.current_D_rowsum[I]
             inv_D = 1.0 / D_II if abs(D_II) > 1e-30 else 0.0
-            p_n = -U_ref[idx_LM_0 + I] * np.sign(D_II)
+            p_n = U_ref[idx_LM_0 + I] * np.sign(D_II)
             would_be[I] = bool(p_n - self.c_n * g_weak * inv_D > 0.0)
 
         flipped = np.flatnonzero(would_be != self.active_set)
@@ -1454,9 +1466,15 @@ class Constraint(ConstraintBase):
             # are not pointwise non-negative, so the integral positivity required by
             # Popp et al. (2012), Eq. (4.2), can be violated there.
             #
-            #   pressure  The nodal contact force along n_I is lambda_I * D_II, so
-            #             compression means lambda_I * D_II < 0. Hence p_n = -lambda_I
-            #             * sgn(D_II) is >= 0 in compression for either sign of D_II.
+            #   pressure  lambda_I is the multiplier in the LITERATURE convention
+            #             (Popp, Gee & Wall 2009; Gitterle et al. 2010; Popp et al.
+            #             2012; Farah 2018): lambda_n >= 0 in compression, i.e. the
+            #             NEGATIVE slave traction. The nodal contact force along n_I
+            #             is therefore -lambda_I * D_II, which points against n_I -
+            #             into the slave body - for lambda_I > 0 and D_II > 0. With a
+            #             negative weight the roles flip, so the physical pressure is
+            #             p_n = lambda_I * sgn(D_II) >= 0 in compression for either
+            #             sign of D_II.
             #   opening   Translating the master by a * n_I changes the weak gap by
             #             D_II * a (row-sum identity sum_K D_IK = sum_J C_IJ). The
             #             physical nodal opening is therefore g_weak / D_II. Dividing
@@ -1466,11 +1484,12 @@ class Constraint(ConstraintBase):
             #             sgn(D_II) on top of that flips the sign back and makes an
             #             open node look like a penetrating one; that is a bug this
             #             code carried until it was caught by the negative-weight
-            #             regression test in 06_active_set_pdass.
+            #             regression test in 06_active_set_pdass. Note the asymmetry:
+            #             the pressure carries sgn(D_II), the opening does not.
             D_II = self.current_D_rowsum[I]
             sgn_D = np.sign(D_II)
             inv_D = 1.0 / D_II if abs(D_II) > 1e-30 else 0.0
-            p_n = -lambda_I * sgn_D   # physical normal pressure (>= 0 in contact)
+            p_n = lambda_I * sgn_D    # physical normal pressure (>= 0 in contact)
             g_sep = g_I_weak * inv_D  # physical opening (>0 open, <0 penetrating)
 
             if self.use_active_set and not self.active_set_frozen:
@@ -1504,23 +1523,34 @@ class Constraint(ConstraintBase):
                 s_n = p_n - self.c_n * g_sep
                 self.active_set[I] = bool(s_n > 0.0)
 
+            # Assembly in the literature sign convention (lambda_n >= 0 in
+            # compression). Throughout, K = -dPExt/dU, which is what makes the
+            # multiplier block symmetric:
+            #   slave force   -lambda_I * D_IK * n_I     -> K[x_s, lambda] = +D_IK*n
+            #   master force  +lambda_I * C_IJ * n_I     -> K[x_m, lambda] = -C_IJ*n
+            #   lambda row    +g_weak (active)           -> K[lambda, x_s] = +D_IK*n,
+            #                                               K[lambda, x_m] = -C_IJ*n
+            # The active lambda row therefore carries the OPPOSITE overall sign to
+            # the one it had while lambda was the slave traction; that is a row
+            # scaling by -1 and is exactly what keeps K[x, lambda] = K[lambda, x].
+            # The inactive row (lambda = 0) has no coupling and is unaffected.
             if self.active_set[I]:
-                PExt[idx_LM_I] -= g_I_weak
+                PExt[idx_LM_I] += g_I_weak
 
                 for K_nd, D_IK in zip(nzD, dRow):
                     s_dofs = slice(sf * K_nd, sf * K_nd + dim)
                     D_IK_n = D_IK * n_I
-                    PExt[s_dofs] += lambda_I * D_IK_n
-                    K[s_dofs, idx_LM_I] -= D_IK_n
-                    K[idx_LM_I, s_dofs] -= D_IK_n
+                    PExt[s_dofs] -= lambda_I * D_IK_n
+                    K[s_dofs, idx_LM_I] += D_IK_n
+                    K[idx_LM_I, s_dofs] += D_IK_n
 
                 for J, C_IJ in zip(nzC, cRow):
                     m_global = nSlave + J
                     m_dofs = slice(sf * m_global, sf * m_global + dim)
                     C_IJ_n = C_IJ * n_I
-                    PExt[m_dofs] -= lambda_I * C_IJ_n
-                    K[m_dofs, idx_LM_I] += C_IJ_n
-                    K[idx_LM_I, m_dofs] += C_IJ_n
+                    PExt[m_dofs] += lambda_I * C_IJ_n
+                    K[m_dofs, idx_LM_I] -= C_IJ_n
+                    K[idx_LM_I, m_dofs] -= C_IJ_n
             else:
                 PExt[idx_LM_I] -= lambda_I
                 K[idx_LM_I, idx_LM_I] += 1.0

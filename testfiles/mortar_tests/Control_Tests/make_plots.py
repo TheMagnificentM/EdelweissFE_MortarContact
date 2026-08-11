@@ -70,7 +70,9 @@ def gp_syy(model, foc):
 
 
 def lam_of(model):
-    return np.abs(np.array([v.value for v in model.scalarVariables.values()]).flatten())
+    # lambda folgt der Literaturkonvention: Druck POSITIV. Kein abs() mehr - ein
+    # Vorzeichenfehler soll im Diagramm sichtbar werden und nicht weggerechnet.
+    return np.array([v.value for v in model.scalarVariables.values()]).flatten()
 
 
 def newfig(**kw):

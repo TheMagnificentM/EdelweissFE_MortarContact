@@ -176,19 +176,23 @@ def run_variant(name, elA, nxA, nzA, conA, elB, nxB, nzB, conB, distort=False,
         print("  [FAIL] Keine Kontakt-Multiplikatoren im Modell gefunden!")
         raise AssertionError("Patch-Test fehlgeschlagen -- siehe [FAIL] oben")
 
-    lam_err = np.max(np.abs(np.abs(lambdas) - PRESSURE)) / PRESSURE
-    same_sign = np.all(lambdas > 0) or np.all(lambdas < 0)
+    # lambda folgt der Literaturkonvention (Druck POSITIV), ist an voll ueber-
+    # deckten Knoten also unmittelbar der Kontaktdruck. Geprueft wird daher der
+    # vorzeichenrichtige Wert und nicht sein Betrag: ein Vorzeichenfehler in der
+    # Assemblierung wuerde sonst unbemerkt durchgehen.
+    lam_err = np.max(np.abs(lambdas - PRESSURE)) / PRESSURE
+    same_sign = np.all(lambdas > 0)
     print(f"  Multiplikatoren: n = {len(lambdas)}, max. rel. Abweichung von p = {lam_err:.3e}")
 
     # Übertragene Gesamtkraft: gewichtetes Mittel der Multiplikatoren mit den
     # dualen Gewichten (Zeilensummen von D = Flächenanteile der Knoten).
     rowsum = model.constraints["contact"].current_D_rowsum
     lam_mean = np.sum(lambdas * rowsum) / np.sum(rowsum)
-    lam_mean_err = abs(abs(lam_mean) - PRESSURE) / PRESSURE
+    lam_mean_err = abs(lam_mean - PRESSURE) / PRESSURE
     print(f"  Gewichtetes Mittel (Gesamtkraft/Fläche): {lam_mean:.6f}, rel. Fehler = {lam_mean_err:.3e}")
 
     if not same_sign:
-        print(f"  [FAIL] Kontaktdruck oszilliert (unterschiedliche Vorzeichen)!")
+        print(f"  [FAIL] Kontaktdruck nicht durchgehend positiv (Zug oder Oszillation)!")
         raise AssertionError("Patch-Test fehlgeschlagen -- siehe [FAIL] oben")
     if lam_err > tol_lam:
         print(f"  [FAIL] Kontaktdruck nicht konstant = p!")

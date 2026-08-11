@@ -327,19 +327,22 @@ def run_patch_variant(name, el_type, con_type, nx_a, nx_b, tol=1e-8):
         print("  [FAIL] Keine Kontakt-Multiplikatoren im Modell gefunden!")
         return False
 
-    lam_err = np.max(np.abs(np.abs(lambdas) - PRESSURE)) / PRESSURE
-    same_sign = np.all(lambdas > 0) or np.all(lambdas < 0)
+    # lambda folgt der Literaturkonvention (Druck POSITIV), ist an voll ueber-
+    # deckten Knoten also unmittelbar der Kontaktdruck. Geprueft wird daher der
+    # vorzeichenrichtige Wert und nicht sein Betrag.
+    lam_err = np.max(np.abs(lambdas - PRESSURE)) / PRESSURE
+    same_sign = np.all(lambdas > 0)
     print(f"  Multiplikatoren: n = {len(lambdas)}, max. rel. Abweichung von p = {lam_err:.3e}")
 
     # Uebertragene Gesamtkraft: mit den dualen Gewichten (Zeilensummen von D)
     # gewichtetes Mittel der Multiplikatoren.
     rowsum = model.constraints["contact"].current_D_rowsum
     lam_mean = np.sum(lambdas * rowsum) / np.sum(rowsum)
-    lam_mean_err = abs(abs(lam_mean) - PRESSURE) / PRESSURE
+    lam_mean_err = abs(lam_mean - PRESSURE) / PRESSURE
     print(f"  Gewichtetes Mittel (Gesamtkraft/Laenge): {lam_mean:.9f}, rel. Fehler = {lam_mean_err:.3e}")
 
     if not same_sign:
-        print("  [FAIL] Kontaktdruck oszilliert (unterschiedliche Vorzeichen)!")
+        print("  [FAIL] Kontaktdruck nicht durchgehend positiv (Zug oder Oszillation)!")
         return False
     if lam_err > tol:
         print("  [FAIL] Kontaktdruck nicht konstant = p!")

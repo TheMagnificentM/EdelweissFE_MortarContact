@@ -14,7 +14,7 @@ Vorzeichenkonvention
 Aus den beiden Zweigen der Normal-NCP in ``applyConstraint`` folgt
 
     inaktiv:   PExt[lambda] -= lambda          K[lambda, lambda] += 1
-    aktiv:     PExt[lambda] -= g_weak          K[lambda, x_s]    -= D_IK * n_I
+    aktiv:     PExt[lambda] += g_weak          K[lambda, x_s]    += D_IK * n_I
 
 also durchgaengig
 
@@ -260,7 +260,7 @@ def test_consistent_tangent():
             QUAD4_SLAVE,
             QUAD4_MASTER,
             normal_offsets=[0.02] * 4,
-            lambdas=[-1.0] * 4,
+            lambdas=[1.0] * 4,
         )
     )
 
@@ -271,7 +271,7 @@ def test_consistent_tangent():
             rotate_y(QUAD4_SLAVE, 25.0),
             rotate_y(QUAD4_MASTER, 25.0),
             normal_offsets=[0.02] * 4,
-            lambdas=[-1.0] * 4,
+            lambdas=[1.0] * 4,
         )
     )
 
@@ -282,7 +282,7 @@ def test_consistent_tangent():
             QUAD8_SLAVE,
             QUAD8_MASTER,
             normal_offsets=[0.05] * 8,
-            lambdas=[-1.0] * 8,
+            lambdas=[1.0] * 8,
         )
     )
 
@@ -293,7 +293,7 @@ def test_consistent_tangent():
             LINE3_SLAVE,
             LINE3_MASTER,
             normal_offsets=[0.03] * 3,
-            lambdas=[-1.0] * 3,
+            lambdas=[1.0] * 3,
             dim=2,
         )
     )
@@ -308,7 +308,7 @@ def test_consistent_tangent():
             QUAD4_SLAVE,
             QUAD4_MASTER,
             normal_offsets=[0.02, 0.02, -0.05, -0.05],
-            lambdas=[-1.0, -1.0, 0.0, 0.0],
+            lambdas=[1.0, 1.0, 0.0, 0.0],
         )
     )
 

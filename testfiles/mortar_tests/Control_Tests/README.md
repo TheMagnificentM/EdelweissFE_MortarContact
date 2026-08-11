@@ -143,9 +143,12 @@ Schub kontrolliert (bei ν = 0 ≈ 0).
 > groß (~2.89), obwohl das Element im Zentrum exakt ist und `err_mono` winzig bleibt. hex20/hex20R
 > lösen den Verlauf fein auf (`err_anal` ~5·10⁻⁴).
 
-**Kontaktbedingungen.** An jedem Slave-Knoten sitzt ein Lagrange-Multiplikator = der Kontaktdruck.
-Er sollte gleichmäßig 10 sein. „Springen“ hieße: starke Schwankung von Knoten zu Knoten,
-Vorzeichenwechsel oder Zappeln. Geprüft wird das Vorzeichen, der Mittelwert und die Schwankung.
+**Kontaktbedingungen.** An jedem Slave-Knoten sitzt ein Lagrange-Multiplikator. Er folgt der
+Konvention der Kontaktliteratur (Popp et al., Farah): **bei Druck positiv**, an voll überdeckten
+Knoten also unmittelbar der Kontaktdruck. Er sollte gleichmäßig +10 sein. „Springen“ hieße: starke
+Schwankung von Knoten zu Knoten, Vorzeichenwechsel oder Zappeln. Geprüft wird, dass alle
+Multiplikatoren **positiv** sind (nicht bloß gleiches Vorzeichen tragen — ein durchgehend negativer
+Satz wäre ein Vorzeichenfehler in der Assemblierung), dazu Mittelwert und Schwankung.
 Zwei Dinge sind zu unterscheiden: die **Streuung von Knoten zu Knoten** (das „Springen“, überall
 ~10⁻⁶, also gleichmäßig) und die **Abweichung des Niveaus** von 10 (bei Wegsteuerung exakt 0, bei
 Kraftsteuerung ~10⁻⁶ = die Kraft der Stabilisierungsfeder).

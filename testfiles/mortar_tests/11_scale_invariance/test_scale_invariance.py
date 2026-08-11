@@ -355,8 +355,8 @@ def run_scaled_3d(name, el_type, con_type, nx_a, nx_b, k, scalar_tol=None):
 def report(k, res, dim):
     """Bewertet einen Lauf und meldet nebenbei die Entartung der Suchmarge."""
     tol = RTOL * res["u_ref"]
-    lam_err = np.max(np.abs(np.abs(res["lambdas"]) - PRESSURE)) / PRESSURE
-    mean_err = abs(abs(res["lam_mean"]) - PRESSURE) / PRESSURE
+    lam_err = np.max(np.abs(res["lambdas"] - PRESSURE)) / PRESSURE
+    mean_err = abs(res["lam_mean"] - PRESSURE) / PRESSURE
 
     lat = "max|u_x|            " if dim == 2 else "max|u_x|, max|u_z|  "
     print(f"\n* {dim}D, Skalierungsfaktor k = {k:g}  (Modellausdehnung {res['extent']:g})")
@@ -411,7 +411,7 @@ def _sweep(tag, runner, el_type, con_type, nx_a, nx_b, dim, results, pressures):
         name = f"{tag}_k{SCALES.index(k)}"
         res = runner(name, el_type, con_type, nx_a, nx_b, k)
         results.append(report(k, res, dim))
-        pressures[(tag, k)] = np.sort(np.abs(res["lambdas"]))
+        pressures[(tag, k)] = np.sort(res["lambdas"])
 
     # Direkter Vergleich der Skalen untereinander, nicht nur gegen die
     # analytische Loesung: die Multiplikatoren muessen knotenweise gleich sein.
@@ -451,7 +451,7 @@ def test_lambda_residual_floor_is_scale_dependent():
             print(f"\n* k = {k:g}")
             print(f"  max|u_y - u_y_exakt|                = {res['err_uy']:.3e}")
             print(f"  max|lambda| - p                     = "
-                  f"{np.max(np.abs(np.abs(res['lambdas']) - PRESSURE)):.3e}")
+                  f"{np.max(np.abs(res['lambdas'] - PRESSURE)):.3e}")
             print(f"  max|g_sep|  an aktiven Knoten       = {res['g_sep_active']:.3e}   (Laenge)")
             print(f"  max|g_weak| an aktiven Knoten       = {res['g_weak_active']:.3e}   "
                   f"(Laenge x Flaeche)  <-- das prueft der Loeser")
@@ -463,7 +463,7 @@ def test_lambda_residual_floor_is_scale_dependent():
         # Beide Rechnungen sind exakt - die Loesung haengt nicht an der Schranke.
         for k, r in rows:
             assert r["err_uy"] < 1e-8 * r["u_ref"], f"k = {k:g}: Verschiebungsfeld nicht exakt"
-            assert np.max(np.abs(np.abs(r["lambdas"]) - PRESSURE)) / PRESSURE < RTOL, \
+            assert np.max(np.abs(r["lambdas"] - PRESSURE)) / PRESSURE < RTOL, \
                 f"k = {k:g}: Kontaktdruck nicht exakt"
             assert r["g_sep_active"] < 1e-9 * r["u_ref"], \
                 f"k = {k:g}: die physikalische Knotenoeffnung ist an aktiven Knoten nicht null"

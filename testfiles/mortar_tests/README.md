@@ -88,6 +88,15 @@ Was sie jeweils bedeuten, steht in der Doku, Abschnitt „Eingabeprüfungen und 
 
 ## Wenn du einen neuen Test schreibst
 
+**Vorzeichen des Multiplikators.** `lambda` folgt der Konvention der Kontaktliteratur (Popp et al.
+2009/2012, Gitterle et al. 2010, Farah 2018): **bei Druck positiv**. An einem voll überdeckten
+Knoten (`D_II > 0`) ist `lambda` damit unmittelbar der Kontaktdruck — ein Patch-Test mit
+aufgebrachtem Druck `p` liefert `lambda = +p`. Die allgemeine Form, die auch negative Knotengewichte
+trägt, ist `p_n = lambda * sgn(D_II)`; die Knotenkraft entlang `n_I` ist `-lambda * D_II`. Prüfe
+deshalb den **vorzeichenrichtigen** Wert und nicht `abs(lambda)` — sonst geht ein Vorzeichenfehler
+in der Assemblierung unbemerkt durch. Herleitung: Doku, Abschnitt „Vorzeichenkonvention des
+Multiplikators".
+
 `compute_mortar_coupling_matrices` liefert `D` und `C` als **scipy-sparse** (CSR), ebenso
 `current_D` / `current_C`. Wer sie dicht braucht, ruft `.toarray()` an der Verbrauchsstelle — so
 machen es die bestehenden Tests. `current_D_rowsum` ist unverändert ein `ndarray`.

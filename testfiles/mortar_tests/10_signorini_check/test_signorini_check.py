@@ -25,7 +25,7 @@ und mit **denselben** Formeln auf wie ``Constraint.applyConstraint``
 (``mortarcontact.py``, Abschnitt "Sign-consistent contact measures"):
 
     g_weak_I = -sum_K D_IK (x_K . n_I) + sum_J C_IJ (x_J . n_I)
-    p_n      = -lambda_I * sgn(D_II)
+    p_n      =  lambda_I * sgn(D_II)
     g_sep    =  g_weak_I / D_II
 
 mit den im letzten Increment eingefrorenen ``current_normals``, ``current_D``,
@@ -149,7 +149,7 @@ def check_signorini(model, constraint_name="contact"):
         n_I = normals[I]
         g_weak = -D[I] @ (x_slave @ n_I) + C[I] @ (x_master @ n_I)
         D_II = rowsum[I]
-        p_n[I] = -lam[I] * np.sign(D_II)
+        p_n[I] = lam[I] * np.sign(D_II)
         g_sep[I] = g_weak / D_II if abs(D_II) > 1e-30 else 0.0
 
     # "Kein Gegenüber": die Zeilensumme von D ist das Integral der dualen
@@ -322,7 +322,7 @@ def report_and_assert(name, res, p_ref, g_ref):
         print(
             f"  [INFO] Splitterueberdeckung an Slave-Knoten {I}: "
             f"D_II/max = {abs(D_II[I]) / D_max:.2e}, p_n = {p_n[I]:.4e}, "
-            f"Knotenkraft lambda*D_II = {lam[I] * D_II[I]:+.4e}"
+            f"Knotenkraft -lambda*D_II = {-lam[I] * D_II[I]:+.4e}"
         )
 
     if ok:

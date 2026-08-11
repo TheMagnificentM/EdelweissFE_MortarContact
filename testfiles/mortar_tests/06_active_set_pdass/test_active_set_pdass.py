@@ -194,15 +194,15 @@ def test_ncp_indicator():
     idx_LM_0 = constraint.sizeField * len(constraint._nodes)
     sgn_D = np.sign(constraint.current_D_rowsum)
 
-    # Increment 2: g_sep = 0 but COMPRESSIVE pressure p_n = -lambda*sgn_D = +1 > 0
-    U_np[idx_LM_0:] = -sgn_D
+    # Increment 2: g_sep = 0 but COMPRESSIVE pressure p_n = lambda*sgn_D = +1 > 0
+    U_np[idx_LM_0:] = sgn_D
     PExt.fill(0.0); K.fill(0.0)
     constraint.applyConstraint(U_np, dU, PExt, K, TimeStep(2, 0.0, 0.0, 0.0, 0.0, 0.0))
     print("  g_sep = 0, p_n = +1 -> active set:", constraint.active_set)
     assert np.all(constraint.active_set), "positive pressure at closed gap must be active"
 
     # Increment 3: g_sep = 0 but TENSILE pressure p_n = -1 < 0 -> released
-    U_np[idx_LM_0:] = sgn_D
+    U_np[idx_LM_0:] = -sgn_D
     PExt.fill(0.0); K.fill(0.0)
     constraint.applyConstraint(U_np, dU, PExt, K, TimeStep(3, 0.0, 0.0, 0.0, 0.0, 0.0))
     print("  g_sep = 0, p_n = -1 -> active set:", constraint.active_set)
@@ -335,10 +335,13 @@ def test_negative_nodal_weight_opens_correctly():
     """A node with NEGATIVE D_II must still deactivate when the gap is open.
 
     Regression test for a sign bug in the active-set indicator. With D_II < 0 both
-    sign conventions flip: compression means lambda*D_II < 0, and translating the
-    master away by a changes the weak gap by D_II*a, i.e. an OPEN gap gives
-    g_weak < 0. The indicator therefore has to use the opening normalized by the
-    SIGNED weight, g_sep = g_weak/D_II, which is positive-when-open for either sign.
+    sign conventions flip. The nodal contact force along n_I is -lambda*D_II, so
+    compression (force directed INTO the slave body) means lambda*D_II > 0 - hence
+    lambda < 0 once D_II < 0, which is why the pressure carries sgn(D_II). And
+    translating the master away by a changes the weak gap by D_II*a, i.e. an OPEN
+    gap gives g_weak < 0. The indicator therefore has to use the opening normalized
+    by the SIGNED weight, g_sep = g_weak/D_II, which is positive-when-open for
+    either sign.
     The earlier implementation multiplied by sgn(D_II) on top of dividing by D_II,
     which flipped the gap sign back: a wide open node was reported as penetrating,
     stayed active, and glued the surfaces (transmitting tension).
