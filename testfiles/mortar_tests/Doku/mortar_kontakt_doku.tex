@@ -175,7 +175,7 @@ $\bm D$ & \code{D} & \emph{globale} Slave--Slave-Koppelmatrix & \eqref{eq:DM} \\
 $\bm M$ & \textbf{\code{C}} & \emph{globale} Slave--Master-Koppelmatrix & \eqref{eq:DM} \\
 $\tilde{\bm D}$ & --- & $\bm D=\tilde{\bm D}\,\bm T^{-\top}$; diagonal bezüglich $\tilde{\bm N}$ & \eqref{eq:DTfaktor} \\
 $J_c$ & \code{area\_jac} & Jacobi-Determinante einer \emph{ebenen} Integrationszelle & \eqref{eq:cellmeasure} \\
-$\tilde D_{jj}$ & \code{D\_rowsum} & Knotengewicht $\int_{\gamma_c^{\text{ovl}}}\tilde N_j$, vorzeichenbehaftet & \eqref{eq:weightisprimal} \\
+$\tilde D_{jj}$ & \code{current\_D\_rowsum} & Knotengewicht $\int_{\gamma_c^{\text{ovl}}}\tilde N_j$, vorzeichenbehaftet & \eqref{eq:weightisprimal} \\
 $\tilde g_j$ & \code{g\_I\_weak} & gewichteter (schwacher) Normalspalt am Slave-Knoten $j$ & \eqref{eq:wgap_pos} \\
 $g_{\text{sep},j}$ & \code{g\_sep} & $\tilde g_j/\tilde D_{jj}$; physikalische Knotenöffnung (Länge) & \eqref{eq:gsep} \\
 $A_j$ & --- & Knotengewicht über die \emph{ganze} Facette, $\int_{\text{ele}}\tilde N_j$ & \eqref{eq:pforce} \\
@@ -967,8 +967,13 @@ $-1$ und $3$ -- das beobachtete Verhältnis $\tfrac13$ folgt daraus erst zusamme
 tatsächlichen Knotengewichten des Modells.
 
 Die im Code verwendete Größe $\tilde D_{jj}$ ist konsistent dazu die \emph{Zeilensumme}
-$\sum_k \bm D[j,k]$ und nicht das Diagonalelement; beide unterscheiden sich auf diesem Modell um den
-Faktor $1{,}6$. Dass die Zeilensumme die richtige Größe ist, folgt aus der Partition of Unity: mit
+$\sum_k \bm D[j,k]$ und nicht das Diagonalelement. Die beiden fallen an den Eckknoten zusammen und
+unterscheiden sich an den Kantenmittelknoten um den Faktor~$3$ -- gemessen an
+\file{hertz\_hex20\_medium} liegt $\tilde D_{jj}/D_{jj}$ genau zwischen $\tfrac13$ und $1$, mit
+dem Median $\tfrac13$. Das ist keine Zufälligkeit des Modells, sondern folgt aus
+\eqref{eq:DTfaktor}: mit $D_{jj}=\tilde D_{jj}(\bm T_e^{-1})_{jj}$ und
+$(\bm T_e^{-1})_{jj}=1$ (Ecke) bzw.\ $(1-2\alpha)^{-1}=3$ (Mittelknoten) für
+$\alpha=\tfrac13$. Dass die Zeilensumme die richtige Größe ist, folgt aus der Partition of Unity: mit
 $\sum_k N_k^{(1)}=1$ ist
 \begin{equation}
 \sum_k D_{jk} = \int_{\gamma_c^{\text{ovl}}} \Phi_j \sum_k N_k^{(1)}\,\mathrm d\gamma
@@ -1276,7 +1281,12 @@ Schwelle $\alpha^\ast$, oberhalb derer \eqref{eq:pointwisepos} gilt; sie liegt z
 Literaturwerten $\tfrac15$ und $\tfrac13$.
 
 \paragraph{Numerischer Befund.}
-Dies ist im Verifikationslauf direkt belegt (Abschnitt~\ref{sec:verif}, Tests~05 und~08):
+Dies ist an den Geometrien der Tests~05 und~08 (Abschnitt~\ref{sec:verif}) gemessen. Die
+Testreihe selbst rechnet ausschließlich mit $\alpha=\tfrac13$ -- der Wert steht als Konstante in
+\code{element.getBasisTransformation} und ist kein Testparameter --; die
+$\alpha=\tfrac15$-Vergleichswerte stammen aus denselben Rechnungen mit vorübergehend
+umgestelltem $\bm T_e$ und sind daher durch einen Lauf der Testreihe nicht reproduzierbar,
+wohl aber durch dieselbe Umstellung:
 \begin{itemize}\itemsep2pt
   \item \textbf{Test~05 (partielle Überdeckung, CONQUAD8):} Bei um $0.3$ verschobenem Master
         ($70\%$ Überdeckung) sind mit $\alpha=\tfrac13$ alle knotenweisen Gewichte strikt positiv;
@@ -1707,7 +1717,7 @@ $\partial\bm M/\partial\bm x$ und $\partial\bm n_j/\partial\bm x$, sind in $\bm 
 \textbf{nicht} enthalten. Ihre Größe lässt sich mit demselben Test messen: differenziert man
 das Residuum mit bei jeder Störung \emph{neu berechneter} Geometrie, so ergibt sich
 \begin{equation}
-\frac{\max|\bm K - \bm K_{\text{FD,voll}}|}{\max|\bm K|} \;=\; 0{,}27 \ldots 2{,}0 ,
+\frac{\max|\bm K - \bm K_{\text{FD,voll}}|}{\max|\bm K|} \;=\; 0{,}27 \ldots 1{,}17 ,
 \end{equation}
 also dieselbe Größenordnung wie $\bm K$ selbst. Das ist strukturell zu erwarten: die
 Kontaktkraft ist $\lambda_j\bm D[j,k]\bm n_j$, folglich ist
@@ -2028,7 +2038,7 @@ P_{\text{ext}},\bm K,\text{TimeStep})$
             \eqref{eq:indicator_code};
       \item ist das Set \emph{nicht} eingefroren: $\text{aktiv}_j \leftarrow [\,s_{n,j}>0\,]$;
       \item \textbf{aktiv:} $\bm P_{\text{ext}},\bm K$ um den Constraint-Beitrag ergänzen
-            (Residuum $-\tilde g_j$, Slave- und Master-Kräfte, symmetrische Kopplungsblöcke);\\
+            (Residuum $+\tilde g_j$, Slave- und Master-Kräfte, symmetrische Kopplungsblöcke);\\
             \textbf{inaktiv:} $\lambda_j=0$ erzwingen.
     \end{enumerate}
   \item \textbf{Falls} das Set nicht eingefroren ist: Zustand buchen und einfrieren, sobald er als
@@ -2059,11 +2069,21 @@ Das Active Set wird in \emph{jeder} Newton-Iteration aus dem Indikator \eqref{eq
 bestimmt (Schleife über die Slave-Knoten in \code{applyConstraint}). Pro Knoten gibt es zwei
 Zweige:
 \begin{itemize}\itemsep2pt
-  \item \textbf{aktiv} ($s_{n,j}>0$): Constraint-Residuum $\text{PExt}[\lambda]\!-\!\!=\!\tilde g_j$;
+  \item \textbf{aktiv} ($s_{n,j}>0$): Constraint-Residuum $\text{PExt}[\lambda]\!+\!\!=\!\tilde g_j$;
         Slave-Kräfte $-\lambda_j\bm D[j,k]\bm n_j$, Master-Kräfte $+\lambda_j\bm M[j,l]\bm n_j$;
   \item \textbf{inaktiv} ($s_{n,j}\le0$): $\lambda_j$ wird zu null gezwungen
         ($\text{PExt}[\lambda]\!-\!\!=\!\lambda_j$, $K[\lambda,\lambda]\!+\!\!=\!1$).
 \end{itemize}
+
+\noindent Durchgehend gilt dabei $\bm K=-\partial\bm P_{\text{ext}}/\partial\bm U$. Erst diese
+Konvention macht das Vorzeichen der aktiven Multiplikatorzeile lesbar: mit ihr folgt aus
+$\text{PExt}[\lambda]\!+\!\!=\!\tilde g_j$ gerade $K[\lambda,\bm x_k]=+D_{jk}\bm n_j$, also
+$K[\lambda,\bm x_k]=K[\bm x_k,\lambda]$ und damit die Symmetrie des Sattelpunktsystems. Das
+umgekehrte Vorzeichen an dieser Stelle würde dieselbe Bedingung $\tilde g_j=0$ erzwingen, die
+Multiplikatorzeile aber mit $-1$ skalieren und die Symmetrie zerstören. Test~09 prüft beides:
+er vergleicht $\bm K$ mit dem Differenzenquotienten \eqref{eq:fdcheck} und weist zusätzlich aus,
+dass nicht $\bm K\approx-\bm K_{\text{FD}}$ gilt -- ein Vorzeichendreher in der Assemblierung
+fiele dort sofort auf.
 
 \paragraph{Skalierung der beiden Zweige.} Die Einträge der \emph{aktiven} Multiplikatorzeile sind
 von der Größenordnung $D_{jk}$, tragen also die Einheit Fläche; die \emph{inaktive} Zeile trägt die
@@ -2127,8 +2147,13 @@ Geometrie, die im vorigen in Kraft war, und den Verschiebungen, die dabei heraus
 Increment-Schlüssels). Reproduziert der eingefrorene Satz sich dort nicht, so hat das Increment an
 den betroffenen Knoten den falschen Zweig erzwungen, also $\tilde g_j=0$ an einem Knoten, der sich
 öffnen will, oder $\lambda_j=0$ an einem, der schließen will; seine Lösung erfüllt die
-Signorini-Bedingungen dann nicht. Das wird gemeldet (Abschnitt~\ref{sec:implnotes}) und ist über
-die gesamte Verifikationsreihe nicht eingetreten.
+Signorini-Bedingungen dann nicht. Das wird gemeldet (Abschnitt~\ref{sec:implnotes}) und ist in
+den Löserläufen der Verifikationsreihe (\file{Control\_Tests}, Patch-Tests \file{07}/\file{08},
+Tests \file{10}--\file{12}) nicht eingetreten. Ausgelöst wird die Meldung dort nur an einer
+Stelle, und zwar absichtlich: der Regressionsfall in \file{06\_active\_set\_pdass} stellt genau
+diese Konstellation her -- ein auf ``alles inaktiv'' eingefrorenes Increment, das nachträglich
+eine Durchdringung erhält -- und prüft, dass der Constraint sie beim nächsten Increment auch
+benennt.
 
 \medskip
 \noindent\textbf{Reichweite dieser Prüfung.} Sie ist an den Wechsel des Increment-Schlüssels
@@ -2147,8 +2172,8 @@ direkt (\file{10\_signorini\_check}); das ist die Aussage, die nicht von der His
 Die drei Abbruchgründe sind nicht gleichwertig: nur das PDASS-Kriterium bestätigt, dass das Set sich
 gesetzt hat; die Anti-Cycling-Regel bricht einen nachgewiesenen Zyklus ab, und die Obergrenze bricht
 eine noch laufende Suche ab. Über die \file{Control\_Tests}-Reihe und die Patch-Tests ($251$
-Inkremente, gezählt über \file{Control\_Tests/final\_report.py} und die Patch-Tests
-\file{07}/\file{08}) friert das Set ausschließlich über das PDASS-Kriterium ein ($111$ Fälle), weder über
+Inkremente, gezählt über einen instrumentierten Lauf von \file{Control\_Tests/final\_report.py}
+und den Patch-Tests \file{07}/\file{08}) friert das Set ausschließlich über das PDASS-Kriterium ein ($111$ Fälle), weder über
 die Anti-Cycling-Regel noch über die Obergrenze; die höchste auftretende Iterationszahl beträgt
 $11$ bei einer Schranke von $20$. Im Ausziehversuch (Abschnitt~\ref{sec:testbeispiel}) greift die
 Obergrenze dagegen in $3{,}5\,\%$ (hex8) bzw.\ $4{,}6\,\%$ der Inkremente (hex20) bei bis zu $26$
@@ -2275,8 +2300,8 @@ Bereichs integriert zu einem Wert, der bis auf Rundung null ist, und ob der bei 
 $-10^{-19}$ landet, sagt nichts. Gemeldet werden deshalb nur \emph{relevante} negative Gewichte,
 nämlich $\tilde D_{jj} < -10^{-6}\max_k|\tilde D_{kk}|$. Die Schranke trennt die beiden Fälle um
 Größenordnungen: die real auftretenden negativen Gewichte reichen von $-0{,}031$ (CONQUAD9 bei
-$70\,\%$ Überdeckung, \file{06\_active\_set\_pdass}) bis $-0{,}18$ (Sliver-Rückfall, Hertz-hex20)
-relativ zum größten Gewicht.
+$70\,\%$ Überdeckung, \file{06\_active\_set\_pdass}) bis $-0{,}60$ (Sliver-Rückfall,
+\file{hertz\_hex20\_medium}) relativ zum größten Gewicht.
 
 \paragraph{Reichweite der Vorzeichenbehandlung.}
 Sie stellt die Vorzeichen richtig, sie macht $\tilde D_{jj}<0$ aber nicht ungeschehen. Der
@@ -2304,10 +2329,12 @@ Knoten stimmt $\tilde D_{jj}$ mit dem Vollflächengewicht
 $A_j=\int_{\text{ele}}\tilde N_j$ überein, und $\lambda_j$ ist dort der mittlere Kontaktdruck über
 den Knotenträger. Schrumpft die Überdeckung, so schrumpft $\tilde D_{jj}$ mit, während
 $f_{n,j}$ endlich bleibt: $\lambda_j$ skaliert dann mit $\tilde D_{jj}^{-1}$ und wächst über
-jede Grenze. Gemessen an der Kante einer Teilüberdeckung (\file{10\_signorini\_check}):
-$\tilde D_{jj}/\max_k\tilde D_{kk}=2{,}1\cdot10^{-2}$, $5{,}2\cdot10^{-3}$ und
-$8{,}3\cdot10^{-6}$ ergeben $\lambda_j=58$, $173$ und $8{,}2\cdot10^{4}$, während die Knotenkraft
-durchweg von der Ordnung eins bleibt.
+jede Grenze. Gemessen am Rand der Teilüberdeckung (\file{10\_signorini\_check}, Lastfall
+\code{teilkontakt}): $\tilde D_{jj}/\max_k|\tilde D_{kk}|=1{,}5\cdot10^{-4}$ (CONLINE3) und
+$2{,}7\cdot10^{-5}$ (CONLINE2) ergeben $\lambda_j=1{,}2\cdot10^{4}$ und $1{,}0\cdot10^{5}$,
+während die Knotenkraft mit $0{,}35$ bzw.\ $0{,}68$ von der Ordnung eins bleibt. Der Test weist
+solche Knoten eigens aus (Meldung ``Splitterüberdeckung'', Schwelle
+$|\tilde D_{jj}|<10^{-3}\max_k|\tilde D_{kk}|$).
 
 Das ist kein Fehler, sondern die Eigenschaft eines dualen Multiplikators über schrumpfendem
 Träger. Es heißt aber, dass $\lambda_j$ an solchen Knoten \textbf{nicht} als Kontaktdruck gelesen
@@ -2360,8 +2387,9 @@ Biorthogonalität dann nur auf dem Voll-Element, nicht auf der Überlappung.
 
 \paragraph{Häufigkeit des Rückfallpfads.}
 Über die \file{Control\_Tests}-Reihe und die Patch-Tests -- $251$ Inkremente mit $3\,989$
-ausgewerteten Slave-Elementen, gezählt über \file{Control\_Tests/final\_report.py} und die
-Patch-Tests \file{07}/\file{08}; \file{POT\_Dejori} ist nicht Teil dieser Auswertung -- wird der Pfad
+ausgewerteten Slave-Elementen, gezählt über einen instrumentierten Lauf von
+\file{Control\_Tests/final\_report.py} und den Patch-Tests \file{07}/\file{08};
+\file{POT\_Dejori} ist nicht Teil dieser Auswertung -- wird der Pfad
 viermal betreten, ausschließlich in den beiden gekrümmten Hertz-Modellen mit CONQUAD8 und dort mit
 $\mathrm{cond}(\bm M_t)$ bis $2{,}8\cdot10^{24}$. Er ist damit kein bloß theoretischer Zweig,
 sondern an gekrümmten Kontakträndern mit wandernder Kontaktzone der Normalfall.
@@ -2393,8 +2421,13 @@ $1{,}0\cdot10^{-5}$ & \textbf{ja} & $-1{,}8\cdot10^{-5}$ & $-1{,}000$ \\
 \end{center}
 
 \noindent Der Übergang ist scharf und fällt mit dem Umschalten des Rückfallpfads zusammen. In den
-Hertz-Modellen treten dadurch in $5$ von $251$ Inkrementen insgesamt $9$ Knoten mit
-$\tilde D_{jj}<0$ auf, im ungünstigsten Fall bei $-18\,\%$ des größten Gewichts. Die
+beiden hex20-Hertz-Modellen treten dadurch in $5$ ihrer zusammen $22$ Inkremente Knoten mit
+$\tilde D_{jj}<0$ auf, je Increment zwei bis vier, im ungünstigsten Fall bei $-60\,\%$ des
+größten Gewichts (\file{hertz\_hex20\_medium}: $3$ Inkremente, schlechtestes Verhältnis $-0{,}60$;
+\file{hertz\_hex20\_fine}: $2$ Inkremente, $-0{,}015$). Die vier CONQUAD4-Varianten der Reihe
+bleiben frei davon. Diese Zahlen stammen aus einem instrumentierten Lauf: die Laufzeitdiagnose
+selbst meldet je Constraint nur das \emph{erste} Auftreten und beziffert daher weder die Anzahl
+der betroffenen Increments noch das schlechteste Verhältnis. Die
 Vorzeichenbehandlung aus Abschnitt~\ref{sec:sgnd} deckt diesen Fall ab, sodass die Lösungen
 gültig bleiben; negative Knotengewichte sind damit aber keine Eigenheit des CONQUAD9, sondern
 eine Eigenschaft jeder Sliver-Zelle unabhängig vom Elementtyp. Die Konditionsschranke $10^{12}$
@@ -2417,7 +2450,7 @@ Ein rein geometrisch skaliertes Randwertproblem -- Längen und vorgeschriebene V
 $k$ multipliziert, $E$ unverändert -- besitzt dieselben Dehnungen, Spannungen und Kontaktdrücke;
 nur die Verschiebungen skalieren mit $k$. Test~11 rechnet das Zwei-Block-Problem für
 $k\in\{10^{-3},1,10^{3}\}$ und bestätigt diese Invarianz: Spannungen und Multiplikatoren stimmen
-über die drei Skalen bis $10^{-13}$ überein. Für $k=10^{-3}$ übersteigt der Suchrand die
+über die drei Skalen bis $10^{-12}$ überein. Für $k=10^{-3}$ übersteigt der Suchrand die
 Facettengröße um den Faktor $200$; die BVH-Anfrage liefert dann nahezu alle Masterfacetten zurück
 und die Nachbarsuche entartet zur vollständigen Paarung mit $\mathcal O(n^2)$ Kandidatenpaaren. Die
 Konstante bestimmt also den Aufwand, nicht das Ergebnis.
@@ -2427,14 +2460,19 @@ Rechenpfad zu trennen, denn 2D und 3D benutzen unterschiedliche Schnittroutinen:
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{lllX}
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{5.6cm}>{\raggedright\arraybackslash}p{2.4cm}lX}
 \toprule
 Toleranz & Einheit & Pfad & geprüft durch \\
 \midrule
 Suchmarge $\max(0{,}15\,L,\,0{,}1)$ & Länge & 2D+3D & Test~11 (beide Varianten) \\
-\code{tol} $=10^{-12}$ in \code{map\_2d\_to\_natural} & Länge & 2D+3D & Test~11 (beide Varianten) \\
+\code{tol} $=10^{-12}$ in \code{map\_2d\_to\_natural} & Länge (Residuum), sonst dimensionslos & 2D+3D & Test~11 (beide Varianten) \\
 $-10^{-12}$ in \code{inside()} (Kreuzprodukt) & \textbf{Fläche} & \textbf{nur 3D} & 3D-Variante von Test~11 \\
 \code{area\_jac} $<10^{-14}$ & \textbf{Fläche} & \textbf{nur 3D} & 3D-Variante von Test~11 \\
+$10^{-14}$ in \code{is\_convex\_polygon} & \textbf{Fläche} & \textbf{nur 3D} & 3D-Variante von Test~11 \\
+$\|\bm n_f\|<10^{-14}$ (entartete Sub-Zelle) & \textbf{Fläche} & \textbf{nur 3D} & 3D-Variante von Test~11 \\
+$L_{\text{slave}}<10^{-14}$ und Überlappung $<10^{-12}$ in \code{clip\_1d\_segments} & Länge & \textbf{nur 2D} & 2D-Variante von Test~11 \\
+$\|\sum_f \bm n_f\|<10^{-14}$ in \code{compute\_normals} & Fläche (3D), Länge (2D) & 2D+3D & Test~11 (beide Varianten) \\
+$|\tilde D_{jj}|\le10^{-30}$ (Division im Indikator) & Fläche & 2D+3D & Test~11 (beide Varianten) \\
 $|D_{jk}|>10^{-14}$ (Besetzungsmuster) & Fläche & 2D+3D & Test~11 (beide Varianten) \\
 \bottomrule
 \end{tabularx}
@@ -2665,18 +2703,56 @@ Verwechslung von Slave- und Masterfläche (siehe oben). \\
 \noindent Die Ausgabe erfolgt über \code{warnings.warn} und nicht über das \code{Journal} des
 Rahmenwerks, da die Constraint-Schnittstelle den Constraints kein \code{Journal}-Objekt übergibt.
 
-Hinzu kommen zwei \emph{informative} Meldungen, die keine Voraussetzung verletzen, sondern eine
+\paragraph{Was \emph{nicht} gemeldet wird.} Zwei Rückfälle in der Segmentierung laufen stumm, und
+das gehört zur Aufzählung, weil sonst der Eindruck entstünde, jede Entartung sei sichtbar:
+\begin{itemize}\itemsep2pt
+  \item Eine \textbf{entartete Sub-Zelle} wird übersprungen -- in 3D bei verschwindender
+        Facettennormale ($\|\bm n_f\|<10^{-14}$, \code{compute\_mortar\_coupling\_matrices}), in
+        2D bei verschwindender Sub-Zellen-Länge ($<10^{-14}$, \code{clip\_1d\_segments}). Ihr
+        Beitrag zu $\bm D$ und $\bm M$ entfällt damit ohne Hinweis. Ebenso werden
+        Integrationsdreiecke mit $J_c<10^{-14}$ und 1D-Überlappungen unter $10^{-12}$ verworfen.
+        Das ist für echte Splitterzellen gewollt (ihr Beitrag ist ohnehin null), setzt aber
+        voraus, dass die verworfene Fläche tatsächlich verschwindet -- eine Annahme über die
+        Netzqualität, keine geprüfte Eigenschaft.
+  \item Im Clipping fängt \code{sutherland\_hodgman\_clip} den Fall \textbf{exakt paralleler
+        Kanten} (Determinante genau null bei unterschiedlich klassifizierten Endpunkten) durch
+        Rückgriff auf den kreuzenden Eckpunkt ab. Das hält das Polygon geschlossen und
+        degeneriert die entstehende Splitterzelle auf null Fläche, die der Aufrufer verwirft;
+        ohne diesen Zweig entstünden \code{inf}/\code{NaN} und verdürben die ganze Zelle.
+\end{itemize}
+
+\medskip
+\noindent Hinzu kommen zwei \emph{informative} Meldungen, die keine Voraussetzung verletzen, sondern eine
 Voreinstellung offenlegen: der aus den angrenzenden Materialien abgeleitete Wert von $c_n$
 (Abschnitt~\ref{sec:ncp}) beziehungsweise der Hinweis, dass er sich nicht ableiten ließ und ein
 Rückfallwert verwendet wird.
 
 \paragraph{Was tatsächlich anspricht.}
-Über die Testreihe hinweg meldet sich das negative Knotengewicht im Regressionsfall von
-\file{06\_active\_set\_pdass}, der eben diese Konfiguration erzeugt, sowie -- auf den Hertz-Modellen
-mit CONQUAD8 -- Sliver-Rückfall und negatives Knotengewicht gemeinsam, was den in
-Abschnitt~\ref{sec:sliver} beschriebenen Zusammenhang bestätigt. Auf den Modellen mit CONQUAD4
-bleiben beide stumm: dort ist die Basistransformation die Identität und die bilinearen
-Formfunktionen sind punktweise nichtnegativ, sodass $\tilde D_{jj}>0$ auch bei Teilüberdeckung gilt.
+Über die Testreihe hinweg melden sich vier der zehn Zustände, und zwar jeder dort, wo er soll:
+
+\begin{itemize}\itemsep2pt
+  \item \textbf{negatives Knotengewicht} und \textbf{Selbstprüfung des Active Sets} in den beiden
+        Regressionsfällen von \file{06\_active\_set\_pdass}, die eben diese Konfigurationen
+        herstellen (teilüberdecktes CONQUAD9 bzw.\ ein eingefrorenes Set, das nachträglich eine
+        Durchdringung erhält);
+  \item \textbf{nicht-konvexe Slave-Sub-Zelle} und \textbf{Sliver-Rückfall} in
+        \file{05\_quadratic\_segmentation}, das die zugehörigen Schwellen vermisst und die
+        Meldungen dabei als Teil der Prüfung abfängt;
+  \item \textbf{Sliver-Rückfall und negatives Knotengewicht gemeinsam} -- im Lastfall
+        \code{teilkontakt} von \file{10\_signorini\_check} (CONLINE2/3 am Rand der Überdeckung,
+        $\mathrm{cond}(\bm M_t)=3{,}7\cdot10^{13}$, ein Knoten bei $-7{,}1\cdot10^{-3}$ des
+        größten Gewichts) und auf den beiden hex20-Hertz-Modellen der \file{Control\_Tests}. Das
+        bestätigt den in Abschnitt~\ref{sec:sliver} beschriebenen Zusammenhang zweimal
+        unabhängig, in 2D und in 3D.
+\end{itemize}
+
+\noindent Die übrigen sechs Zustände treten über die gesamte Reihe nicht auf: Obergrenze der
+Active-Set-Iteration, fehlgeschlagene Rückabbildung, verschwindende Knotennormale, nicht-konvexe
+Master-Sub-Zelle und die beiden Orientierungsprüfungen. Die Modelle mit \emph{CONQUAD4}
+(Patch-Tests, Zwei-Block-Reihe, hex8-Hertz) bleiben von negativen Knotengewichten frei: dort ist
+die Basistransformation die Identität und die bilinearen Formfunktionen sind punktweise
+nichtnegativ, sodass $\tilde D_{jj}>0$ auch bei Teilüberdeckung gilt -- solange der Rückfallpfad
+nicht greift, der diese Zusage für jeden Elementtyp aufhebt.
 
 Auf dem Ausziehversuch (Abschnitt~\ref{sec:testbeispiel}, CONQUAD4) spricht als einzige Diagnose
 die Selbstprüfung des Active Sets an, und zwar auf allen sechs Kontaktpaaren an je einem bis zwei
@@ -2713,7 +2789,7 @@ Eigenschaft & Prüfung \\
 \textbf{Quadratische Segmentierung} & Sub-Cell-Zerlegung + Segmentquadratur für CONQUAD8/9, CONTRI6; Schwellen der Sub-Cell-Konvexität und Übergang zum Rückfallpfad samt Vorzeichenwechsel von $\tilde D_{jj}$ (\file{05\_quadratic\_segmentation}). \\
 \textbf{Active-Set / PDASS} & Aktivierung bei Durchdringung, Freeze/Anti-Cycling sowie Vorzeichenbehandlung bei negativem Knotengewicht (\file{06\_active\_set\_pdass}). \\
 \textbf{Patch-Test 2D} & Bausteine \emph{und} Löser-Patch-Test: CPE4/CONLINE2 und CPE8/CONLINE3, je konform und nichtkonform (\file{07\_patch\_test\_2d}). \\
-\textbf{Patch-Test hex20} & 3D-Patch-Test mit CONQUAD8, vier Netz-/Ordnungskombinationen mit geraden Kanten plus eine verzerrte Variante (\file{08\_patch\_test\_hex20}). \\
+\textbf{Patch-Test hex20} & 3D-Patch-Test, vier Netz-/Ordnungskombinationen mit geraden Kanten plus eine verzerrte Variante (\file{08\_patch\_test\_hex20}). Gepaart werden CONQUAD8/CONQUAD8 (passend und nichtpassend) sowie beide gemischten Ordnungen, CONQUAD8-Slave gegen CONQUAD4-Master und umgekehrt. \\
 \textbf{Konsistente Tangente} & $\bm K$ gegen zentrale Differenzen des Residuums, alle Freiheitsgrade, beide NCP-Zweige (\file{09\_consistent\_tangent}). \\
 \textbf{Signorini-Bedingungen} & Nachprüfung der \emph{konvergierten} Lösung: $p_n\ge0$, $g_{\text{sep}}\ge0$, $p_n\,g_{\text{sep}}=0$ je Slave-Knoten, in Lastfällen mit arbeitendem Active Set, in 2D und 3D; zusätzlich der physikalische Spalt an neu ausgewerteter Geometrie (\file{10\_signorini\_check}). \\
 \textbf{Staffelungsfehler} & Fehler der eingefrorenen Geometrie über die Schrittweite, an einem gekrümmten Indenter mit $N=1\ldots16$ Increments gegen einen Referenzlauf; Schätzung der Konvergenzordnung (\file{12\_increment\_size}). \\
@@ -2727,7 +2803,7 @@ Eigenschaft & Prüfung \\
   \item \textbf{Kontakt-Patch-Test, gerade Kanten: maschinengenau.} In 2D (CPE4/CONLINE2,
         CPE8/CONLINE3) und 3D (hex20/hex20, hex20-Slave/hex8-Master, hex8-Slave/hex20-Master),
         konform \emph{und} nichtkonform. Gemessen: Verschiebungsfehler $10^{-17}\ldots10^{-14}$,
-        Abweichung der Multiplikatoren von $p$ bei $10^{-15}\ldots10^{-13}$. Das bestätigt
+        Abweichung der Multiplikatoren von $p$ bei $10^{-15}\ldots10^{-12}$. Das bestätigt
         zugleich die Zeilensummen-Identität \eqref{eq:rowsum} und die korrekte Behandlung
         quadratischer Elemente (Basistransformation, Sub-Cells).
 
@@ -2745,7 +2821,7 @@ Eigenschaft & Prüfung \\
   \item \textbf{Tangente des eingefrorenen Residuums: exakt.} Test~09 bestätigt
         \eqref{eq:fdcheck} mit $\sim10^{-11}$ über flache, geneigte und gekrümmte Interfaces.
         Derselbe Test misst auch die \emph{weggelassenen} geometrischen Terme
-        ($0{,}27\ldots2{,}0$ von $\max|\bm K|$) -- siehe Abschnitt~\ref{sec:frozen}.
+        ($0{,}27\ldots1{,}17$ von $\max|\bm K|$) -- siehe Abschnitt~\ref{sec:frozen}.
   \item \textbf{Vorzeichen bei negativem Knotengewicht.} Ein CONQUAD9 mit $70\,\%$ Überdeckung
         erzeugt drei Knoten mit $\tilde D_{jj}<0$ (bis $-0{,}0109$). Der Regressionstest in
         \file{06\_active\_set\_pdass} prüft, dass diese Knoten bei $\lambda_j=0$ und einer Öffnung
@@ -2766,7 +2842,10 @@ Eigenschaft & Prüfung \\
         damit für jede Eingabe erfüllt.
   \item \textbf{Signorini-Bedingungen, zweifach ausgewertet.} Die Bedingungen $p_n\ge0$,
         $g_{\text{sep}}\ge0$ und $p_n g_{\text{sep}}=0$ werden je Slave-Knoten geprüft, in 2D wie
-        in 3D und in Lastfällen mit Teilkontakt, Abheben und voller Überdeckung. Beide
+        in 3D und in Lastfällen mit Teilkontakt, Abheben und voller Überdeckung; in 2D kommt der
+        eigentliche Active-Set-Lastfall hinzu, die verkippte Oberseitenverschiebung
+        (\code{schief}), bei der links geschlossene und rechts offene Knoten im \emph{selben}
+        Increment auftreten. Beide
         Knotenklassen -- offen bei vorhandenem Gegenüber und geschlossen -- kommen dabei vor,
         andernfalls prüfte die Reihe das Active Set nicht.
 
@@ -2777,7 +2856,7 @@ Eigenschaft & Prüfung \\
         sehen, weil er gerade in diesen Größen steckt. Die zweite Auswertung rechnet
         $\bm D,\bm M,\bm n_j$ deshalb an der \emph{konvergierten} Konfiguration neu und misst den
         physikalisch verbliebenen Spalt. Bei einer Schrittweite von $\Delta t\le0{,}1$ verbleiben
-        höchstens $1{,}1\cdot10^{-4}$ der aufgebrachten Verschiebung an Durchdringung, im
+        höchstens $6{,}0\cdot10^{-5}$ der aufgebrachten Verschiebung an Durchdringung, im
         3D-Zweig um mehrere Größenordnungen weniger.
   \item \textbf{Fehler der eingefrorenen Geometrie: Ordnung $1{,}12$.} An einem gekrümmten
         Indenter fällt der relative $L_2$-Fehler des Verschiebungsfeldes von $4{,}18\cdot10^{-3}$
@@ -2836,7 +2915,7 @@ Oberseite um $u_y=-0{,}02$ verschoben; dieselbe Lösung wie 02, aber ohne Krafts
 & rel.\ $L_2(\bm u)$ & $2{,}0\cdot10^{-13}$ \\[2pt]
 04 Abheben unter Zug &
 Oberseite um $+0{,}02$ \emph{gezogen}. Ein unilateraler Kontakt muss loslassen:
-$\lambda_j\to0$, $\sigma\to0$, unterer Block in Ruhe. & $\max|\lambda_j|$ & $8{,}5\cdot10^{-13}$ \\[2pt]
+$\lambda_j\to0$, $\sigma\to0$, unterer Block in Ruhe. & $\max|\lambda_j|$ & $5{,}4\cdot10^{-12}$ \\[2pt]
 05 Tangentiales Gleiten &
 Gleichzeitig gedrückt ($u_y=-0{,}02$) und seitlich geschoben ($u_x=+0{,}01$). Reibungsfrei:
 $\sigma_{yy}=-10$ bleibt, $\sigma_{xy}=0$, unterer Block wird nicht mitgeschleppt.
@@ -3147,7 +3226,7 @@ Der nächste substanzielle Entwicklungsschritt ist die \emph{konsistente Lineari
 Kontaktbeitrags. Wie in Abschnitt~\ref{sec:frozen} gezeigt, ist die assemblierte Tangente exakt
 für das Residuum bei eingefrorener Geometrie, enthält aber die Ableitungen der Geometrie selbst
 nicht -- $\partial\bm D/\partial\bm x$, $\partial\bm M/\partial\bm x$ und
-$\partial\bm n_j/\partial\bm x$ --, und diese Terme sind mit $0{,}27\ldots2{,}0$ von
+$\partial\bm n_j/\partial\bm x$ --, und diese Terme sind mit $0{,}27\ldots1{,}17$ von
 $\max|\bm K|$ nicht klein.
 
 Sie zu ergänzen ist kein Zusatzterm, sondern erfordert Ableitungen entlang der \emph{gesamten}
@@ -3238,8 +3317,9 @@ Staffelungsfehler. Nach jeder Stufe steht damit fest, wie viel sie gebracht hat.
 
 \noindent Als Abnahmekriterium eignet sich unmittelbar Test~09: Teil~2 dieses Tests differenziert
 das Residuum mit bei jeder Störung \emph{neu berechneter} Geometrie und weist die Abweichung
-gegenüber $\bm K$ aus. Sie beträgt heute $0{,}27\ldots2{,}0$ und müsste nach Stufe~(IV) auf das
-Niveau von Teil~1 fallen, also auf etwa $10^{-8}$. Solange sie das nicht tut, fehlt ein Term --
+gegenüber $\bm K$ aus. Sie beträgt heute $0{,}27\ldots1{,}17$ und müsste nach Stufe~(IV) auf das
+Niveau von Teil~1 fallen, also auf $\sim\!10^{-11}$ (die Bestehensschranke des Tests liegt bei
+$10^{-8}$). Solange sie das nicht tut, fehlt ein Term --
 ein Kriterium, das kein Ermessen zulässt.
 
 \paragraph{Abgrenzung: was die Linearisierung nicht leistet.}
@@ -3471,10 +3551,12 @@ Bedeutung und Begründung stehen in Abschnitt~\ref{sec:ncp}.
 
 Der Mortar-Kontakt basiert auf expliziten Overlay-Kontaktelementen (\code{CONLINE2/3} in 2D bzw.\
 \code{CONQUAD4/8/9}, \code{CONTRI3/6} in 3D). Beim Erzeugen aus Abaqus/Cubit-Netzen mit
-\code{prepare\_mortar\_mesh.py} gilt:
+\file{testfiles/mortar\_tests/POT\_Dejori/prepare\_mortar\_mesh.py} -- einem Konverter des
+Anwendungsfalls, nicht einem Werkzeug des Rahmenwerks -- gilt:
 \begin{itemize}
     \item \textbf{Normalenorientierung:} Elementnormalen müssen aus dem Kontinuumskörper nach außen
-          weisen (\code{prepare\_mortar\_mesh.py} stellt dies automatisch sicher). Der Constraint
+          weisen (der Konverter stellt dies über die festen Abaqus-Flächenknotenlisten sicher).
+          Der Constraint
           prüft zusätzlich zur Laufzeit, ob die Facetten einer Fläche einheitlich umlaufen und ob
           die Slave-Normalen überhaupt zur Masterfläche zeigen
           (Abschnitt~\ref{sec:implnotes}).

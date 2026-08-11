@@ -35,8 +35,11 @@ linearisierte Sub-Zellen-Segmentierung das Integrationsgebiet nur stückweise
 linear (Farah 2018, App. A.1.4: "This approach only affects the integration
 domain itself, which is less accurate in terms of geometry") - der Patch-Test
 gilt dort nur näherungsweise, konvergiert aber mit Netzverfeinerung optimal
-(Farah 2018, App. A.2.2). Bei 5% Verzerrungsamplitude beträgt der beobachtete
-Fehler ~0.4%; die Toleranz ist entsprechend gesetzt.
+(Farah 2018, App. A.2.2). Bei 5% Verzerrungsamplitude weicht der Kontaktdruck
+punktuell um 14.3% vom Sollwert ab (Toleranz 20%), das Verschiebungsfeld um
+8.3e-5 (Toleranz 2e-4); die physikalisch maßgebliche GESAMTKRAFT bleibt mit
+3.2e-5 relativ genau (Toleranz 1e-3). Die drei Toleranzen sind entsprechend
+gestaffelt: punktweise Multiplikatoren grob, Gesamtkraft scharf.
 
 Kontrollen je Variante (die Belastungsrichtung ist y, nicht z):
   - max|u_x|, max|u_z| ~ 0  (quer zur Belastung, per Dirichlet gehalten)

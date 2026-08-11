@@ -100,11 +100,11 @@ RTOL_G = 1e-7
 #
 # Der Wert ist deshalb KEINE Eigenschaft der Formulierung, sondern eine Schranke
 # fuer die hier verwendete Schrittweite (maxInc = 0.1, also rund zehn Increments).
-# Gemessen wird ueber die Lastfaelle hinweg maximal etwa 1.1e-4 der aufgebrachten
-# Verschiebung, im 3D-Zweig um Groessenordnungen weniger; die Schranke laesst
-# gut den Faktor vier Luft. Dass diese Groesse mit der Schrittweite faellt
-# (Ordnung ~1), misst 12_increment_size -- mit maxInc = 0.5 lagen dieselben
-# Faelle noch bei rund 9e-4.
+# Gemessen wird ueber die Lastfaelle hinweg maximal etwa 6.0e-5 der aufgebrachten
+# Verschiebung (2D-Zweig, teilkontakt_cpe8), im 3D-Zweig rund drei
+# Groessenordnungen weniger; die Schranke laesst damit etwa den Faktor acht Luft.
+# Dass diese Groesse mit der Schrittweite faellt (Ordnung ~1), misst
+# 12_increment_size.
 RTOL_G_FRESH = 5e-4
 
 

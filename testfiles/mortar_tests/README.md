@@ -66,9 +66,13 @@ Masterfläche weg).
 Dazu zwei **informative** Meldungen, die keine Voraussetzung verletzen: der aus den angrenzenden
 Materialien abgeleitete Wert von `c_n`, bzw. der Hinweis, dass er sich nicht ableiten ließ.
 
-Über die Testreihe hinweg sprechen sie nur dort an, wo sie sollen — auf den Hertz-Modellen mit
-CONQUAD8 (Sliver + negatives Gewicht) und in den beiden Regressionsfällen von
-`06_active_set_pdass`. Auf dem Ausziehversuch (`POT_Dejori`, CONQUAD4) meldet sich als einzige
+Über die Testreihe hinweg sprechen vier davon an, jeder dort, wo er soll: Sliver-Rückfall und
+negatives Knotengewicht gemeinsam auf den beiden hex20-Hertz-Modellen **und** im Lastfall
+`teilkontakt` von `10_signorini_check` (CONLINE2/3 am Rand der Überdeckung); negatives
+Knotengewicht und Active-Set-Selbstprüfung in den beiden Regressionsfällen von
+`06_active_set_pdass`; nicht-konvexe Slave-Sub-Zelle und Sliver-Rückfall in
+`05_quadratic_segmentation`, das genau diese Schwellen vermisst. Die übrigen sechs treten nicht
+auf. Auf dem Ausziehversuch (`POT_Dejori`, CONQUAD4) meldet sich als einzige
 Diagnose die Active-Set-Selbstprüfung, auf allen sechs Kontaktpaaren an je einem bis zwei Knoten.
 Was sie jeweils bedeuten, steht in der Doku, Abschnitt „Eingabeprüfungen und Laufzeitdiagnosen".
 
