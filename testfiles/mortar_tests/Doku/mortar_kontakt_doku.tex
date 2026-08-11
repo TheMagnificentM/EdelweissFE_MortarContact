@@ -2788,11 +2788,197 @@ Eigenschaft & Prüfung \\
         Referenzelement-Rückfall liegt zwischen $1\,\%$ und $0{,}1\,\%$ Überdeckung und fällt mit
         dem Vorzeichenwechsel von $\tilde D_{jj}$ zusammen (Abschnitt~\ref{sec:sliver}); die dort
         angegebenen Werte sind als Regressionsfall festgehalten.
-  \item \textbf{Zwei-Block-Referenztests} (\file{Control\_Tests/README.md}): verschiebungs- und
-        lastgesteuerte Blöcke, konform und nichtkonform, mit Abgleich von Verschiebungsfeld,
-        Spannungen und Kontaktbedingungen; dort sind auch die beobachteten Grenzen des
-        Konvergenzverhaltens dokumentiert.
+  \item \textbf{Zwei-Block-Referenzreihe und Hertz-Kontakt}
+        (\file{Control\_Tests}): verschiebungs- und lastgesteuerte Blöcke, konform und
+        nichtkonform, mit Abgleich von Verschiebungsfeld, Spannungen und Kontaktbedingungen gegen
+        geschlossene Lösungen, dazu der Hertz'sche Kontakt als analytischer Benchmark. Wegen ihres
+        Umfangs im eigenen Abschnitt~\ref{sec:controltests}.
 \end{itemize}
+
+% ---------------------------------------------------------------------
+\subsection{Zwei-Block-Referenzreihe und Hertz-Kontakt}
+\label{sec:controltests}
+
+Die bis hierher beschriebenen Prüfungen zerlegen die Formulierung in ihre Bausteine oder setzen
+einen homogenen Spannungszustand voraus. Die Reihe unter \file{Control\_Tests} tut beides nicht:
+sie belastet ein vollständiges Zwei-Körper-Modell auf verschiedene Weisen und vergleicht das
+Ergebnis mit einer \emph{geschlossenen} Lösung. Damit prüft sie Eigenschaften, die ein Patch-Test
+prinzipiell nicht sehen kann -- ob der Kontakt unter Zug loslässt, ob er tangential klemmt, ob er
+einen Steifigkeitssprung richtig überträgt -- und schließlich, an einer gekrümmten Fläche, wie gut
+er eine nichttriviale Druckverteilung trifft.
+
+\paragraph{Aufbau.} Grundmodell sind zwei aufeinanderstehende Einheitswürfel, der untere die
+Slave-Seite. Jeder Testfall wird in \textbf{sechs} Varianten gerechnet: drei Elementtypen
+(\code{hex8}, \code{hex20}, \code{hex20R}) mal zwei Netze -- \emph{passend} (Knoten treffen
+aufeinander) und \emph{nichtpassend} (Slave $3\times3$ gegen Master $4\times4$, also der eigentlich
+interessante Fall). Sieben Testfälle ergeben so $42$ Läufe, dazu vier Netze des Hertz-Modells,
+insgesamt $46$. Erzeugt wird alles von \file{Control\_Tests/final\_report.py}; die Rohwerte stehen
+in \file{final\_gp\_table.csv} (je Gauß-Punkt) und \file{final\_contact\_table.csv} (je
+Slave-Knoten).
+
+\paragraph{Die sieben Testfälle und was sie ergeben.}
+Angegeben ist jeweils der \emph{ungünstigste} Wert über alle sechs Varianten.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lXll@{}}
+\toprule
+Testfall & Was er prüft, und die exakte Lösung & Kennzahl & Ergebnis \\
+\midrule
+01 Eigengewicht &
+Volumenlast $b=10$; linear veränderliche Spannung $\sigma_{yy}(y)=-b(2-y)$, am Interface $-10$.
+Kraftgesteuert. & rel.\ $L_2(\bm u)$ & $7{,}0\cdot10^{-7}$ \\[2pt]
+02 Druck von oben &
+Konstanter Druck $p=10$ auf die Oberseite; $\sigma_{yy}=-10$, $u_y=-0{,}01\,y$. Kraftgesteuert.
+& rel.\ $L_2(\bm u)$ & $8{,}3\cdot10^{-7}$ \\[2pt]
+03 Wegsteuerung &
+Oberseite um $u_y=-0{,}02$ verschoben; dieselbe Lösung wie 02, aber ohne Kraftsteuerung.
+& rel.\ $L_2(\bm u)$ & $2{,}0\cdot10^{-13}$ \\[2pt]
+04 Abheben unter Zug &
+Oberseite um $+0{,}02$ \emph{gezogen}. Ein unilateraler Kontakt muss loslassen:
+$\lambda_j\to0$, $\sigma\to0$, unterer Block in Ruhe. & $\max|\lambda_j|$ & $8{,}5\cdot10^{-13}$ \\[2pt]
+05 Tangentiales Gleiten &
+Gleichzeitig gedrückt ($u_y=-0{,}02$) und seitlich geschoben ($u_x=+0{,}01$). Reibungsfrei:
+$\sigma_{yy}=-10$ bleibt, $\sigma_{xy}=0$, unterer Block wird nicht mitgeschleppt.
+& $\max|\sigma_{xy}|$ & $1{,}4\cdot10^{-11}$ \\[2pt]
+06 Schiefes Interface &
+Geometrie um $30^\circ$ gedreht, dann axial gedrückt: prüft die Knotennormalen auf einer nicht
+achsparallelen Fläche. & rel.\ $L_2(\bm u)$ & $1{,}3\cdot10^{-9}$ \\[2pt]
+07 Steifigkeitskontrast &
+Zwei elastische Körper mit $E_A=1\,000$ (Slave) und $E_B=100\,000$. Reihenschaltung:
+$\sigma_{yy}=-19{,}80198$, $u_y$ stückweise linear. & rel.\ $L_2(\bm u)$ & $1{,}6\cdot10^{-13}$ \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent Alle $42$ Läufe konvergieren, und in allen ist das Kontakt-Urteil des Reports
+\code{ok}: der Druck trägt an jedem Slave-Knoten dasselbe (positive) Vorzeichen, sein
+gewichtetes Mittel trifft den Sollwert, und die Streuung von Knoten zu Knoten liegt bei
+$\sim\!10^{-6}$ -- der Kontaktdruck \emph{springt in keinem Fall}. Vier Punkte sind daran
+bemerkenswert:
+
+\begin{itemize}\itemsep2pt
+  \item \textbf{Weggesteuert ist die Reihe maschinengenau} ($10^{-13}\ldots10^{-16}$), und zwar
+        auf passenden wie auf nichtpassenden Netzen und für alle drei Elementtypen. Das ist der
+        sauberste Nachweis, dass die Übertragung selbst exakt ist.
+  \item \textbf{Kraftgesteuert bleibt ein Rest von $\sim\!10^{-7}$}, und der stammt \emph{nicht}
+        vom Kontakt: die Tests 01 und 02 halten das System nur über eine minimale Feder in
+        $y$-Richtung, weil zwei rein kraftbelastete Blöcke sonst eine Starrkörperbewegung
+        besitzen. Diese Feder bestimmt den Restfehler; die Größenordnung ist genau ihre
+        Nachgiebigkeit. Der Nachweis dafür ist die Wegsteuerung (03), die dasselbe
+        Randwertproblem ohne Feder löst und $10^{-13}$ erreicht.
+  \item \textbf{Die Elementordnung ändert die Systemsteifigkeit nicht.} Für 02, 03 und 07 gibt der
+        Report die effektive Steifigkeit aus: $k_{\text{eff}}=500{,}0$ (bzw.\ $990{,}1$ beim
+        Steifigkeitskontrast) für \code{hex8}, \code{hex20} und \code{hex20R} -- identisch bis auf
+        die angegebenen Stellen, ebenso die Reaktionskraft ($10{,}000$ bzw.\ $19{,}802$). Auf
+        sauberer Geometrie ist also kein Elementtyp steifer als ein anderer; ein
+        Steifigkeitsunterschied zwischen hex8 und hex20 in einem Anwendungsmodell hat folglich
+        eine andere Ursache als den Kontakt.
+  \item \textbf{Die drei Verhaltenstests bestätigen die NCP-Zweige einzeln.} Test 04 zeigt den
+        inaktiven Zweig (der Kontakt ist ein echter unilateraler Kontakt und keine Verklebung),
+        Test 05 zeigt, dass die Bindung ausschließlich normal wirkt -- der Schub bleibt bei
+        $10^{-11}$ und der untere Block bewegt sich um $\le9\cdot10^{-16}$ --, und Test 06 prüft
+        die Knotennormalen an einer geneigten Fläche gegen die exakte gedrehte Lösung. Test 06
+        ist zugleich der einzige Fall der ganzen Reihe, in dem der Kontakt \emph{nicht}
+        achsparallel liegt.
+\end{itemize}
+
+\noindent \textbf{Bewertung.} Für die Zwei-Block-Reihe bestätigen die Ergebnisse die
+Implementierung ohne Einschränkung: wo eine exakte Lösung existiert und die Diskretisierung sie
+darstellen kann (Wegsteuerung, Steifigkeitskontrast), wird sie in Maschinengenauigkeit erreicht;
+wo sie es nicht kann (Kraftsteuerung mit Stabilisierungsfeder), ist die Abweichung auf eine
+benannte, kontakt-fremde Ursache zurückgeführt. Offene Punkte bleiben in dieser Reihe keine.
+
+\paragraph{Hertz'scher Kontakt.}
+Der achte Testfall verlässt die ebene Kontaktfläche. Ein parabolisch gekrümmter Indenter wird
+verschiebungsgesteuert auf einen ebenen Block gedrückt (dünne Scheibe mit $z$-Fixierung, also
+ebener Verzerrungszustand; Halbmodell mit Symmetrie bei $x=0$). Verglichen wird die berechnete
+Druckverteilung mit der Hertz'schen Lösung
+\begin{equation}
+p(x) = p_0\sqrt{1-(x/a)^2},
+\qquad
+a = \sqrt{\frac{4P'R}{\pi E^\ast}},
+\qquad
+p_0 = \frac{2P'}{\pi a},
+\qquad
+\frac{1}{E^\ast} = \frac{1-\nu_1^2}{E_1}+\frac{1-\nu_2^2}{E_2},
+\label{eq:hertz}
+\end{equation}
+wobei die Linienlast $P'$ aus der berechneten Reaktion genommen wird -- der Vergleich betrifft
+also die \emph{Verteilung} bei gegebener Gesamtlast, nicht die Last selbst.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{hertz_druckprofil.pdf}
+\caption[Hertz-Kontakt: berechnetes Druckprofil gegen die analytische Lösung]{Kontaktdruck
+$\lambda_j$ an den Slave-Knoten gegen die Hertz'sche Halbellipse \eqref{eq:hertz}, je Elementtyp
+für zwei Netzfeinheiten. \emph{Links:} lineare Elemente liefern ein \emph{glattes} Profil, dessen
+Maximum aber systematisch zu hoch liegt und mit Verfeinerung sinkt. \emph{Rechts:} quadratische
+Elemente treffen das Maximum auf $\sim\!1\,\%$, zeigen dafür die Knoten-zu-Knoten-Oszillation
+quadratischer Mortar-Kontaktdrücke, am stärksten am Rand der Kontaktzone. Die eingezeichnete
+Hertz-Kurve gehört jeweils zur feinen Variante; $p_0$ hängt über $P'$ schwach vom Netz ab.
+Erzeugt aus \file{Control\_Tests/08\_hertz/hertz\_profile\_*.csv}.}
+\label{fig:hertz}
+\end{figure}
+
+\begin{center}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Netz & $a_{\text{num}}$ / $a_{\text{Hertz}}$ & Fehler $a$ & $p_{0,\text{num}}$ / $p_{0,\text{Hertz}}$ & Fehler $p_0$ & Zickzack \\
+\midrule
+hex8, mittel  & $0{,}4094$ / $0{,}4270$ & $4{,}1\,\%$ & $11{,}379$ / $10{,}674$ & $6{,}6\,\%$ & $5{,}3\,\%$ \\
+hex8, fein    & $0{,}4243$ / $0{,}4252$ & $0{,}2\,\%$ & $11{,}082$ / $10{,}629$ & $4{,}3\,\%$ & $3{,}0\,\%$ \\
+hex20, mittel & $0{,}4434$ / $0{,}4227$ & $4{,}9\,\%$ & $10{,}675$ / $10{,}568$ & $1{,}0\,\%$ & $10{,}1\,\%$ \\
+hex20, fein   & $0{,}4358$ / $0{,}4227$ & $3{,}1\,\%$ & $10{,}673$ / $10{,}567$ & $1{,}0\,\%$ & $7{,}8\,\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Die beiden Elementordnungen irren in \emph{verschiedene} Richtungen, und das ist der
+eigentliche Befund dieses Tests:
+
+\begin{itemize}\itemsep2pt
+  \item \textbf{Linear (\code{hex8}/CONQUAD4).} Das Profil ist glatt, der Maximaldruck aber um
+        $4$--$7\,\%$ zu hoch. Ursache ist die Geometrie: lineare Facetten bilden die gekrümmte
+        Oberfläche als Polygonzug ab, die Kontaktzone wird zu schmal, und bei gleicher Gesamtkraft
+        muss der Druck darin entsprechend zu hoch ausfallen. Der Fehler sinkt mit Verfeinerung
+        ($6{,}6\to4{,}3\,\%$), also erwartungsgemäß.
+  \item \textbf{Quadratisch (\code{hex20}/CONQUAD8).} Der Maximaldruck stimmt auf $1{,}0\,\%$ --
+        die gekrümmte Facette wird über die Formfunktionsauswertung an den Gauß-Punkten
+        tatsächlich erfasst (Abschnitt~\ref{sec:subcells}). Dafür oszilliert der Druck von Knoten
+        zu Knoten um $8$--$10\,\%$. Das ist der Ecke/Mittelknoten-Effekt quadratischer
+        Mortar-Kontaktdrücke: Eck- und Mittelknoten tragen unterschiedlich gewichtete
+        Multiplikatoren (Abschnitt~\ref{sec:basistrafo}, die Gewichte $\tfrac{7}{18}$ und
+        $\tfrac29$). Im Inneren der Kontaktzone dämpft die duale Basis ihn, am Rand bleibt er, und
+        er sinkt nur langsam mit Verfeinerung ($10{,}1\to7{,}8\,\%$).
+\end{itemize}
+
+\noindent Dass die Oszillation kein \emph{Auswertungs}artefakt ist, wird eigens geprüft: der
+Report berechnet sie zweimal, einmal aus $\lambda_j$ direkt und einmal aus der über den ganzen
+Knotenträger verteilten Knotenkraft $p_{F,j}$ \eqref{eq:pforce}. Am Rand der Kontaktzone könnten
+beide Lesarten auseinanderlaufen, weil $\lambda_j$ dort mit $\tilde D_{jj}^{-1}$ skaliert
+(Abschnitt~\ref{sec:lambdadeutung}). Sie tun es nicht -- die Zickzack-Werte stimmen in beiden
+Lesarten auf drei Stellen überein (Spalten \code{zickzk\%} und \code{zz\_F\%} des Reports). Die
+Oszillation ist damit als Diskretisierungseigenschaft nachgewiesen und nicht als Artefakt der
+Auswertung. Die \emph{übertragene Gesamtkraft} ist bei beiden Elementordnungen korrekt; abweichend
+ist ausschließlich die punktweise Verteilung.
+
+\medskip
+\noindent \textbf{Bewertung.} Der Hertz-Test bestätigt die Formulierung, aber er ist -- anders als
+die Zwei-Block-Reihe -- \emph{kein} Genauigkeitsnachweis in Maschinengenauigkeit, und er kann es
+nicht sein: Hertz ist eine Halbraum-Näherung, das Modell ist endlich und uniform vernetzt (rund
+$11$ bis $22$ Elemente über die halbe Kontaktbreite), und die Kontaktzone endet zwischen zwei
+Knoten, sodass ihre Halbbreite $a$ nur bis auf einen Knotenabstand bestimmt ist -- die
+$3$--$5\,\%$ in der Spalte ``Fehler $a$'' sind im Wesentlichen genau das. Was der Test zeigt, ist
+zweierlei: erstens, dass die Größenordnungen und die Form stimmen und sich mit Verfeinerung in die
+richtige Richtung bewegen; zweitens, dass die verbleibenden Abweichungen \emph{benannte}
+Diskretisierungseffekte sind -- Facettengeometrie bei linearen, Ecke/Mittelknoten bei
+quadratischen Elementen -- und keine Anzeichen eines Fehlers in der Formulierung. Ein Restpunkt
+bleibt offen: die Knoten-zu-Knoten-Oszillation quadratischer Kontaktdrücke am Kontaktrand ist mit
+$\sim\!10\,\%$ nicht klein und konvergiert langsam. Sie ist ein Genauigkeits-, kein
+Konvergenzproblem -- alle vier Hertz-Varianten konvergieren -- und betrifft die punktweise
+Druckauswertung, nicht die übertragene Kraft.
 
 % =====================================================================
 \section{Testbeispiel: Ausziehversuch nach Dejori}
