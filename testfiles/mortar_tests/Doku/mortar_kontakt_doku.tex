@@ -156,7 +156,7 @@ Symbol & im Code & Bedeutung & Stelle \\
 \multicolumn{4}{l}{\emph{Geometrie und Kinematik}}\\
 $\gamma_c$ & --- & Kontaktfläche; Index $(1)$ Slave, $(2)$ Master & \S\ref{sec:kontinuierlich} \\
 $g_n$ & --- & punktweiser Normalspalt, $>0$ bei geöffnetem Kontakt & \eqref{eq:gap} \\
-$\bm n_j$ & \code{normals} & flächengewichtete Knotennormale des Slave-Knotens $j$ & \eqref{eq:facetnormal} \\
+$\bm n_j$ & \code{normals} & gemittelte Knotennormale des Slave-Knotens $j$ & \eqref{eq:nodalnormal} \\
 $\bm n_c,\bm p_0$ & \code{normal}, \code{p0} & Normale und Stützpunkt der Hilfsebene einer Sub-Zelle; \emph{nicht} $\bm n_j$ & \S\ref{sec:hilfsebene} \\
 $P_h$ & --- & diskrete Kontaktabbildung (Projektion Slave $\to$ Master); nie explizit gebildet & \eqref{eq:DM}, \S\ref{sec:hilfsebene} \\
 $\bm\xi$ & \code{local\_coords} & Naturkoordinaten eines Elements & \S\ref{sec:rueckabbildung} \\
@@ -488,19 +488,31 @@ Polygone -- Slave und Master -- werden in diese Ebene projiziert und dort in ebe
 dargestellt (\file{mortar\_geom\_utils.py}, \code{get\_tangent\_basis}, \code{to\_plane\_coords}).
 
 \paragraph{Welche Normale die Hilfsebene aufspannt.} Nicht die Knotennormale. Stützpunkt ist der
-Schwerpunkt der Sub-Zelle und Normale ihre \emph{eigene} Facettennormale nach
-\eqref{eq:facetnormal},
+Schwerpunkt der Sub-Zelle und Normale ihre \emph{eigene}, aus den \emph{Eck}knoten gebildete
+Facettennormale
+\begin{equation}
+\bm n_f^{\triangle} = \tfrac12(\bm v_1-\bm v_0)\times(\bm v_2-\bm v_0),
+\qquad
+\bm n_f^{\square} = \tfrac12(\bm v_2-\bm v_0)\times(\bm v_3-\bm v_1)
+\qquad (\code{facet\_normal}),
+\label{eq:facetnormal}
+\end{equation}
+die Dreiecksform für dreieckige, die Quadform (Diagonalenkreuzprodukt) für viereckige Sub-Zellen.
+Die Hilfsebene ist damit
 \begin{equation}
 \bm p_0 = \frac{1}{n_{\text{sub}}}\sum_{a\in\text{Sub-Zelle}}\bm x_a,
 \qquad
-\bm n_c = \frac{\bm n_f(\text{Sub-Zelle})}{\|\bm n_f(\text{Sub-Zelle})\|}
-\qquad (\code{facet\_normal}) .
+\bm n_c = \frac{\bm n_f(\text{Sub-Zelle})}{\|\bm n_f(\text{Sub-Zelle})\|} .
 \label{eq:auxplane}
 \end{equation}
+Da die Sub-Zellen der Segmentierung ohnehin \emph{linear} sind
+(Abschnitt~\ref{sec:subcells}), ist $\bm n_f$ dort die exakte Normale ihrer Ebene und keine
+Näherung -- anders als sie es wäre, wenn man sie auf die gekrümmte Facette als Ganzes anwendete.
+
 Die Formulierung benutzt damit \textbf{zwei verschiedene Normalendefinitionen}: $\bm n_c$ je
-Sub-Zelle für die \emph{Segmentierung} und die flächengemittelte Knotennormale $\bm n_j$
-(Abschnitt~\ref{sec:normalen}) für die \emph{Kinematik}, also für den gewichteten Spalt und die
-Kraftrichtung. Das ist kein Versehen und in der Literatur üblich -- die Wahl der Hilfsebene ist
+Sub-Zelle für die \emph{Segmentierung} und die gemittelte Knotennormale $\bm n_j$
+\eqref{eq:nodalnormal} (Abschnitt~\ref{sec:knotennormale}) für die \emph{Kinematik}, also für den
+gewichteten Spalt und die Kraftrichtung. Das ist kein Versehen und in der Literatur üblich -- die Wahl der Hilfsebene ist
 ein eigener Freiheitsgrad der segmentbasierten Integration, den \citet[Anh.~A.1.2--A.1.3]{farah}
 gesondert diskutiert --, es ist aber eine Inkonsistenz, die man kennen muss: an stark gekrümmten
 Interfaces weichen $\bm n_c$ und $\bm n_j$ voneinander ab, sodass Integrationsgebiet und
@@ -1042,7 +1054,8 @@ biorthogonal ist dort $\tilde{\bm D}$ bezüglich $\tilde{\bm N}$, während
 $\bm D=\tilde{\bm D}\bm T_e^{-\top}$ \eqref{eq:DTfaktor} Nebendiagonalterme innerhalb eines
 Elements besitzt. Der Code
 implementiert deshalb durchgehend \eqref{eq:wgap_pos} und nicht \eqref{eq:wgap_pos_diag} --
-er summiert über alle Einträge der Zeile~$j$ mit $|D_{jk}|>10^{-14}$.
+er summiert über alle Einträge der Zeile~$j$ mit $|D_{jk}|>10^{-12}\max_{ab}|D_{ab}|$
+(\code{\_nonzero\_rows}, Parameter \code{rtol}).
 
 \medskip
 \noindent\textbf{Warum schwach/nodal statt punktweise?} Der gewichtete Spalt ist ein volumetrisches
@@ -1306,8 +1319,10 @@ die \emph{ordnungsreduzierte} (bi-)lineare Multiplikatorwahl an
 Was $\alpha$ steuert, ist die \emph{Ausdehnung} des Gebiets, auf dem die Eckfunktion negativ wird:
 nach \eqref{eq:quad8diag} ist sie negativ für $t>(\alpha-\tfrac14)/(\tfrac12-\alpha)$, also ab
 $t>-\tfrac16$ bei $\alpha=\tfrac15$ und erst ab $t>\tfrac12$ bei $\alpha=\tfrac13$. Flächenmäßig
-nimmt das Negativgebiet damit $65\,\%$ des Referenzquadrats ein gegenüber $12{,}4\,\%$
-(ausgezählt auf demselben Gitter). Auch die Tiefe unterscheidet sich um mehr als eine
+nimmt das Negativgebiet damit $65\,\%$ des Referenzquadrats ein (ausgezählt auf einem Gitter)
+gegenüber exakt $12{,}5\,\%$ bei $\alpha=\tfrac13$: dort ist
+$\tilde N_{\text{Ecke}}=\tfrac{1}{12}(1-\xi)(1-\eta)\,(1-\xi-\eta)$, also negativ genau auf dem
+Dreieck $(1-\xi)+(1-\eta)<1$ der Fläche $\tfrac12$ von $4$. Auch die Tiefe unterscheidet sich um mehr als eine
 Größenordnung -- die Minima sind $-\tfrac{343}{4860}\approx-7{,}06\cdot10^{-2}$ bei $t=\tfrac29$
 gegenüber $-\tfrac{1}{324}\approx-3{,}09\cdot10^{-3}$ bei $t=\tfrac23$. Ein knotenweises Gewicht
 $\int_{\gamma_c^{\text{ovl}}}\tilde N_j$ wird deshalb erst dann negativ, wenn die Überlappung
@@ -1403,7 +1418,7 @@ $-0{,}0278$.
 Der Unterschied zum CONQUAD8 ist gradueller, nicht grundsätzlicher Natur. Auch dessen
 transformierte Eckfunktion ist bei $\alpha=\tfrac13$ nicht punktweise nichtnegativ
 (Abschnitt~\ref{sec:alphachoice}), ihr Minimum liegt aber bei $-\tfrac{1}{324}$ statt $-\tfrac18$
--- ein Faktor $40$ --, und das Negativgebiet bedeckt $12{,}4\,\%$ des Referenzquadrats statt
+-- ein Faktor $40$ --, und das Negativgebiet bedeckt exakt $12{,}5\,\%$ des Referenzquadrats statt
 $49{,}8\,\%$. Beim CONQUAD8 muss die
 Überdeckung deshalb nahezu vollständig in dieses Restgebiet fallen, damit ein Gewicht kippt; beim
 CONQUAD9 genügt bereits eine freiliegende Kante. Eine Absicherung im Sinne von
@@ -1671,56 +1686,91 @@ wird der hex20-Patch-Test exakt bestanden (Abschnitt~\ref{sec:verif}).
 \section{Knotennormalen und eingefrorene Geometrie}
 \label{sec:normalen}
 
-\subsection{Flächengewichtete Knotennormale}
+\subsection{Gemittelte Knotennormale}
+\label{sec:knotennormale}
 Der gewichtete Spalt \eqref{eq:wgap_pos} und die Projektion benötigen eine eindeutige Normale pro
-Slave-Knoten. Sie wird als \emph{flächengewichtetes Mittel} der angrenzenden Facettennormalen gebildet
-und normiert (\code{compute\_normals}):
+Slave-Knoten. Sie ist die \emph{gemittelte Knotennormale} von \citet[Gl.~(37)]{popp2010}, in
+derselben Form bei \citet[Gl.~(4.41)]{farah}: die Normale der angrenzenden Facette wird an der
+Naturkoordinate $\bm\xi_j$ \emph{dieses Knotens} ausgewertet, über die angrenzenden Facetten
+summiert und erst danach normiert (\code{compute\_normals}):
 \begin{equation}
-\bm n_j = \frac{\sum_{f\ni j}\bm n_f}{\big\|\sum_{f\ni j}\bm n_f\big\|} .
-\end{equation}
-Die Facettennormale $\bm n_f$ wird ausschließlich aus den \emph{Eck}knoten gebildet, in zwei
-Varianten je nach Facettenform:
-\begin{equation}
-\bm n_f^{\triangle} = \tfrac12(\bm v_1-\bm v_0)\times(\bm v_2-\bm v_0),
+\bm n_j = \frac{\sum_{f\ni j}\bm n_{j,f}}{\big\|\sum_{f\ni j}\bm n_{j,f}\big\|},
 \qquad
-\bm n_f^{\square} = \tfrac12(\bm v_2-\bm v_0)\times(\bm v_3-\bm v_1) .
-\label{eq:facetnormal}
+\bm n_{j,f} =
+\left.\frac{\partial\bm x}{\partial\xi}\times\frac{\partial\bm x}{\partial\eta}\right|_{\bm\xi_j}
+\quad\text{(3D)},
+\qquad
+\bm n_{j,f} = \bm R\left.\frac{\partial\bm x}{\partial\xi}\right|_{\xi_j}
+\quad\text{(2D)},
+\label{eq:nodalnormal}
 \end{equation}
-Die Dreiecksform gilt für CONTRI3/CONTRI6, die Quadform (Diagonalenkreuzprodukt) für
-CONQUAD4/8/9; beide liefern eine \emph{flächengewichtete} Normale, deren Länge der Facettenfläche
-entspricht -- daher die Gewichtung im Mittel oben. Mittelknoten gehen in $\bm n_f$ nicht ein, die
-Krümmung einer quadratischen Facette also auch nicht.
+mit $\bm R=\left[\begin{smallmatrix}0&1\\-1&0\end{smallmatrix}\right]$. Warum das wichtig ist,
+sagt \citet[Abschn.~4.4]{farah} in einem Satz: die Knotennormalen sind
+\emph{``of utmost importance \dots\ since they define the local direction in which the contact
+force acts''}. Sie gehen ausschließlich \emph{normiert} ein -- als Richtung, nicht als Gewicht.
 
-Im 2D-Fall ist $\bm n_f=[t_y,-t_x]$ mit der Sehne $\bm t=\bm x_1-\bm x_0$ zwischen den beiden
-\emph{Eck}knoten (\code{compute\_normals}, Zweig \code{dim == 2}). Bei \code{CONLINE3} ist das
-ausdrücklich nicht der letzte Knoten der Liste: die Knotenreihenfolge ist Ende--Ende--Mitte, der
-letzte Eintrag also der Kantenmittelknoten.
+\paragraph{Warum an der Knotenkoordinate und nicht je Facette.}
+Die naheliegende Alternative ist \emph{eine} Normale je Facette, gebildet aus deren Eckknoten --
+in 3D das Diagonalenkreuzprodukt $\bm n_f$ nach \eqref{eq:facetnormal}, in 2D die Eckknoten-Sehne.
+Sie ist billiger, aber sie gibt allen Knoten einer Facette \emph{dieselbe} Richtung. Auf einer
+quadratischen Facette bekommt der Kantenmittelknoten damit die Richtung seiner Ecken, und die
+Krümmung der Facette erreicht die Normale überhaupt nicht -- die quadratischen Elementtypen
+verhalten sich dann wie die linearen. Auf dem Zylinderausschnitt von Test~01 ist das mit einer
+einzigen Zahlenreihe belegt (Abschnitt~\ref{sec:verif}):
 
-Die Eckknoten-Sehne ist dabei keine Näherung, sondern exakt das gesuchte Flächengewicht. Mit
-$\bm t=\mathrm d\bm x/\mathrm d\xi$ und $\bm n=[t_y,-t_x]/\|\bm t\|$ ist $\mathrm d\gamma =
-\|\bm t\|\,\mathrm d\xi$, also
-\begin{equation}
-\int_{\text{Kante}} \bm n\,\mathrm d\gamma \;=\; \int_{-1}^{1}[t_y,-t_x]\,\mathrm d\xi
-\;=\; \bm R\,(\bm x_1-\bm x_0),
-\qquad \bm R=\begin{bmatrix}0&1\\-1&0\end{bmatrix},
-\label{eq:linefacetnormal}
-\end{equation}
-und zwar für gerade wie für gekrümmte Kanten gleichermaßen, da
-$\int \mathrm d\bm x/\mathrm d\xi\,\mathrm d\xi = \bm x_1-\bm x_0$ unabhängig von der Krümmung
-gilt. Die 2D-Facettennormale ist damit -- anders als ihr 3D-Gegenstück
-\eqref{eq:facetnormal}, das die Krümmung tatsächlich vernachlässigt -- nicht approximativ.
+\begin{center}
+\small
+\begin{tabular}{lrrl}
+\toprule
+Knotennormale & $n=2$ & $n=4$ & Fehlerreduktion \\
+\midrule
+je Facette (Eckknoten), CONQUAD8 & $7{,}1620^\circ$ & $3{,}5810^\circ$ & Faktor $2{,}00$ \\
+je Knoten \eqref{eq:nodalnormal}, CONQUAD8 & $0{,}0278^\circ$ & $0{,}0035^\circ$ & Faktor $7{,}95$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Also nicht bloß genauer, sondern von anderer Ordnung: die facettenweise Variante fällt
+linear und liefert für CONQUAD8 exakt denselben Winkelfehler wie das lineare CONQUAD4 --
+der quadratische Ansatz war für die Normale wirkungslos. Auf einer \emph{ebenen} Slave-Fläche sind
+beide Varianten dagegen identisch, und zwar exakt: dort sind alle Beiträge parallel, sodass jede
+positive Gewichtung auf dieselbe Richtung normiert. Deshalb ändert sich in der gesamten
+Referenzreihe (\file{Control\_Tests}, alle Interfaces eben) nichts über die Rundung hinaus, und
+deshalb hat auch kein Löser-Testfall den Unterschied je gesehen.
+
+\paragraph{Die Gewichtung ist eine offene Wahl -- auch in der Literatur.}
+Summiert wird oben die \emph{nicht} normierte Facettennormale; ihre Länge ist die lokale
+Flächen-Jacobideterminante, sodass eine große Facette einen gemeinsamen Knoten stärker zieht als
+eine kleine. Das ist eine von mehreren dokumentierten Möglichkeiten, und die Quellen sind sich
+darin uneinig:
+\begin{itemize}\itemsep2pt
+  \item \citet[Gl.~(37)]{popp2010} summieren die \emph{Einheits}normalen, also ungewichtet. Sie
+        halten dazu ausdrücklich fest, das geschehe \emph{``for simplicity''}, die gewichtete
+        Erweiterung nach \citet{yangmeng2005} sei \emph{``straightforward and has been tested as
+        well, but does not change the results considerably''}.
+  \item \citet[Gl.~(51)]{yangmeng2005} gewichten in 2D mit $\hat{\bm n}_A = l_2\bm n_{A1} +
+        l_1\bm n_{A2}$, also \emph{invers} zur eigenen Kantenlänge -- dort zieht die
+        \emph{kleinere} Facette stärker.
+  \item Der Code gewichtet mit der lokalen Jacobideterminante, also mit der eigenen Facettengröße.
+\end{itemize}
+Auf einem gleichmäßigen Netz fallen alle drei zusammen; die Testreihe kann sie daher nicht
+unterscheiden. Der \emph{entscheidende} Punkt -- die Auswertung an $\bm\xi_j$ statt je Facette --
+ist von der Gewichtung unberührt und in allen drei Quellen derselbe.
+
+\paragraph{Knotenreihenfolge.}
+\eqref{eq:nodalnormal} setzt voraus, dass die Tabelle der Knoten-Naturkoordinaten
+(\code{getNodalNaturalCoordinates}) dieselbe Reihenfolge benutzt wie \code{getShapeFunctions}.
+Ein Vertauscher darin gäbe einem Knoten stillschweigend die Normale eines anderen. Die Falle ist
+real und liegt bei \code{CONLINE3} besonders nahe, dessen Reihenfolge Ende--Ende--\emph{Mitte}
+ist, der letzte Listeneintrag also nicht der zweite Eckknoten. Geprüft wird deshalb die
+definierende Eigenschaft, geometrieunabhängig und für alle sieben Elementtypen:
+$N_a(\bm\xi_b)=\delta_{ab}$ (Abschnitt~\ref{sec:verif}).
 
 \medskip
-\noindent Die Unterscheidung ist wesentlich, weil die Knotenreihenfolge sie nahelegt zu übersehen:
-setzte man $\bm t=\bm x_{\text{letzt}}-\bm x_0$, so wäre $\bm t$ bei \code{CONLINE3} die Sehne der
-\emph{ersten Kantenhälfte}. Auf geraden Kanten bliebe das folgenlos -- die Richtung stimmt dort,
-und der gemeinsame Faktor $\tfrac12$ kürzt sich in der Normierung heraus --, auf gekrümmten nicht:
-für einen um $0{,}15$ aus der Sehne einer Einheitskante gerückten Mittelknoten wäre die
-Knotennormale um $16{,}7^\circ$ verdreht. Die Exaktheit von \eqref{eq:linefacetnormal} wird für
-jede Mittelknotenlage nachgerechnet (Abschnitt~\ref{sec:verif}).
-
-Die gemittelte Normale garantiert ein stetiges Normalenfeld über Facettengrenzen hinweg, was für
-die Konsistenz des Kontakts an Elementkanten nötig ist.
+\noindent Die Mittelung über die angrenzenden Facetten garantiert ein stetiges Normalenfeld über
+Facettengrenzen hinweg, was für die Konsistenz des Kontakts an Elementkanten nötig ist. Nicht
+gemittelt wird dagegen die Normale der \emph{Segmentierung}: die Hilfsebene benutzt weiterhin die
+facetteneigene $\bm n_c$ nach \eqref{eq:auxplane}, siehe Abschnitt~\ref{sec:hilfsebene}.
 
 \subsection{Eingefrorene Geometrie (staggered update)}
 \label{sec:frozen}
@@ -2068,7 +2118,7 @@ P_{\text{ext}},\bm K,\text{TimeStep})$
       \item Referenzkonfiguration $\bm U_{\text{ref}}=\bm U_{n+1}-\Delta\bm U=\bm U_n$
             \eqref{eq:frozenref};
       \item Knotennormalen $\bm n_j\leftarrow$ \code{compute\_normals}$(\bm U_{\text{ref}})$
-            \eqref{eq:facetnormal};
+            \eqref{eq:nodalnormal};
       \item Koppelmatrizen $(\bm D,\bm M)\leftarrow$
             \code{compute\_mortar\_coupling\_matrices}$(\bm U_{\text{ref}})$:
         \begin{enumerate}\itemsep1pt
@@ -2346,8 +2396,8 @@ aufweist: bei einer Öffnung des Masters bis $0{,}2$ müssen diese Knoten bei $\
 Ein Slave-Knoten, dessen Träger \emph{gar keiner} Master-Facette gegenübersteht, erhält keinen
 einzigen Quadraturbeitrag; seine Zeile in $\bm D$ und $\bm M$ bleibt leer und damit
 $\tilde D_{jj}=0$. Der Code behandelt das ohne Sonderfall, aber nicht zufällig richtig: die
-Division wird bei $|\tilde D_{jj}|\le10^{-30}$ durch $0$ ersetzt und $\mathrm{sgn}(0)=0$ gesetzt,
-sodass
+Division wird bei $|\tilde D_{jj}|\le10^{-12}\max_k|\tilde D_{kk}|$ durch $0$ ersetzt und
+$\mathrm{sgn}(0)=0$ gesetzt, sodass
 \begin{equation}
 p_{n,j}=\lambda_j\cdot 0=0,\qquad
 g_{\text{sep},j}=\tilde g_j\cdot 0=0,\qquad
@@ -2485,10 +2535,14 @@ Die dualen Koeffizienten werden auf dem tatsächlichen Integrationsgebiet gebild
 schmalen Überlappungen (\emph{slivers}) wird $\bm M_t$ nahezu singulär und $\bm A_e$ unbrauchbar.
 Der Code prüft daher die Konditionszahl und fällt bei $\mathrm{cond}(\bm M_t)\ge10^{12}$ auf die
 \emph{Referenzelement}-Koeffizienten aus \eqref{eq:Ae} zurück
-(\code{compute\_mortar\_coupling\_matrices}, Pass~2, Größe \code{cond\_M\_t}; die
-Referenzkoeffizienten liefert \code{compute\_local\_dual\_matrices}, die zu diesem Zweck je
-Increment für \emph{alle} Slave-Facetten vorgehalten werden). Für diese Zellen gilt die
-Biorthogonalität dann nur auf dem Voll-Element, nicht auf der Überlappung.
+(\code{compute\_mortar\_coupling\_matrices}, Pass~2, Größe \code{cond\_M\_t}). Die
+Referenzkoeffizienten stammen aus \code{element.computeLocalMassMatrices} und werden
+\emph{nur in diesem Zweig} gebildet, für die betroffene Facette allein -- sie kosten eine
+Elementmassenmatrix samt Inversion, und der Zweig wird nach der Zählung im folgenden Absatz in
+$4$ von $3\,989$ Slave-Element-Auswertungen betreten. (Dieselbe Größe für \emph{alle}
+Slave-Facetten liefert \code{compute\_local\_dual\_matrices}; sie wird von
+\file{04\_dual\_biorthogonality} benutzt, aber nicht mehr vom Produktionspfad.) Für diese Zellen
+gilt die Biorthogonalität dann nur auf dem Voll-Element, nicht auf der Überlappung.
 
 \paragraph{Häufigkeit des Rückfallpfads.}
 Über die \file{Control\_Tests}-Reihe und die Patch-Tests -- $251$ Inkremente mit $3\,989$
@@ -2582,12 +2636,28 @@ $-10^{-12}$ in \code{inside()} (Kreuzprodukt) & \textbf{Fläche} & \textbf{nur 3
 $10^{-14}$ in \code{is\_convex\_polygon} & \textbf{Fläche} & \textbf{nur 3D} & 3D-Variante von Test~11 \\
 $\|\bm n_f\|<10^{-14}$ (entartete Sub-Zelle) & \textbf{Fläche} & \textbf{nur 3D} & 3D-Variante von Test~11 \\
 $L_{\text{slave}}<10^{-14}$ und Überlappung $<10^{-12}$ in \code{clip\_1d\_segments} & Länge & \textbf{nur 2D} & 2D-Variante von Test~11 \\
-$\|\sum_f \bm n_f\|<10^{-14}$ in \code{compute\_normals} & Fläche (3D), Länge (2D) & 2D+3D & Test~11 (beide Varianten) \\
-$|\tilde D_{jj}|\le10^{-30}$ (Division im Indikator) & Fläche & 2D+3D & Test~11 (beide Varianten) \\
-$|D_{jk}|>10^{-14}$ (Besetzungsmuster) & Fläche & 2D+3D & Test~11 (beide Varianten) \\
+$\|\sum_f \bm n_{j,f}\|<10^{-14}$ in \code{compute\_normals} & Fläche (3D), Länge (2D) & 2D+3D & Test~11 (beide Varianten) \\
+$|\tilde D_{jj}|\le10^{-12}\max_k|\tilde D_{kk}|$ (Division im Indikator) & \textbf{relativ} & 2D+3D & Test~11 (beide Varianten) \\
+$|D_{jk}|>10^{-12}\max_{ab}|D_{ab}|$ (Besetzungsmuster) & \textbf{relativ} & 2D+3D & Test~11 (beide Varianten) \\
 \bottomrule
 \end{tabularx}
 \end{center}
+
+\noindent Die beiden letzten Zeilen sind die einzigen, die \emph{keine} Modelleinheit tragen, und
+das ist Absicht. Beide betreffen Einträge von $\bm D$, also Integrale $\int\Phi_j\tilde N_k$ mit
+der Einheit einer Fläche; eine absolute Schranke wäre dort eine Aussage über die Längeneinheit des
+Modells und nicht über die Arithmetik. Zu trennen ist Rundungsstaub -- der bauartbedingt bei
+$\varepsilon\max|\bm D|$ liegt, unabhängig von der Einheit -- von einem echten Kopplungsterm, und
+$10^{-12}\max|\bm D|$ liegt vier Größenordnungen über dem Staub und zwölf unter dem Signal, für
+jede Längenskala. Bei der Division im Indikator kommt ein zweites Argument hinzu: eine sehr kleine
+absolute Schranke \emph{teilt noch}. Bei $\tilde D_{jj}=10^{-25}$ und einer Schranke von $10^{-30}$
+-- dem Wert, der hier zuvor stand -- explodierte $g_{\text{sep},j}=\tilde g_j/\tilde D_{jj}$ um
+fünfundzwanzig Größenordnungen, und das Vorzeichen dieses Rundungsprodukts entschiede über den
+Zweig der NCP: ein Knoten ließe sich so allein durch Rundung \emph{aktiv} schalten, mit einer
+Zwangsbedingung ohne Bedeutung. Relativ zum größten Knotengewicht der Grenzfläche kann das nicht
+passieren; das kleinste über die Testreihe gemessene Gewicht eines überdeckten Knotens liegt bei
+$\sim\!10^{-3}$ des größten. Der Wechsel ist über die gesamte Referenzreihe (\file{Control\_Tests},
+$46$ Läufe) und die Tests~01--12 \emph{bitgleich} zum vorherigen Stand.
 
 \noindent Im 2D-Pfad wird \code{sutherland\_hodgman\_clip} gar nicht aufgerufen -- dort schneidet
 \code{clip\_1d\_segments} Intervalle. Eine reine 2D-Skalenstudie kann die beiden flächenwertigen
@@ -2790,7 +2860,7 @@ letzte Iterationswert geht über $\bm N_s$, $\bm N_m$ direkt in $\bm D$ und $\bm
 einem konvergierten Wert nicht zu unterscheiden (Abschnitt~\ref{sec:rueckabbildung}). \\
 $\tilde D_{jj}<0$ & Integral-Positivität nach \citet[Gl.~(4.2)]{popp2012}; der gewichtete Spalt
 verliert die Deutung als mittlere Öffnung (Abschnitt~\ref{sec:sgnd}). \\
-Verschwindende Knotennormale & Eindeutigkeit der Normalen \eqref{eq:facetnormal}. Der Knoten
+Verschwindende Knotennormale & Eindeutigkeit der Normalen \eqref{eq:nodalnormal}. Der Knoten
 trägt dann \emph{gar keinen} Kontakt: Spalt und Druck werden beide mit $\bm n_j$ kontrahiert und
 verschwinden mit ihr, der Aktivierungsindikator kann ihn nie einschalten. Ursachen: entartete
 Facette oder gegeneinander gefaltete Nachbarfacetten. \\
@@ -2914,7 +2984,7 @@ folgenden Bausteine belegen die Korrektheit der obigen Herleitungen.
 \toprule
 Eigenschaft & Prüfung \\
 \midrule
-\textbf{Knotennormalen} & Flächengewichtete Knotennormale gegen die \emph{analytische} Normale eines Zylinderausschnitts, mit Konvergenz unter Netzverfeinerung; dazu die Orientierung (nach außen) und die exakte 2D-Sehnenformel \eqref{eq:linefacetnormal} auf gekrümmten CONLINE3-Kanten (\file{01\_node\_normals}). \\
+\textbf{Knotennormalen} & Gemittelte Knotennormale \eqref{eq:nodalnormal} gegen die \emph{analytische} Normale eines Zylinderausschnitts, mit einer geforderten Mindest-Konvergenzordnung; dazu die Orientierung (nach außen) und die Übereinstimmung der Knoten-Naturkoordinaten mit den Formfunktionen, $N_a(\bm\xi_b)=\delta_{ab}$, für alle sieben Elementtypen (\file{01\_node\_normals}). \\
 \textbf{Polygon-Clipping} & Schnitt-/Triangulierungsgeometrie gegen analytische Überlappungen, einschließlich des Flächen\emph{gewinns} bei nicht-konvexem Subject (\file{02\_polygon\_clipping}). \\
 \textbf{Koppelmatrizen} & $\bm D,\bm M$, Zeilensummen-Identität \eqref{eq:rowsum} ($<10^{-14}$) und Überlappungsfläche gegen den analytischen Wert (\file{03\_coupling\_matrices}). \\
 \textbf{Biorthogonalität} & \eqref{eq:biorth} gegen \emph{unabhängige} Referenzen: geschlossene duale Basis des CONQUAD4, Nachrechnung mit einer höhergradigen Quadraturregel, und -- als einzige Prüfung des Produktionspfads -- Diagonalität von $\bm D\bm T_e^{\!\top}$ nach \eqref{eq:DTdiag} aus der echten Segmentquadratur, auch bei Teilüberdeckung (\file{04\_dual\_biorthogonality}). \\
@@ -2961,17 +3031,41 @@ Eigenschaft & Prüfung \\
         \citet[Abschn.~4.3]{popp2012} geforderte Vorzeichentreue des gewichteten Spalts
         (Abschnitt~\ref{sec:sgnd}).
   \item \textbf{Knotennormalen gegen eine unabhängige Referenz.} Auf einem Zylinderausschnitt
-        vom Radius $4$ wird die flächengewichtete Knotennormale mit der analytischen verglichen.
-        Der Winkelfehler halbiert sich bei Halbierung der Elementgröße (gemessen $7{,}16^\circ$
-        bei $n=2$ auf $3{,}58^\circ$ bei $n=4$, Faktor $2{,}00$), und zwar für alle sieben
-        Elementtypen gleich -- die Facettennormale \eqref{eq:facetnormal} benutzt ausschließlich
-        Eckknoten, quadratische Facetten gewinnen dort also nichts. Zusätzlich wird geprüft, dass
-        keine Normale in den eigenen Körper zeigt, und dass die 2D-Sehnenformel
-        \eqref{eq:linefacetnormal} für \emph{jede} Mittelknotenlage exakt ist.
+        vom Radius $4$ wird die Knotennormale \eqref{eq:nodalnormal} mit der analytischen
+        verglichen, für alle sieben Elementtypen und zwei Netzfeinheiten:
+
+        \begin{center}
+        \small
+        \begin{tabular}{lrrr}
+        \toprule
+        & $n=2$ & $n=4$ & Faktor \\
+        \midrule
+        linear (CONQUAD4, CONTRI3, CONLINE2)      & $7{,}1620^\circ$ & $3{,}5810^\circ$ & $2{,}00$ \\
+        quadratisch (CONQUAD8/9, CONTRI6, CONLINE3) & $0{,}0278^\circ$ & $0{,}0035^\circ$ & $7{,}95$ \\
+        \bottomrule
+        \end{tabular}
+        \end{center}
+
+        Geprüft wird nicht bloß, dass der Fehler fällt, sondern eine Mindest\emph{ordnung}
+        ($\ge1{,}8$ linear, $\ge3{,}5$ quadratisch). Das ist der eigentliche Regressionsschutz:
+        eine facettenweise gebildete Normale erfüllt jede blosse Reduktion ebenfalls, fällt aber
+        auf Faktor $2{,}00$ bei rund dem $250$-fachen Fehler zurück -- nachgestellt und als
+        \emph{fehlschlagend} verifiziert.
+
+        Damit die quadratischen Typen wirklich die Formel messen und nicht das Netz, werden die
+        Knoten, die der Testaufbau selbst anlegt -- das CONQUAD9-Zentrum und die CONTRI6-Diagonal\-mitte,
+        beide als Mittel zweier \emph{Ecken} und damit auf der Sehne -- radial auf den Zylinder
+        gezogen (\code{cylinder\_snap}). Ohne das lieferten genau diese beiden Typen weiterhin die
+        $7{,}16^\circ$ der linearen Zeile, obwohl die Normalenformel dort längst zweiter Ordnung
+        ist. Für alle aus \code{cylinder\_warp} stammenden Knoten ist die Projektion die Identität.
+
+        Zusätzlich wird geprüft, dass keine Normale in den eigenen Körper zeigt, und dass die
+        Knoten-Naturkoordinaten zur Knotenreihenfolge der Formfunktionen passen
+        ($N_a(\bm\xi_b)=\delta_{ab}$, alle sieben Typen, gemessen exakt $0$).
 
         Die Referenz ist dabei bewusst \emph{extern}: eine Prüfung der Form
-        $\bm n_f\cdot\bm v=0$ wäre für die Konstruktion \eqref{eq:facetnormal} eine Identität und
-        damit für jede Eingabe erfüllt.
+        $\bm n_{j,f}\cdot\partial\bm x/\partial\xi=0$ wäre für die Konstruktion
+        \eqref{eq:nodalnormal} eine Identität und damit für jede Eingabe erfüllt.
   \item \textbf{Signorini-Bedingungen, zweifach ausgewertet.} Die Bedingungen $p_n\ge0$,
         $g_{\text{sep}}\ge0$ und $p_n g_{\text{sep}}=0$ werden je Slave-Knoten geprüft, in 2D wie
         in 3D und in Lastfällen mit Teilkontakt, Abheben und voller Überdeckung; in 2D kommt der
@@ -3158,11 +3252,52 @@ eigentliche Befund dieses Tests:
   \item \textbf{Quadratisch (\code{hex20}/CONQUAD8).} Der Maximaldruck stimmt auf $1{,}0\,\%$ --
         die gekrümmte Facette wird über die Formfunktionsauswertung an den Gauß-Punkten
         tatsächlich erfasst (Abschnitt~\ref{sec:subcells}). Dafür oszilliert der Druck von Knoten
-        zu Knoten um $8$--$10\,\%$. Das ist der Ecke/Mittelknoten-Effekt quadratischer
-        Mortar-Kontaktdrücke: Eck- und Mittelknoten tragen unterschiedlich gewichtete
-        Multiplikatoren (Abschnitt~\ref{sec:basistrafo}, die Gewichte $\tfrac{7}{18}$ und
-        $\tfrac29$). Im Inneren der Kontaktzone dämpft die duale Basis ihn, am Rand bleibt er, und
-        er sinkt nur langsam mit Verfeinerung ($10{,}1\to7{,}8\,\%$).
+        zu Knoten um $8$--$10\,\%$, und er sinkt nur langsam mit Verfeinerung
+        ($10{,}1\to7{,}8\,\%$). Der knotenweise Verlauf sagt genau, wo er herkommt
+        (\file{hertz\_profile\_hertz\_hex20\_fine.csv}):
+
+        \begin{center}
+        \small
+        \begin{tabular}{lrrrrr}
+        \toprule
+        $x$ & $0{,}0000$ & $0{,}1000$ & $0{,}2000$ & $0{,}3000$ & $0{,}3750$ \\
+        \midrule
+        $\lambda/p_{\text{Hertz}}$ Eckknoten   & $1{,}0100$ & $1{,}0100$ & $1{,}0102$ & $1{,}0107$ & $1{,}0169$ \\
+        $\lambda/p_{\text{Hertz}}$ Mittelknoten & $1{,}0076$ & $1{,}0096$ & $1{,}0222$ & $1{,}0995$ & $1{,}5339$ \\
+        \bottomrule
+        \end{tabular}
+        \end{center}
+
+        Die \emph{Eck}knoten treffen die Hertz-Verteilung über die ganze innere Kontaktzone mit
+        konstant $1{,}0100$ -- also bis auf den oben genannten Amplitudenversatz exakt. Der
+        gesamte Zickzack sitzt auf den \emph{Mittel}knoten und wächst monoton zum Rand der
+        Kontaktzone hin, bis $\lambda$ dort über \emph{beiden} Nachbarecken liegt ($6{,}47$ bei
+        $x=0{,}3875$ gegenüber $4{,}96$ und $2{,}27$) -- die Multiplikator-Parabel beult innerhalb
+        des Elements nach oben aus.
+
+        Das ist die Antwort des \emph{vollen} quadratischen Multiplikatorraums auf den freien Rand
+        der Kontaktzone. Der Hertz-Druck fällt dort wie $\sqrt{a-x}$ auf null, und dieser Rand
+        liegt \emph{zwischen} zwei Knoten; eine Parabel je Element kann das nicht darstellen und
+        antwortet mit einem Überschwinger am Mittelknoten. Im Inneren, wo der Druck glatt ist,
+        gibt es folgerichtig keinen Zickzack.
+
+        \emph{Nicht} die Ursache sind die unterschiedlichen Knotengewichte von Eck- und
+        Mittelknoten. $\lambda_j$ ist nach Abschnitt~\ref{sec:sgnd} der \emph{Druck}, nicht die
+        Knotenkraft; $\tilde D_{jj}$ skaliert die Kraft. Und da die duale Basis $\bm\Phi=\bm A_e\bm N$
+        denselben Raum aufspannt wie $\bm N$, wird ein glattes Druckfeld exakt reproduziert,
+        gleichgültig wie ungleich die Gewichte sind. (Frühere Fassungen dieser Doku führten den
+        Zickzack auf die Gewichte $\tfrac{7}{18}$ und $\tfrac29$ zurück; das sind zudem die Werte
+        des \emph{CONLINE3}, während CONQUAD8 bei $\alpha=\tfrac13$ die Gewichte $\tfrac59$ und
+        $\tfrac49$ auf dem Referenzquadrat trägt.)
+
+        Die Literatur kennt für genau diesen Punkt eine Alternative, die hier nicht umgesetzt ist:
+        einen Multiplikatorraum \emph{reduzierter} Ordnung, bei dem nur die Eckknoten
+        Multiplikatoren tragen. \citet[Abschn.~4]{popp2012} beschreiben ihn als für
+        Ungleichungsnebenbedingungen \emph{``even more preferable''}, weil er zusätzlich punktweise
+        nichtnegativ ist, und verweisen auf \citet{puso2008}, wo die stückweise linearen
+        Multiplikatoren auf quad8-Flächen \emph{``smoother than the linear multiplier results''}
+        ausfallen. Das deckt sich mit dem Befund hier: es sind die Mittelknoten-Multiplikatoren,
+        die oszillieren.
 \end{itemize}
 
 \noindent Dass die Oszillation kein \emph{Auswertungs}artefakt ist, wird eigens geprüft: der
@@ -3184,8 +3319,9 @@ Knoten, sodass ihre Halbbreite $a$ nur bis auf einen Knotenabstand bestimmt ist 
 $3$--$5\,\%$ in der Spalte ``Fehler $a$'' sind im Wesentlichen genau das. Was der Test zeigt, ist
 zweierlei: erstens, dass die Größenordnungen und die Form stimmen und sich mit Verfeinerung in die
 richtige Richtung bewegen; zweitens, dass die verbleibenden Abweichungen \emph{benannte}
-Diskretisierungseffekte sind -- Facettengeometrie bei linearen, Ecke/Mittelknoten bei
-quadratischen Elementen -- und keine Anzeichen eines Fehlers in der Formulierung. Ein Restpunkt
+Diskretisierungseffekte sind -- Facettengeometrie bei linearen, der Mittelknoten-Überschwinger
+des vollen quadratischen Multiplikatorraums am freien Rand der Kontaktzone bei quadratischen
+Elementen -- und keine Anzeichen eines Fehlers in der Formulierung. Ein Restpunkt
 bleibt offen: die Knoten-zu-Knoten-Oszillation quadratischer Kontaktdrücke am Kontaktrand ist mit
 $\sim\!10\,\%$ nicht klein und konvergiert langsam. Sie ist ein Genauigkeits-, kein
 Konvergenzproblem -- alle vier Hertz-Varianten konvergieren -- und betrifft die punktweise
@@ -3378,8 +3514,13 @@ $\max|\bm K|$ nicht klein.
 Sie zu ergänzen ist kein Zusatzterm, sondern erfordert Ableitungen entlang der \emph{gesamten}
 Segmentierungskette. Der Reihe nach sind das:
 \begin{enumerate}\itemsep2pt
-  \item die Knotennormale $\bm n_j$ nach \eqref{eq:facetnormal} -- die Ableitung einer normierten
-        Summe von Kreuzprodukten;
+  \item die Knotennormale $\bm n_j$ nach \eqref{eq:nodalnormal} -- die Ableitung einer normierten
+        Summe von Kreuzprodukten. Für diesen einen Punkt ist die Herleitung bereits vorhanden und
+        unmittelbar übertragbar: \citet[Gl.~(A1)--(A2)]{popp2010} linearisieren genau
+        \eqref{eq:nodalnormal}. Weil dort die \emph{Einheits}normalen der Nachbarfacetten summiert
+        werden, hier dagegen die mit der Jacobideterminante gewichteten (siehe
+        Abschnitt~\ref{sec:knotennormale}), entfällt für den Code sogar die innere
+        Normierungsableitung (A2), und es bleibt $\delta\hat{\bm n}_j=\sum_f\delta\bm n_{j,f}$;
   \item die Hilfsebene: Stützpunkt $\bm p_0$, Normale und Tangentenbasis $\bm t_1,\bm t_2$, die
         alle von den Koordinaten der Slave-Sub-Zelle abhängen;
   \item die Projektion beider Facetten in diese Ebene;
@@ -3488,8 +3629,8 @@ Selbstkontakt -- die Berührung einer Oberfläche mit sich selbst unter großer 
 Die Paarung von Slave- und Masterfläche erfolgt einmalig bei der Instanziierung, womit auch die
 Zahl der Multiplikatoren feststeht; die Vorzeichenkonvention des Spalts setzt zwei getrennte Körper
 voraus; eine Ausschlussregel für die eigene und die angrenzenden Facetten einer Slave-Facette
-existiert nicht, und für einen Knoten, der beiden Flächen angehörte, wäre die flächengewichtete
-Knotennormale nach \eqref{eq:facetnormal} nicht eindeutig definiert.
+existiert nicht, und für einen Knoten, der beiden Flächen angehörte, wäre die gemittelte
+Knotennormale nach \eqref{eq:nodalnormal} nicht eindeutig definiert.
 
 Die bindende Einschränkung ist dabei algebraischer Natur. Für deckungsgleiche Facetten gilt
 $\bm M=\bm D$ exakt, sodass der gewichtete Spalt
@@ -3758,6 +3899,8 @@ Anwendungsfalls, nicht einem Werkzeug des Rahmenwerks -- gilt:
 \bibitem[Wohlmuth(2000)]{wohlmuth2000} B.~I.~Wohlmuth: \emph{A mortar finite element method using dual spaces for the Lagrange multiplier}, SIAM Journal on Numerical Analysis 38 (2000), 989--1012. (Lokale Kopie: \path{meetings/literature/Wohlmuth_2000_AMortarFiniteElementMethodUsingDualSpacesForTheLagrangeMutliplier.pdf})
 
 \bibitem[Wriggers(2006)]{wriggers} P.~Wriggers: \emph{Computational Contact Mechanics}, 2.~Aufl., Springer, 2006. (Lokale Kopie: \path{meetings/literature/Wriggers_2006_ComputationalContactMechanics.pdf})
+
+\bibitem[Yang et al.(2005)]{yangmeng2005} B.~Yang, T.~A.~Laursen, X.~Meng: \emph{Two dimensional mortar contact methods for large deformation frictional sliding}, International Journal for Numerical Methods in Engineering 62 (2005), 1183--1225, \path{doi:10.1002/nme.1222}. (Lokale Kopie: \path{meetings/literature/LaursenMeng_2005_TwoDimensionalMortarContactMethodsForLargeDeformationProblemsWithFriction.pdf} -- der Dateiname weicht vom Titel der Ver\"offentlichung ab.)
 
 \bibitem[Yang \& Laursen(2008)]{yang2008} B.~Yang, T.~A.~Laursen: \emph{A large deformation mortar formulation of self contact with finite sliding}, Computer Methods in Applied Mechanics and Engineering 197 (2008), 756--772. (Lokale Kopie: \path{meetings/literature/YangLaursen_2008_ALargeDeformationMortarFormulationOfSelfContactWithFiniteSliding.pdf})
 

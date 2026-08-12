@@ -31,6 +31,12 @@ from edelweissfe.elements.library import elLibrary
 from edelweissfe.points.node import Node
 
 
+# Shape function derivatives at the element's own nodes, per element TYPE. They do
+# not depend on the geometry, so one table per type serves every facet in the model;
+# see getShapeFunctionDerivativesAtNodes.
+_DN_AT_NODES: dict[str, np.ndarray] = {}
+
+
 class ContactElement(BaseElement):
     """A geometric placeholder element for contact boundary surfaces."""
 
@@ -235,6 +241,57 @@ class ContactElement(BaseElement):
     def getNumberOfQuadraturePoints(self) -> int:
         points, _ = self.getQuadraturePoints()
         return len(points)
+
+    def getShapeFunctionDerivativesAtNodes(self) -> np.ndarray:
+        """Shape function derivatives evaluated at the element's own nodes.
+
+        Shape (nNodes, nLocalDim, nNodes), so that entry [a] is
+        getShapeFunctionDerivatives(getNodalNaturalCoordinates()[a]).
+
+        These depend on the element TYPE only - the natural coordinates of the nodes
+        are fixed - so they are computed once per type and shared. compute_normals
+        needs them for every node of every slave facet, once per increment.
+        """
+        cached = _DN_AT_NODES.get(self._elType.upper())
+        if cached is None:
+            cached = np.array([self.getShapeFunctionDerivatives(xi) for xi in self.getNodalNaturalCoordinates()])
+            cached.flags.writeable = False
+            _DN_AT_NODES[self._elType.upper()] = cached
+        return cached
+
+    def getNodalNaturalCoordinates(self) -> np.ndarray:
+        """Natural coordinates of the element's own nodes, in node order.
+
+        Shape (nNodes, nLocalDim). Needed wherever a quantity has to be evaluated AT
+        a node rather than averaged over the facet - specifically the surface normal
+        of Popp et al. (2010) / Farah (2018), Sec. 4.1, which is the element normal
+        x,xi cross x,eta evaluated at the node's own coordinate.
+
+        The order follows getShapeFunctions of the same element: N_a evaluated at the
+        coordinate of node b must be delta_ab. That is checked for all seven types by
+        run_nodal_natural_coordinates in testfiles/mortar_tests/01_node_normals.
+        """
+        el_type = self._elType.upper()
+        if el_type == "CONLINE2":
+            return np.array([[-1.0], [1.0]])
+        if el_type == "CONLINE3":
+            # node order is [end, end, mid]
+            return np.array([[-1.0], [1.0], [0.0]])
+        corners = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]
+        mids = [[0.0, -1.0], [1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]
+        if el_type == "CONQUAD4":
+            return np.array(corners)
+        if el_type == "CONQUAD8":
+            return np.array(corners + mids)
+        if el_type == "CONQUAD9":
+            return np.array(corners + mids + [[0.0, 0.0]])
+        if el_type == "CONTRI3":
+            return np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+        if el_type == "CONTRI6":
+            return np.array(
+                [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]]
+            )
+        raise NotImplementedError(f"Nodal natural coordinates not defined for element type '{el_type}'")
 
     def getShapeFunctions(self, local_coords: np.ndarray) -> np.ndarray:
         """Evaluate standard shape functions at the given local coordinates."""

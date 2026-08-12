@@ -501,7 +501,7 @@ def _hertz_slave_pressure(model):
         Gesamtkraft sum_j p_kraft_j * A_j = sum_j lambda_j * D_II,j ist in beiden
         Lesarten dieselbe.
 
-    Der Vergleich beider Profile trennt den echten Ecke/Mittelknoten-Effekt vom
+    Der Vergleich beider Profile trennt die echte Diskretisierungs-Oszillation vom
     Auswertungsartefakt am Kontaktrand.
     """
     c = model.constraints["contact"]
@@ -560,15 +560,17 @@ def evaluate_hertz(model):
     p_hertz = p0 * np.sqrt(np.clip(1 - (x / a) ** 2, 0.0, None))
     err = np.abs(p[inside] - p_hertz[inside])
     # Knoten-zu-Knoten-Oszillation ("Zickzack"): mittlere |2. Differenz| des Drucks
-    # ueber die aktiven Knoten, relativ zum Maximaldruck. Misst die Ecke/Mittelknoten-
-    # Schwankung, die bei quadratischen Elementen (hex20) auftritt.
+    # ueber die aktiven Knoten, relativ zum Maximaldruck. Bei quadratischen Elementen
+    # (hex20) sitzt sie auf den MITTELknoten und waechst zum Rand der Kontaktzone -
+    # der volle quadratische Multiplikatorraum kann den dortigen sqrt-Abfall auf einen
+    # Rand ZWISCHEN zwei Knoten nicht darstellen. Siehe Doku, Abschnitt Hertz.
     pa_sorted = p[active][np.argsort(x[active])]
     zigzag = float(np.mean(np.abs(np.diff(pa_sorted, 2))) / p0_num) if pa_sorted.size >= 3 and p0_num > 0 else float("nan")
 
     # Gegenrechnung mit der kraftbasierten Lesart (siehe _hertz_slave_pressure).
     # Weicht das Zickzack der beiden Profile deutlich voneinander ab, so stammt
-    # ein Teil der Oszillation aus der Auswertung am Kontaktrand und nicht aus dem
-    # Ecke/Mittelknoten-Effekt.
+    # ein Teil der Oszillation aus der Auswertung am Kontaktrand und nicht aus der
+    # Diskretisierung.
     pf_sorted = p_force[active][np.argsort(x[active])]
     zigzag_force = (float(np.mean(np.abs(np.diff(pf_sorted, 2))) / p0_num)
                     if pf_sorted.size >= 3 and p0_num > 0 else float("nan"))

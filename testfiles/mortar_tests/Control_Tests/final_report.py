@@ -302,14 +302,17 @@ def _print_hertz(rows):
               f"{r['zigzag_force'] * 100:>8.1f}{r['n_active']:>6}")
     print("\nhex8 (linear): GLATTES Druckprofil (kleiner zickzk), aber Maximum systematisch zu hoch")
     print("(p0_err), sinkt mit Verfeinerung. hex20 (quadratisch): Maximum sehr genau (~1%), aber")
-    print("KNOTEN-ZU-KNOTEN-OSZILLATION (zickzk ~8-10%: Ecke/Mittelknoten-Effekt der quadratischen")
-    print("Mortar-Kontaktdruecke, v.a. am Kontaktrand; sinkt nur langsam mit Verfeinerung). Die")
+    print("KNOTEN-ZU-KNOTEN-OSZILLATION (zickzk ~8-10%). Die Eckknoten treffen Hertz ueber die")
+    print("ganze innere Kontaktzone konstant; der Zickzack sitzt ausschliesslich auf den MITTEL-")
+    print("knoten und waechst zum Rand der Kontaktzone hin - der volle quadratische Multiplikator-")
+    print("raum kann den dortigen sqrt-Abfall auf einen Rand ZWISCHEN zwei Knoten nicht darstellen")
+    print("und schwingt am Mittelknoten ueber. Sinkt nur langsam mit Verfeinerung. Die")
     print("uebertragene Gesamtkraft ist bei beiden korrekt. Druckprofile in hertz_profile_*.csv.")
     print("\nzickzk% liest den Multiplikator lambda direkt als Druck, zz_F% die Knotenkraft")
     print("lambda*D_II geteilt durch die tributaere Flaeche der ganzen Facette. An teilweise")
     print("ueberdeckten Randknoten skaliert lambda mit 1/D_II, die beiden Lesarten koennen dort")
-    print("also auseinanderlaufen. Dass sie es NICHT tun, belegt: die Oszillation ist der")
-    print("Ecke/Mittelknoten-Effekt und kein Artefakt der Auswertung am Kontaktrand.")
+    print("also auseinanderlaufen. Dass sie es NICHT tun, belegt: die Oszillation ist eine")
+    print("Eigenschaft der Diskretisierung und kein Artefakt der Auswertung am Kontaktrand.")
 
 
 def _print_gp_note(rows):

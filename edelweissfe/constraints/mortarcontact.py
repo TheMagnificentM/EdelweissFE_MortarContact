@@ -299,13 +299,23 @@ def _coo_to_csr(vals: list, rows: list, cols: list, shape: tuple) -> csr_matrix:
     ).tocsr()
 
 
-def _nonzero_rows(A: csr_matrix, n_rows: int) -> tuple[list, list]:
-    """Per-row (column indices, values) of a CSR matrix, filtered at 1e-14.
+def _nonzero_rows(A: csr_matrix, n_rows: int, rtol: float = 1e-12) -> tuple[list, list]:
+    """Per-row (column indices, values) of a CSR matrix, filtered RELATIVE to max|A|.
 
     The threshold is part of the formulation's arithmetic, not of the storage: it
     decides which coupling terms enter the weak gap and the stiffness, and a stored
-    CSR entry can be below it (coo -> csr sums duplicates, it does not prune). It is
-    therefore kept exactly as it was applied to the dense rows before.
+    CSR entry can be below it (coo -> csr sums duplicates, it does not prune).
+
+    It is deliberately a RELATIVE threshold. The entries of D and C are integrals
+    int(Phi_I N_K) and therefore carry the unit of a facet AREA, so any absolute
+    bound is a statement about the model's length unit rather than about the
+    arithmetic. What has to be separated here is round-off dust - which is
+    ~eps*max|A| by construction, independent of the unit - from a genuine coupling
+    term, and rtol*max|A| with rtol = 1e-12 sits four orders above the dust and
+    twelve below the signal for ANY length scale. (The bound this replaces was an
+    absolute 1e-14; on a model of order one it is the same filter to within an order
+    of magnitude, which is why the measured values in the documentation are
+    unchanged - see the tolerance table in "Implizite Annahmen der Nachbarsuche".)
 
     Caching the VALUES next to the indices - rather than re-indexing A[I, nz] on every
     Newton iteration - is the other half of the point: the pattern and the values are
@@ -314,10 +324,12 @@ def _nonzero_rows(A: csr_matrix, n_rows: int) -> tuple[list, list]:
     """
     idx_per_row, val_per_row = [], []
     indptr, indices, data = A.indptr, A.indices, A.data
+    # An empty matrix has no scale; the loop below then keeps nothing, which is right.
+    tol = rtol * np.max(np.abs(data)) if data.size else 0.0
     for I in range(n_rows):
         lo, hi = indptr[I], indptr[I + 1]
         cols, vals = indices[lo:hi], data[lo:hi]
-        keep = np.abs(vals) > 1e-14
+        keep = np.abs(vals) > tol
         idx_per_row.append(cols[keep])
         val_per_row.append(vals[keep])
     return idx_per_row, val_per_row
@@ -373,7 +385,17 @@ def get_sub_cells(el) -> list[list[int]]:
 
 
 def facet_normal(coords: np.ndarray) -> np.ndarray:
-    """Unnormalized area-weighted normal of a flat linear facet (3 or 4 corner nodes)."""
+    """Unnormalized area-weighted normal of a flat linear facet (3 or 4 corner nodes).
+
+    Used for the AUXILIARY PLANE of the segmentation only - one plane per slave
+    sub-cell, and the sub-cells are linear by construction, so this is the exact
+    normal of their plane rather than an approximation.
+
+    It is deliberately NOT what compute_normals builds the nodal normal n_I from:
+    one constant direction per facet cannot distinguish a mid-side node from its
+    corners, which costs an order of convergence on a curved slave surface. See
+    compute_normals.
+    """
     if len(coords) == 3:
         return 0.5 * np.cross(coords[1] - coords[0], coords[2] - coords[0])
     return 0.5 * np.cross(coords[2] - coords[0], coords[3] - coords[1])
@@ -841,7 +863,7 @@ class Constraint(ConstraintBase):
             if len(nzC):
                 g_weak += self.current_C_row[I] @ (x_master[nzC] @ n_I)
             D_II = self.current_D_rowsum[I]
-            inv_D = 1.0 / D_II if abs(D_II) > 1e-30 else 0.0
+            inv_D = 1.0 / D_II if abs(D_II) > self.current_D_tol else 0.0
             p_n = U_ref[idx_LM_0 + I] * np.sign(D_II)
             would_be[I] = bool(p_n - self.c_n * g_weak * inv_D > 0.0)
 
@@ -874,10 +896,24 @@ class Constraint(ConstraintBase):
         return self.nMultipliers
 
     def compute_normals(self, U_np: np.ndarray = None) -> np.ndarray:
-        """Compute area-weighted outward-pointing unit normal vectors for all non-mortar nodes.
-        
-        If U_np is provided, the normal vectors are calculated in the deformed configuration.
-        Otherwise, they are calculated in the undeformed configuration.
+        """Averaged outward-pointing unit normal at every non-mortar (slave) node.
+
+        The averaged nodal normal of Popp, Gitterle, Gee & Wall (2010) and Farah
+        (2018), Sec. 4.1: the element normal x,xi cross x,eta is evaluated at the
+        node's OWN natural coordinate in each adjacent facet, the contributions are
+        summed and the result is normalized. Summing before normalizing is what
+        weights a facet by its local surface Jacobian, and normalizing at the end is
+        what makes the field continuous across facet boundaries.
+
+        On a FLAT slave surface this is exactly the facet-constant normal it
+        replaced - all contributions are parallel there, so any positive weighting
+        normalizes to the same direction, whatever the facet sizes. The two differ
+        only where the slave surface is curved, and then only for quadratic facet
+        types, whose mid-side nodes a facet-constant normal cannot distinguish from
+        their corners.
+
+        If U_np is provided, the normal vectors are calculated in the deformed
+        configuration. Otherwise, they are calculated in the undeformed one.
         """
         dim = self.model.domainSize
         normals = np.zeros((self.nNonMortarNodes, dim))
@@ -901,37 +937,34 @@ class Constraint(ConstraintBase):
                     coords.append(X)
             
             coords = np.array(coords)
-            
-            if dim == 3:
-                # Differentiate between triangular and quadrilateral contact elements
-                if len(facet_nodes) in (3, 6):
-                    v1 = coords[1] - coords[0]
-                    v2 = coords[2] - coords[0]
-                    n_facet = 0.5 * np.cross(v1, v2)
+
+            # Element normal evaluated AT each node's own natural coordinate, summed
+            # over the adjacent facets and normalized below - the averaged nodal
+            # normal of Popp, Gitterle, Gee & Wall (2010) and Farah (2018), Sec. 4.1.
+            #
+            # The point is that it is evaluated per NODE, not per facet. A single
+            # facet-constant normal (the diagonal cross product of the corner nodes in
+            # 3D, the corner chord in 2D) assigns the same direction to a corner and
+            # to a mid-side node of the SAME quadratic facet, so the curvature of that
+            # facet never reaches the normal and the field converges only linearly:
+            # measured on the cylinder patch of 01_node_normals, CONQUAD8 and CONQUAD9
+            # produced exactly the CONQUAD4 error (7.16 deg -> 3.58 deg, rate 1), i.e.
+            # the quadratic facet types bought nothing at all.
+            #
+            # The magnitude of the un-normalized contribution is the local surface
+            # Jacobian, so a large facet still outweighs a small one at a shared node;
+            # for an undistorted linear facet it is the facet area up to the constant
+            # factor that the normalization removes.
+            dN_at_nodes = el.getShapeFunctionDerivativesAtNodes()
+            for local, node in enumerate(facet_nodes):
+                if node not in node_to_idx:
+                    continue
+                t = dN_at_nodes[local] @ coords
+                if dim == 3:
+                    n_node = np.cross(t[0], t[1])
                 else:
-                    v1 = coords[2] - coords[0]
-                    v2 = coords[3] - coords[1]
-                    n_facet = 0.5 * np.cross(v1, v2)
-            else: # dim == 2
-                # Area-weighted facet normal of a line facet. The two CORNER nodes
-                # span it, never coords[-1]: for CONLINE3 the node order is
-                # [end, end, mid], so coords[-1] is the mid-side node and the chord
-                # would be the first half-edge only - on a curved edge that is not
-                # even the right direction (measured: 16.7 deg off for a mid-side
-                # node 0.15 out of the chord of a unit edge).
-                #
-                # The corner chord is not an approximation but the exact area
-                # weight: with t = dx/dxi and n = [t_y, -t_x]/|t|,
-                #   int n dGamma = int [t_y, -t_x] dxi = R (x_1 - x_0),
-                # i.e. the rotated chord between the two END nodes, for a straight
-                # and a curved edge alike.
-                t = coords[1] - coords[0]
-                n_facet = np.array([t[1], -t[0]])
-            
-            # Add to the normals of all nodes on this facet
-            for node in facet_nodes:
-                if node in node_to_idx:
-                    normals[node_to_idx[node]] += n_facet
+                    n_node = np.array([t[0][1], -t[0][0]])
+                normals[node_to_idx[node]] += n_node
 
         # Normalize the normal vectors
         degenerate = []
@@ -1010,9 +1043,6 @@ class Constraint(ConstraintBase):
         # a structurally sparse object.
         D_rows, D_cols, D_vals = [], [], []
         C_rows, C_cols, C_vals = [], [], []
-
-        # Reference-element dual matrices, used only as fallback for degenerate overlaps
-        dual_mats = self.compute_local_dual_matrices(U_np)
 
         from edelweissfe.constraints.mortar_geom_utils import (
             clip_1d_segments,
@@ -1182,7 +1212,7 @@ class Constraint(ConstraintBase):
                         m_coords = np.array([current_coords[nd] for nd in m_nodes])
                         for m_sub in get_sub_cells(m_el):
                             mc_coords = m_coords[m_sub]
-                            s_start, s_end, L_slave, t_vec, n_vec = clip_1d_segments(sc_coords, mc_coords)
+                            s_start, s_end, t_vec = clip_1d_segments(sc_coords, mc_coords)
                             if s_end - s_start < 1e-12:
                                 continue
 
@@ -1261,7 +1291,9 @@ class Constraint(ConstraintBase):
                 # D_II = int_overlap(N_tilde) would be non-negative for ANY
                 # sub-region if N_tilde were pointwise non-negative. It is not,
                 # for CONQUAD8 at alpha = 1/3: the transformed corner function
-                # dips to -1/324 over 12.4 % of the reference square, and
+                # dips to -1/324 over exactly 12.5 % of the reference square (the
+                # negative region is the triangle (1-xi) + (1-eta) < 1, of area 1/2
+                # out of 4), and
                 # pointwise non-negativity would need alpha >= 3/8 (CONLINE3 gets
                 # it at alpha = 1/3 because its threshold is 1/4). So a partial
                 # overlap can produce D_II < 0 on the CONSISTENT path already -
@@ -1280,7 +1312,15 @@ class Constraint(ConstraintBase):
                     f"holds on the full element only, and the nodal weights D_II can take any sign "
                     f"and magnitude there - for CONQUAD8 as well.",
                 )
-                A_e = dual_mats[s_num][2]
+                # Evaluated only HERE, not for every slave facet up front: the
+                # reference-element coefficients cost an element mass matrix plus its
+                # inversion, and this branch is taken for 4 of 3989 slave-element
+                # evaluations over the test suite. Same quantity as
+                # compute_local_dual_matrices returns, for this one element and the
+                # same (deformed) coordinates.
+                A_e = s_el.computeLocalMassMatrices(
+                    np.array([current_coords[nd] for nd in s_el.nodes])
+                )[2]
 
             # Assemble the D block and per-master C blocks of this slave element
             D_blk = np.zeros((n_s, n_s))
@@ -1417,7 +1457,20 @@ class Constraint(ConstraintBase):
             # hertz_hex20_medium), so a relative threshold of 1e-6 separates them
             # from the dust by orders of magnitude.
             weights = self.current_D_rowsum
-            weight_scale = np.max(np.abs(weights))
+            weight_scale = np.max(np.abs(weights)) if len(weights) else 0.0
+            # Threshold below which a nodal weight counts as "no weight at all" and
+            # the division 1/D_II is suppressed. RELATIVE, for the same reason as in
+            # _nonzero_rows: D_II = int(Phi_I) carries the unit of an area, so an
+            # absolute bound only ever fits one system of units. It also has to be
+            # generous rather than tiny: at D_II = 1e-25 an absolute bound of 1e-30
+            # would still divide, g_sep = g_weak/D_II would explode by 25 orders, and
+            # the sign of that garbage would decide the branch of the NCP indicator -
+            # a node can be switched ACTIVE by pure round-off that way, with a
+            # constraint row that means nothing. Relative to the largest weight of the
+            # interface, 1e-12 is far below any weight a covered node can have (the
+            # smallest measured over the test suite is ~1e-3 of the largest) and far
+            # above the dust of an uncovered one.
+            self.current_D_tol = 1e-12 * weight_scale
             if weight_scale > 0.0:
                 significant = np.flatnonzero(weights < -1e-6 * weight_scale)
                 if len(significant):
@@ -1499,7 +1552,7 @@ class Constraint(ConstraintBase):
             #             the pressure carries sgn(D_II), the opening does not.
             D_II = self.current_D_rowsum[I]
             sgn_D = np.sign(D_II)
-            inv_D = 1.0 / D_II if abs(D_II) > 1e-30 else 0.0
+            inv_D = 1.0 / D_II if abs(D_II) > self.current_D_tol else 0.0
             p_n = lambda_I * sgn_D    # physical normal pressure (>= 0 in contact)
             g_sep = g_I_weak * inv_D  # physical opening (>0 open, <0 penetrating)
 

@@ -94,35 +94,38 @@ def triangulate_polygon(poly_coords):
     return np.array(triangles)
 
 
-def clip_1d_segments(s_coords: np.ndarray, m_coords: np.ndarray) -> tuple[float, float, float, np.ndarray, np.ndarray]:
+def clip_1d_segments(s_coords: np.ndarray, m_coords: np.ndarray) -> tuple[float, float, np.ndarray]:
     """Compute the 1D overlap interval of a 2D master line segment projected onto a 2D slave line segment.
-    
+
     s_coords: shape (2, 2) coords [x0, x1] of the slave line sub-cell
     m_coords: shape (2, 2) coords [y0, y1] of the master line sub-cell
-    
-    Returns: (s_start, s_end, L_slave, t_vec, n_vec)
-             If no overlap exists, returns (0.0, 0.0, L_slave, t_vec, n_vec).
+
+    Returns: (s_start, s_end, t_vec), the overlap interval in the arc-length
+             coordinate of the slave sub-cell and its unit tangent, so that a point
+             of the overlap is s_coords[0] + s * t_vec. If no overlap exists,
+             (0.0, 0.0, t_vec) is returned - the caller discards the cell on the
+             vanishing interval, so t_vec is then meaningless but harmless.
+
+    This is the 2D counterpart of the auxiliary-plane clipping of the 3D path: the
+    master segment is projected onto the slave segment's own line, which is the 1D
+    degeneration of projecting the master facet into the slave sub-cell's plane.
     """
     v_slave = s_coords[1] - s_coords[0]
     L_slave = np.linalg.norm(v_slave)
     if L_slave < 1e-14:
-        return 0.0, 0.0, 0.0, np.zeros(2), np.zeros(2)
-        
+        return 0.0, 0.0, np.zeros(2)
+
     t_vec = v_slave / L_slave
-    n_vec = np.array([t_vec[1], -t_vec[0]])
-    
+
     # Project master endpoints onto the slave line coordinate s in [0, L_slave]
     s0 = np.dot(m_coords[0] - s_coords[0], t_vec)
     s1 = np.dot(m_coords[1] - s_coords[0], t_vec)
-    
-    s_min = min(s0, s1)
-    s_max = max(s0, s1)
-    
-    s_start = max(0.0, s_min)
-    s_end = min(L_slave, s_max)
-    
+
+    s_start = max(0.0, min(s0, s1))
+    s_end = min(L_slave, max(s0, s1))
+
     if s_end - s_start < 1e-12:
-        return 0.0, 0.0, L_slave, t_vec, n_vec
-        
-    return s_start, s_end, L_slave, t_vec, n_vec
+        return 0.0, 0.0, t_vec
+
+    return s_start, s_end, t_vec
 

@@ -37,7 +37,7 @@ cd Control_Tests && python final_report.py
 
 | Verzeichnis | Ebene | Prüft |
 |---|---|---|
-| `01_node_normals` | Baustein | Knotennormale gegen die **analytische** Normale eines Zylinderausschnitts (mit Konvergenz), Orientierung, und die exakte 2D-Sehnenformel auf gekrümmten CONLINE3-Kanten |
+| `01_node_normals` | Baustein | Knotennormale gegen die **analytische** Normale eines Zylinderausschnitts, mit geforderter Mindest-Konvergenz**ordnung** (≥1,8 linear, ≥3,5 quadratisch); Orientierung; und `N_a(ξ_b) = δ_ab` für alle sieben Elementtypen, also die Übereinstimmung der Knoten-Naturkoordinaten mit der Knotenreihenfolge der Formfunktionen |
 | `02_polygon_clipping` | Baustein | Sutherland–Hodgman und Fächer-Triangulierung gegen analytische Überlappungen; Flächen**verlust** bei nicht-konvexem Clip-Fenster und Flächen**gewinn** bei nicht-konvexem Subject |
 | `03_coupling_matrices` | Baustein | Aufbau von `D`/`C`, Zeilensummen-Identität, Überlappungsfläche, Positivität der Knotengewichte |
 | `04_dual_biorthogonality` | Baustein | Biorthogonalität gegen **unabhängige** Referenzen: geschlossene duale Basis des CONQUAD4, Nachrechnung mit höhergradiger Quadratur, und Diagonalität von `D @ T_e.T` aus der echten Segmentquadratur (Produktionspfad, auch bei Teilüberdeckung); Positivität der dualen Gewichte |

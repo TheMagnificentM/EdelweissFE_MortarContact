@@ -257,10 +257,13 @@ lehrreichen Element-Unterschied (siehe `08_hertz/hertz_pressure_profile.png`):
   (~4–7 %, sinkt mit Verfeinerung). Lineare Elemente bilden die gekrümmte Fläche und den steilen
   Randgradienten schlecht ab.
 - **hex20 (quadratisch):** Maximum sehr genau (**~1 %**) und im Mittel näher an Hertz, aber der
-  Kontaktdruck **oszilliert von Knoten zu Knoten** (Zickzack ~8–10 %). Das ist der bekannte
-  **Ecke/Mittelknoten-Effekt** quadratischer Mortar-Kontaktdrücke (die Eck- und Mittelknoten tragen
-  unterschiedlich gewichtete Multiplikatoren), am stärksten am Kontaktrand. Die duale Basis dieses
-  Codes dämpft ihn im Inneren (dort glatt), am Rand bleibt er; er sinkt nur langsam mit Verfeinerung.
+  Kontaktdruck **oszilliert von Knoten zu Knoten** (Zickzack ~8–10 %). Die **Eckknoten** treffen
+  Hertz über die ganze innere Kontaktzone mit konstant 1,0100; der Zickzack sitzt ausschließlich
+  auf den **Mittelknoten** und wächst monoton zum Rand der Kontaktzone. Ursache ist der *volle*
+  quadratische Multiplikatorraum: der Hertz-Druck fällt dort wie √(a−x) auf null, und dieser Rand
+  liegt *zwischen* zwei Knoten — eine Parabel je Element kann das nicht darstellen und schwingt am
+  Mittelknoten über. Nicht die unterschiedlichen Knotengewichte (λ ist der Druck, `D_II` skaliert
+  die Kraft). Sinkt nur langsam mit Verfeinerung; Details in der Doku, Abschnitt Hertz.
 
 Bei **beiden** ist die *übertragene Gesamtkraft* korrekt (nur die punktweise Verteilung
 unterscheidet sich). Hertz ist zudem eine Halbraum-Näherung und auf einem endlichen, uniformen Netz
@@ -286,7 +289,7 @@ nie maschinengenau. Mesh: ~11–22 Elemente über die halbe Kontaktbreite. Druck
 > Kasten hier war schlicht nicht nachgeführt worden.
 >
 > Was davon unberührt bleibt: die Knoten-zu-Knoten-Oszillation des Kontaktdrucks am Kontaktrand
-> (~10 % bei `hex20_medium`, Ecke/Mittelknoten-Effekt, s. oben) besteht weiter – sie ist ein
+> (~10 % bei `hex20_medium`, Mittelknoten-Überschwinger am Kontaktrand, s. oben) besteht weiter – sie ist ein
 > Genauigkeits-, kein Konvergenzproblem. Das literaturkonforme Mittel gegen Active-Set-Chattering
 > bliebe eine Line-Search-/Damped-Newton-Globalisierung (Deuflhard 2004;
 > De Luca–Facchinei–Kanzow 1996); notwendig ist sie auf dieser Testreihe derzeit nicht.

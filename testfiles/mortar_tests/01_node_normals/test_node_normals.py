@@ -196,7 +196,7 @@ def add_master_facet(model, el_type, y0):
     return "con_master"
 
 
-def build_model(el_type, dim, n=2, warp=None):
+def build_model(el_type, dim, n=2, warp=None, snap=None):
     """Ein Block mit Kontaktelementen auf der Unterseite, Master-Facette darunter.
 
     Slave ist die UNTERSEITE des Blocks (Aussennormale -e_y), Master eine einzelne
@@ -211,6 +211,11 @@ def build_model(el_type, dim, n=2, warp=None):
 
     warp: optionale Funktion coords -> coords, die die Knoten VOR dem Anlegen der
     Kontaktelemente verschiebt (fuer die gekruemmte Geometrie).
+
+    snap: optionale Funktion coords -> coords, die NACH dem Anlegen der
+    Kontaktelemente auf alle Slave-Knoten wirkt. Sie erwischt damit auch die Knoten,
+    die erst dabei entstehen (CONQUAD9-Zentrum, CONTRI6-Diagonalmitte); siehe
+    ``cylinder_snap``.
     """
     model = FEModel(dimension=dim)
     journal = Journal()
@@ -231,6 +236,15 @@ def build_model(el_type, dim, n=2, warp=None):
             node.coordinates = warp(node.coordinates)
 
     slave_surf = apply_contact_elements(model, "gen_bottom", el_type)
+
+    # Erst JETZT, denn apply_contact_elements legt fuer CONQUAD9 und CONTRI6 eigene
+    # Knoten an, die die Geometrie sonst nicht trifft (siehe cylinder_snap).
+    if snap is not None:
+        for _faceID, elements in model.surfaces[slave_surf].items():
+            for el in elements:
+                for nd in el.nodes:
+                    nd.coordinates[:] = snap(nd.coordinates)
+
     # Deutlich unterhalb der (ggf. gekruemmten) Slave-Flaeche
     master_surf = add_master_facet(model, el_type, -3.0 if warp is None else -3.0)
 
@@ -296,6 +310,31 @@ def cylinder_warp(X):
     return out
 
 
+def cylinder_snap(X):
+    """Zieht einen Punkt radial auf den Mantel r = CYL_R.
+
+    Noetig fuer die Knoten, die ``apply_contact_elements`` SELBST anlegt: der
+    Zentrumsknoten des CONQUAD9 und der Diagonalmittelknoten des CONTRI6 entstehen
+    dort als arithmetisches Mittel zweier ECKknoten, liegen also auf der Sehne und
+    nicht auf dem Zylinder. Ohne diese Projektion misst der Test fuer diese beiden
+    Typen die Lage jenes Zusatzknotens statt der Normalenformel -- und zwar so
+    deutlich, dass er den Unterschied zwischen einer facettenkonstanten und einer
+    knotenweisen Normale gar nicht mehr sieht: beide lieferten dann denselben
+    Winkelfehler von 7.16 Grad wie das lineare CONQUAD4.
+
+    Fuer alle Knoten, die aus ``cylinder_warp`` stammen, ist das die Identitaet --
+    die Abbildung y = 0 -> r = R trifft den Mantel exakt.
+    """
+    X = np.asarray(X, dtype=float)
+    axis = np.array([1.0, -CYL_R])
+    d = X[:2] - axis
+    r = float(np.linalg.norm(d))
+    if r > 1e-14:
+        X = X.copy()
+        X[:2] = axis + d * (CYL_R / r)
+    return X
+
+
 def exact_cylinder_normal(X, dim):
     """Exakte Aussennormale der gekruemmten Unterseite an der Stelle X.
 
@@ -311,12 +350,21 @@ def exact_cylinder_normal(X, dim):
     return -v / np.linalg.norm(v)
 
 
-def run_curved(el_type, dim, refinements=(2, 4)):
-    """Knotennormale gegen die analytische Zylindernormale, mit Konvergenz."""
+def run_curved(el_type, dim, refinements=(2, 4), min_ratio=1.8):
+    """Knotennormale gegen die analytische Zylindernormale, mit Konvergenz.
+
+    min_ratio ist die geforderte Fehlerreduktion bei Halbierung der Elementgroesse.
+    Fuer die quadratischen Typen wird sie deutlich ueber 2 gesetzt (Aufrufer), und
+    das ist der eigentliche Regressionsschutz dieses Tests: eine facettenkonstante
+    Normale kann die Kruemmung einer quadratischen Facette nicht sehen und faellt
+    damit auf dieselbe Rate ~2 zurueck wie die linearen Typen, bei rund dem
+    250-fachen Fehler. Ohne eine Schranke an die ORDNUNG faellt das nicht auf --
+    eine blosse Fehlerreduktion erfuellen beide Varianten.
+    """
     print(f"\n* {el_type} ({dim}D), Zylinderausschnitt R = {CYL_R}")
     errors = []
     for n in refinements:
-        _, contact = build_model(el_type, dim, n=n, warp=cylinder_warp)
+        _, contact = build_model(el_type, dim, n=n, warp=cylinder_warp, snap=cylinder_snap)
         normals = contact.undeformed_normals
 
         worst = 0.0
@@ -336,15 +384,14 @@ def run_curved(el_type, dim, refinements=(2, 4)):
         errors.append(worst)
         print(f"  n = {n:2d}:  max. Winkelfehler = {worst:8.4f} Grad")
 
-    # C: Konvergenz. Die Facettennormale ist stueckweise linear rekonstruiert,
-    # der Fehler muss mit dem Netz kleiner werden. Verlangt wird eine echte
-    # Reduktion, nicht eine bestimmte Ordnung - die haengt am Elementtyp.
-    if not errors[-1] < errors[0]:
-        print(f"  [FAIL] Der Winkelfehler faellt nicht mit der Netzverfeinerung "
-              f"({errors[0]:.4f} -> {errors[-1]:.4f} Grad)!")
-        return False
+    # C: Konvergenz - und zwar mit einer Mindest-ORDNUNG, siehe Docstring.
     ratio = errors[0] / errors[-1] if errors[-1] > 0 else np.inf
-    print(f"  Fehlerreduktion bei Halbierung der Elementgroesse: Faktor {ratio:.2f}")
+    print(f"  Fehlerreduktion bei Halbierung der Elementgroesse: Faktor {ratio:.2f} "
+          f"(gefordert {min_ratio:.1f})")
+    if not ratio >= min_ratio:
+        print(f"  [FAIL] Der Winkelfehler faellt zu langsam ({errors[0]:.4f} -> "
+              f"{errors[-1]:.4f} Grad, Faktor {ratio:.2f} < {min_ratio:.1f})!")
+        return False
 
     print(f"  [PASS] {el_type} ({dim}D), gekruemmt")
     return True
@@ -355,61 +402,53 @@ def run_curved(el_type, dim, refinements=(2, 4)):
 # ===========================================================================
 
 
-def run_line_chord_exactness():
-    """Auf einer gekruemmten CONLINE3-Kante ist die Sehne der Eckknoten exakt.
+def run_nodal_natural_coordinates():
+    """Die Knotenkoordinaten passen zur Knotenreihenfolge der Formfunktionen.
 
-    Es gilt   int n dGamma = int [t_y, -t_x] dxi = R (x_1 - x_0),
-    unabhaengig davon, wo der Mittelknoten liegt. Die Knotennormale einer
-    einzelnen gekruemmten Facette muss daher fuer JEDE Mittelknotenlage die
-    gedrehte Eckknoten-Sehne sein.
+    ``compute_normals`` wertet die Elementnormale an der Naturkoordinate JEDES
+    Knotens aus (``getNodalNaturalCoordinates``, ``getShapeFunctionDerivativesAtNodes``).
+    Diese Tabelle und ``getShapeFunctions`` muessen dieselbe Knotenreihenfolge
+    benutzen; ein Vertauscher darin gibt einem Knoten stillschweigend die Normale
+    eines anderen -- am ehesten die eines Mittelknotens, dessen Tangente auf einer
+    gekruemmten Facette in eine ganz andere Richtung zeigt.
 
-    Genau hier lag der Fehler, den die alte Fassung dieses Tests nicht sehen
-    konnte: mit coords[-1] (dem Mittelknoten) statt coords[1] ergaben sich fuer
-    einen um 0.15 ausgelenkten Mittelknoten 16.7 Grad Abweichung.
+    Geprueft wird die definierende Eigenschaft, unabhaengig von jeder Geometrie:
+
+        N_a(xi_b) = delta_ab .
+
+    Das ist der Nachfolger der frueheren Sehnenpruefung. Die fing dieselbe Falle
+    (CONLINE3 hat die Reihenfolge Ende-Ende-MITTE, sodass der letzte Listeneintrag
+    NICHT der zweite Eckknoten ist), tat es aber ueber eine inzwischen abgeloeste
+    Definition der Knotennormale -- die flaechengewichtete Facettensehne, die allen
+    Knoten einer Facette dieselbe Richtung gab. Die Pruefung hier ist von der
+    Definition der Normale unabhaengig und deckt alle sieben Elementtypen ab statt
+    nur CONLINE3.
     """
-    print("\n* CONLINE3: exakte Sehnenformel auf gekruemmter Kante")
-    from edelweissfe.constraints.mortarcontact import Constraint as MC
-
+    print("\n* Knoten-Naturkoordinaten gegen die Formfunktionen (alle Typen)")
     ok = True
-    for bulge in (0.0, 0.05, 0.15, 0.4, -0.25):
-        model = FEModel(dimension=2)
-        ConClass = getElementClass("CONLINE3", "edelweiss")
+    for el_type in ("CONLINE2", "CONLINE3", "CONQUAD4", "CONQUAD8",
+                    "CONQUAD9", "CONTRI3", "CONTRI6"):
+        el = getElementClass(el_type, "edelweiss")(el_type, 1)
+        xi = el.getNodalNaturalCoordinates()
+        N = np.array([el.getShapeFunctions(x) for x in xi])
+        err = float(np.max(np.abs(N - np.eye(len(xi)))))
 
-        # Knotenreihenfolge Ende - Ende - Mitte. Die Slave-Normale ist
-        # n = (t_y, -t_x) mit t = x_1 - x_0 = +e_x, zeigt also nach -y; der Master
-        # muss deshalb UNTERHALB liegen, damit die Flaechen aufeinander zu zeigen.
-        slave_pts = [[0.0, 0.0], [1.0, 0.0], [0.5, bulge]]
-        master_pts = [[0.0, -1.0], [1.0, -1.0], [0.5, -1.0 + bulge]]
-        for i, p in enumerate(slave_pts + master_pts):
-            lbl = i + 1
-            model.nodes[lbl] = Node(lbl, np.array(p, dtype=float))
+        # Und die zwischengespeicherte Ableitungstabelle muss dieselbe Tabelle sein.
+        dN = el.getShapeFunctionDerivativesAtNodes()
+        err_dn = max(
+            float(np.max(np.abs(dN[a] - el.getShapeFunctionDerivatives(xi[a]))))
+            for a in range(len(xi))
+        )
 
-        s_con = ConClass("CONLINE3", 1)
-        s_con.setNodes([model.nodes[i] for i in (1, 2, 3)])
-        m_con = ConClass("CONLINE3", 2)
-        m_con.setNodes([model.nodes[i] for i in (4, 5, 6)])
-        model.elements[1], model.elements[2] = s_con, m_con
-        model.surfaces = {"slave": {1: [s_con]}, "master": {1: [m_con]}}
-        for nd in model.nodes.values():
-            nd.fields["displacement"] = FieldVariable(nd, "displacement")
-
-        c = MC("c", model, nonMortarSurface="slave", mortarSurface="master", field="displacement")
-
-        # Referenz: gedrehte Sehne der beiden ECKknoten, normiert
-        t = np.array(slave_pts[1]) - np.array(slave_pts[0])
-        n_ref = np.array([t[1], -t[0]]) / np.linalg.norm(t)
-
-        err = float(np.max(np.abs(c.undeformed_normals - n_ref)))
-        angle = np.degrees(np.arccos(np.clip(float(c.undeformed_normals[0] @ n_ref), -1.0, 1.0)))
-        print(f"  Mittelknoten-Auslenkung {bulge:+.2f}:  max|n - n_Sehne| = {err:.3e}, "
-              f"Winkel {angle:.4f} Grad")
-        if err > TOL_EXACT:
-            print("  [FAIL] Die 2D-Facettennormale ist nicht die Eckknoten-Sehne! "
-                  "(Vermutlich wird wieder coords[-1] statt coords[1] verwendet.)")
+        print(f"  {el_type:9s} max|N_a(xi_b) - delta_ab| = {err:.3e}, "
+              f"max|dN_cache - dN| = {err_dn:.3e}")
+        if err > TOL_EXACT or err_dn > TOL_EXACT:
+            print(f"  [FAIL] Knotenreihenfolge von {el_type} passt nicht zu den "
+                  f"Formfunktionen!")
             ok = False
 
     if ok:
-        print("  [PASS] CONLINE3-Sehnenformel exakt fuer jede Mittelknotenlage")
+        print("  [PASS] Knoten-Naturkoordinaten konsistent fuer alle sieben Typen")
     return ok
 
 
@@ -424,12 +463,18 @@ def test_node_normals():
     for el_type in ("CONLINE2", "CONLINE3"):
         results.append(run_unit_and_flat(el_type, dim=2))
 
-    for el_type in ("CONQUAD4", "CONQUAD8", "CONQUAD9", "CONTRI3", "CONTRI6"):
-        results.append(run_curved(el_type, dim=3))
-    for el_type in ("CONLINE2", "CONLINE3"):
-        results.append(run_curved(el_type, dim=2))
+    # Mindestordnung: die linearen Typen rekonstruieren die Normale stueckweise
+    # konstant und koennen nur erster Ordnung sein; die quadratischen sehen die
+    # Kruemmung ihrer Facette und muessen deutlich schneller fallen (gemessen:
+    # Faktor 7.95 gegenueber 2.00). Siehe run_curved.
+    for el_type in ("CONQUAD4", "CONTRI3"):
+        results.append(run_curved(el_type, dim=3, min_ratio=1.8))
+    for el_type in ("CONQUAD8", "CONQUAD9", "CONTRI6"):
+        results.append(run_curved(el_type, dim=3, min_ratio=3.5))
+    results.append(run_curved("CONLINE2", dim=2, min_ratio=1.8))
+    results.append(run_curved("CONLINE3", dim=2, min_ratio=3.5))
 
-    results.append(run_line_chord_exactness())
+    results.append(run_nodal_natural_coordinates())
 
     n_fail = results.count(False)
     assert n_fail == 0, f"{n_fail} von {len(results)} Normalenpruefungen fehlgeschlagen"
