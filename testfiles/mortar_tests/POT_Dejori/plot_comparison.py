@@ -7,8 +7,11 @@ beide Diskretisierungen gegen die drei Laborversuche.
 Im Unterschied zu den ordnerweisen `plot_results.py` (je eine Simulationskurve)
 zeigt dieses Bild BEIDE Simulationen in einem Diagramm:
 
-  * hex8  : GC3D8   + CONQUAD4, aus `hex8_Test/`  -- penalty = 920
-  * hex20 : GC3D20R + CONQUAD8, aus `hex20/`      -- penalty = 400
+  * hex8  : GC3D8   + CONQUAD4, aus `hex8/`  -- penalty = 920
+  * hex20 : GC3D20R + CONQUAD8, aus `hex20/` -- penalty = 400
+
+Beide Laeufe wurden zeitgleich gestartet und gehoeren damit zum selben
+Codestand.
 
 Die unterschiedlichen Federwerte sind kein Tippfehler, sondern notwendig, damit
 beide Modelle DIESELBE Gesamt-Auflagerbettung haben: `directionalspringpenalty`
@@ -18,9 +21,6 @@ Die Auflagerflaechen haben in hex8 10 + 10, in hex20 23 + 23 Knoten (die
 Kantenmittelknoten kommen hinzu), also
 
     k_ges = penalty * n_Knoten  ->  920 * 10 = 400 * 23 = 9200 N/mm je Auflager.
-
-Der urspruengliche Ordner `hex8/` verwendet unveraendert penalty = 400 und hat
-damit nur 43 % der hex20-Bettung; er wird hier bewusst NICHT geplottet.
 
 Aufruf (Umgebung next_v26.11, benoetigt pandas + odfpy):
   python3 plot_comparison.py
@@ -41,9 +41,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Simulationen: (Ordner, Beschriftung, Farbe, Federwert)
 SIMULATIONS = [
-    ("hex8_Test", "FEM hex8 (GC3D8 / CONQUAD4)", "#2563eb", 920),
+    ("hex8", "FEM hex8 (GC3D8 / CONQUAD4)", "#2563eb", 920),
     ("hex20", "FEM hex20 (GC3D20R / CONQUAD8)", "#16a34a", 400),
 ]
+
+# Vorgegebene Endverschiebung des Laststeps (.inp: dirichlet disp, 2=1.1).
+# Wer sie erreicht, ist durchgelaufen; wer darunter endet, ist abgebrochen.
+U_PRESCRIBED = 1.1
 
 EXPERIMENT_ODS = os.path.join(HERE, "hex20", "0_VA1_EBT6cm.ods")
 
@@ -103,11 +107,16 @@ def main():
 
     # --- Simulationen ---
     summary = []
+    aborted = False
     for folder, label, color, penalty in SIMULATIONS:
         u, f = load_simulation(folder)
         ax.plot(u, f, color=color, linewidth=2.3, label=label, zorder=5)
-        # Endpunkt markieren: dort endet die Rechnung (Abbruchgrund im Text)
-        ax.plot(u[-1], f[-1], marker="x", markersize=9, markeredgewidth=2.0, color=color, zorder=6)
+        # Endpunkt nur dann markieren, wenn die Rechnung VOR der vorgegebenen
+        # Verschiebung endet -- das Kreuz steht fuer den Abbruch, nicht fuer das
+        # regulaere Lastende (Abbruchgrund im Text der Doku).
+        if u[-1] < 0.999 * U_PRESCRIBED:
+            aborted = True
+            ax.plot(u[-1], f[-1], marker="x", markersize=9, markeredgewidth=2.0, color=color, zorder=6)
         i = int(np.argmax(f))
         summary.append((label, penalty, secant_stiffness(u, f), f[i], u[i], u[-1], len(u)))
 
@@ -120,21 +129,22 @@ def main():
         pad=12,
     )
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
-    ax.set_xlim(0.0, 1.0)
+    ax.set_xlim(0.0, U_PRESCRIBED + 0.05)
     ax.set_ylim(bottom=0.0)
     ax.xaxis.set_minor_locator(ticker.AutoMinorLocator())
     ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
     ax.legend(fontsize=10, loc="upper right", framealpha=0.9, edgecolor="#cbd5e1")
-    ax.text(
-        0.985,
-        0.02,
-        r"$\times$ = Ende der Rechnung",
-        transform=ax.transAxes,
-        ha="right",
-        va="bottom",
-        fontsize=9,
-        color="#475569",
-    )
+    if aborted:
+        ax.text(
+            0.985,
+            0.02,
+            r"$\times$ = Abbruch der Rechnung",
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=9,
+            color="#475569",
+        )
 
     plt.tight_layout()
     out_pdf = os.path.join(HERE, "force_disp_hex8_vs_hex20.pdf")
