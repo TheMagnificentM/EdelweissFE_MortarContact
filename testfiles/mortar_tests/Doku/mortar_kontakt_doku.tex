@@ -1229,9 +1229,13 @@ $N_{\text{Ecke}}=\tfrac12\xi(\xi-1)$ im Element das Vorzeichen wechselt und in e
 \emph{segment}basierten Formulierung über Teilgebiete integriert wird
 (Abschnitt~\ref{sec:alphachoice}); erst die Transformation macht die Basis punktweise
 nichtnegativ und damit die Gewichte auch bei Teilüberdeckung positiv. Mit Transformation sind sie
-$\tfrac{7}{18}$ bzw.\ $\tfrac29$ (nachgerechnet in \file{07\_patch\_test\_2d}). Genau diese
-Absicherung fehlt beim CONQUAD9 -- der folgende Abschnitt begründet, warum, und benennt die Grenze
-dieser Begründung.
+$\tfrac{7}{18}$ bzw.\ $\tfrac29$ (nachgerechnet in \file{07\_patch\_test\_2d}). Dass das beim
+CONLINE3 aufgeht, beim CONQUAD8 dagegen nicht, ist kein Zufall, sondern eine Frage der Schwelle:
+aus $\tilde N_{\text{Ecke}}=(\tfrac12-\alpha)(\xi-1)\big(\xi-\tfrac{\alpha}{1/2-\alpha}\big)$ folgt
+für CONLINE3 punktweise Nichtnegativität ab $\alpha\ge\tfrac14$, für CONQUAD8 dagegen erst ab
+$\alpha\ge\tfrac38$ \eqref{eq:alphastar} -- der implementierte Wert $\tfrac13$ liegt zwischen
+beiden. Genau diese Absicherung fehlt beim CONQUAD9 -- der folgende Abschnitt begründet, warum,
+und benennt die Grenze dieser Begründung.
 
 \subsection{Wahl des Transformationsparameters $\alpha$}
 \label{sec:alphachoice}
@@ -1276,9 +1280,38 @@ Integral besitzt, sondern \emph{punktweise nichtnegativ} ist,
 \tilde N_j(\boldsymbol\xi) \;\ge\; 0 \quad \forall\,\boldsymbol\xi\in\text{ele},
 \label{eq:pointwisepos}
 \end{equation}
-eine strikt stärkere Forderung als \eqref{eq:intpos}. Für die serendipity-Eckfunktion existiert eine
-Schwelle $\alpha^\ast$, oberhalb derer \eqref{eq:pointwisepos} gilt; sie liegt zwischen den beiden
-Literaturwerten $\tfrac15$ und $\tfrac13$.
+eine strikt stärkere Forderung als \eqref{eq:intpos}. Für die Serendipity-Eckfunktion lässt sich die
+zugehörige Schwelle geschlossen angeben. Auf der Diagonalen $\xi=\eta=t$ des Referenzquadrats ist
+mit $\tilde N_1 = N_1+\alpha(N_5+N_8)$
+\begin{equation}
+\tilde N_{\text{Ecke}}(t,t) \;=\; (1-t)^2\Big[\big(\alpha-\tfrac12\big)\,t + \big(\alpha-\tfrac14\big)\Big],
+\label{eq:quad8diag}
+\end{equation}
+und auf dieser Diagonalen liegt auch das Minimum über das gesamte Referenzquadrat (nachgerechnet
+auf einem $601\times601$-Gitter). Der Vorfaktor $(1-t)^2$ ist nichtnegativ, die eckige Klammer fällt
+für $\alpha<\tfrac12$ linear in $t$, ihr kleinster Wert auf $t\in[-1,1]$ ist also $2\alpha-\tfrac34$.
+Damit gilt
+\begin{equation}
+\tilde N_{\text{Ecke}}\;\ge\;0 \ \text{ auf dem ganzen Element}
+\quad\Longleftrightarrow\quad \alpha\;\ge\;\alpha^\ast=\tfrac38 .
+\label{eq:alphastar}
+\end{equation}
+Die Schwelle liegt damit \emph{oberhalb} beider Literaturwerte: \textbf{weder $\alpha=\tfrac15$ noch
+$\alpha=\tfrac13$ macht die transformierte Eckfunktion punktweise nichtnegativ.} Das ist kein
+Widerspruch zur Literatur -- \citet{popp2012} und \citet{farah} begründen ihre Werte ausdrücklich
+mit der Integral-Positivität \eqref{eq:intpos} und führen die punktweise Nichtnegativität nur für
+die \emph{ordnungsreduzierte} (bi-)lineare Multiplikatorwahl an
+(\citealp[S.~B429]{popp2012}), nicht für die transformierte quadratische Basis.
+
+Was $\alpha$ steuert, ist die \emph{Ausdehnung} des Gebiets, auf dem die Eckfunktion negativ wird:
+nach \eqref{eq:quad8diag} ist sie negativ für $t>(\alpha-\tfrac14)/(\tfrac12-\alpha)$, also ab
+$t>-\tfrac16$ bei $\alpha=\tfrac15$ und erst ab $t>\tfrac12$ bei $\alpha=\tfrac13$. Flächenmäßig
+nimmt das Negativgebiet damit $65\,\%$ des Referenzquadrats ein gegenüber $12{,}4\,\%$
+(ausgezählt auf demselben Gitter). Auch die Tiefe unterscheidet sich um mehr als eine
+Größenordnung -- die Minima sind $-\tfrac{343}{4860}\approx-7{,}06\cdot10^{-2}$ bei $t=\tfrac29$
+gegenüber $-\tfrac{1}{324}\approx-3{,}09\cdot10^{-3}$ bei $t=\tfrac23$. Ein knotenweises Gewicht
+$\int_{\gamma_c^{\text{ovl}}}\tilde N_j$ wird deshalb erst dann negativ, wenn die Überlappung
+überwiegend in diesem Restgebiet liegt; eine bloße Teilüberdeckung genügt nicht.
 
 \paragraph{Numerischer Befund.}
 Dies ist an den Geometrien der Tests~05 und~08 (Abschnitt~\ref{sec:verif}) gemessen. Die
@@ -1290,26 +1323,49 @@ wohl aber durch dieselbe Umstellung:
 \begin{itemize}\itemsep2pt
   \item \textbf{Test~05 (partielle Überdeckung, CONQUAD8):} Bei um $0.3$ verschobenem Master
         ($70\%$ Überdeckung) sind mit $\alpha=\tfrac13$ alle knotenweisen Gewichte strikt positiv;
-        mit $\alpha=\tfrac15$ wird ein Eckknoten-Gewicht \emph{negativ} ($\approx-0.0049$) --
-        $\tilde N_{\text{Ecke}}$ ist dort also nicht punktweise nichtnegativ.
+        mit $\alpha=\tfrac15$ wird ein Eckknoten-Gewicht \emph{negativ} ($\approx-0.0049$). Der
+        Unterschied ist nach \eqref{eq:quad8diag} zu erwarten: bei $\alpha=\tfrac15$ reicht das
+        Negativgebiet weit in die Überlappung hinein, bei $\alpha=\tfrac13$ wird sein Beitrag vom
+        positiven Anteil der Überlappung überwogen.
+  \item \textbf{Grenze auch bei $\alpha=\tfrac13$ (CONQUAD8, konsistenter Pfad):} Legt man die
+        Überlappung gezielt in das verbleibende Negativgebiet -- Slave $[0,1]^2$, Master so
+        verschoben, dass nur die Ecke $[s,1]^2$ überdeckt ist --, so wird das Gewicht des
+        gegenüberliegenden Eckknotens ab $s>\tfrac58$, also unterhalb von $14{,}06\,\%$
+        Überdeckung, negativ: bei $9\,\%$ Überdeckung $-1{,}35\cdot10^{-4}$, das sind
+        $-0{,}26\,\%$ des größten Gewichts. Der Sliver-Rückfall (Abschnitt~\ref{sec:sliver})
+        spricht dabei \emph{nicht} an; das Gewicht wird auf dem konsistenten Weg negativ. Für
+        diese Konfiguration ist das Gewicht geschlossen angebbar,
+        $\tilde D_{jj}=-\tfrac{1}{36}(s-1)^4(8s-5)$ mit Nullstelle bei $s=\tfrac58$; die
+        Segmentquadratur trifft sie auf $10^{-14}$ absolut
+        (\file{05\_quadratic\_segmentation}, \code{test\_partial\_coverage\_corner\_can\_turn\_weight\_negative}).
+        Die Konfiguration ist auch nicht konstruiert -- im Ausziehversuch tritt sie auf
+        (Abschnitt~\ref{sec:implnotes}).
   \item \textbf{Test~08 (verzerrter hex20-Patch-Test):} Der übertragene Kontaktdruck weicht mit
         $\alpha=\tfrac13$ punktuell um $14.3\%$ vom Sollwert ab (innerhalb der $20\%$-Toleranz für
         verzerrte Netze), mit $\alpha=\tfrac15$ dagegen um $21.8\%$ (außerhalb der Toleranz). Die
         übertragene \emph{Gesamtkraft} ist in beiden Fällen exakt.
 \end{itemize}
-Der Wert $\alpha=\tfrac13$ liegt mit größerem Abstand zur unteren Positivitätsschranke und macht die
-transformierten Eckfunktionen -- im untersuchten Bereich -- punktweise nichtnegativ, sodass die
-Gewichte auch bei Teilkontakt und Netzverzerrung positiv und die diskrete Signorini-Bedingung robust
-bleiben. Der Preis ist der Verzicht auf die exakte Reproduktion linearer Polynome, die $\alpha=\tfrac15$
-auf unverzerrten Elementen böte; für die Konsistenzordnung des Kontakts ist dies unkritisch, und die
-unverzerrten Patch-Tests werden mit beiden Werten exakt bestanden.
+Der Wert $\alpha=\tfrac13$ sichert \eqref{eq:pointwisepos} demnach \emph{nicht}; er verkleinert das
+Negativgebiet. Gegenüber $\alpha=\tfrac15$ schrumpft es auf der Diagonalen von $t>-\tfrac16$ auf
+$t>\tfrac12$ und wird um den Faktor $23$ flacher, und das genügt, damit die Gewichte bei jeder
+Überdeckung von nennenswerter Größe positiv bleiben -- zusammen mit dem in Test~08 gemessenen
+Genauigkeitsvorteil bei Verzerrung ist das die Begründung der Wahl. Der Preis ist der Verzicht auf
+die exakte Reproduktion linearer Polynome, die $\alpha=\tfrac15$ auf unverzerrten Elementen böte;
+für die Konsistenzordnung des Kontakts ist dies unkritisch, und die unverzerrten Patch-Tests werden
+mit beiden Werten exakt bestanden. Vollständig ausräumen ließe sich \eqref{eq:pointwisepos} erst
+mit $\alpha\ge\tfrac38$ nach \eqref{eq:alphastar}. Das ist \emph{nicht} umgesetzt und hier auch
+nicht erprobt: $\tfrac38$ entfernt sich weiter von Popps flächenspezifischem $\tfrac15$, und welche
+Auswirkung das auf die Genauigkeit bei verzerrten Netzen hätte, ist nicht gemessen.
 
 \begin{quote}\small
 \textbf{Bemerkung.} Da im Zielanwendungsfall (Ausziehversuch eines Ankers im Betonblock)
-verzerrte Netze und über den Lastverlauf wechselnder Teilkontakt auftreten, ist die durch
-$\alpha=\tfrac13$ gesicherte punktweise Nichtnegativität hier die ausschlaggebende Eigenschaft --
-sie hat Vorrang vor der exakten Linearreproduktion von $\alpha=\tfrac15$. Dies deckt sich mit Farahs
-Begründung ``numerische Erfahrung'' (\citealp[Gl.~(6.20)]{farah}).
+verzerrte Netze und über den Lastverlauf wechselnder Teilkontakt auftreten, ist die Robustheit der
+knotenweisen Gewichte hier die ausschlaggebende Eigenschaft; sie hat Vorrang vor der exakten
+Linearreproduktion von $\alpha=\tfrac15$. Dies deckt sich mit Farahs Begründung ``numerische
+Erfahrung'' (\citealp[Gl.~(6.20)]{farah}). Verbessert ist diese Robustheit damit, garantiert ist
+sie nicht: den Rest trägt der $\mathrm{sgn}(\tilde D_{jj})$-Zweig des Aktivierungstests
+(Abschnitt~\ref{sec:sgnd}) -- und der Ausziehversuch zeigt, dass dieser Zweig dort tatsächlich
+gebraucht wird.
 \end{quote}
 
 \subsection{Sonderfall CONQUAD9: Reichweite der Literaturbegründung}
@@ -1344,9 +1400,14 @@ werden. Gemessen (Test~05, Master um $0{,}3$ verschoben, entspricht $70\,\%$ Üb
 $\tilde D_{jj}=-0{,}0109$ bei einem größten Gewicht von $0{,}35$; bei $50\,\%$ Überdeckung
 $-0{,}0278$.
 
-Für CONQUAD8 tritt das nicht auf: dort macht gerade die Transformation mit $\alpha=\tfrac13$ die
-Basis punktweise nichtnegativ -- das war die Begründung in Abschnitt~\ref{sec:alphachoice}. Für
-CONQUAD9 gibt es in diesem Code keine entsprechende Absicherung.
+Der Unterschied zum CONQUAD8 ist gradueller, nicht grundsätzlicher Natur. Auch dessen
+transformierte Eckfunktion ist bei $\alpha=\tfrac13$ nicht punktweise nichtnegativ
+(Abschnitt~\ref{sec:alphachoice}), ihr Minimum liegt aber bei $-\tfrac{1}{324}$ statt $-\tfrac18$
+-- ein Faktor $40$ --, und das Negativgebiet bedeckt $12{,}4\,\%$ des Referenzquadrats statt
+$49{,}8\,\%$. Beim CONQUAD8 muss die
+Überdeckung deshalb nahezu vollständig in dieses Restgebiet fallen, damit ein Gewicht kippt; beim
+CONQUAD9 genügt bereits eine freiliegende Kante. Eine Absicherung im Sinne von
+\eqref{eq:pointwisepos} hat dieser Code für keinen der beiden Typen.
 
 \paragraph{Präzisierung des Begriffs der vollen Überdeckung.} Maßgeblich ist die \emph{Vereinigung aller}
 Überlappungssegmente einer Slave-Facette, nicht die Zuordnung zu einem einzelnen Master-Element.
@@ -1388,8 +1449,9 @@ Das Knotengewicht ist also das Integral der \emph{primalen} transformierten Form
 überdeckten Bereich -- unabhängig davon, wie die dualen Koeffizienten konstruiert werden. Wechselt
 $\tilde N_j$ im Element das Vorzeichen, kann dieser Wert negativ werden, und keine Wahl von
 $\bm A_e$ ändert daran etwas. Es bleiben genau zwei Auswege: $\tilde N_j$ punktweise nichtnegativ
-machen (das leistet die Basistransformation bei CONQUAD8) oder das Vorzeichen konsistent behandeln
-(Abschnitt~\ref{sec:sgnd}). Für CONQUAD9 greift derzeit nur der zweite.
+machen -- bei CONQUAD8 wäre dafür $\alpha\ge\tfrac38$ nötig \eqref{eq:alphastar}, umgesetzt ist
+$\tfrac13$ -- oder das Vorzeichen konsistent behandeln (Abschnitt~\ref{sec:sgnd}). Bei CONLINE3
+greift der erste Ausweg ($\alpha^\ast=\tfrac14$), bei CONQUAD8 und CONQUAD9 derzeit nur der zweite.
 
 \paragraph{Konsequenz.} Ein negatives $\tilde D_{jj}$ dreht die Vorzeichenkonventionen des
 Kontakts um. Der Code fängt das ab (Abschnitt~\ref{sec:sgnd}); die Vorzeichen von Druck, Spalt und
@@ -2175,9 +2237,12 @@ eine noch laufende Suche ab. Über die \file{Control\_Tests}-Reihe und die Patch
 Inkremente, gezählt über einen instrumentierten Lauf von \file{Control\_Tests/final\_report.py}
 und den Patch-Tests \file{07}/\file{08}) friert das Set ausschließlich über das PDASS-Kriterium ein ($111$ Fälle), weder über
 die Anti-Cycling-Regel noch über die Obergrenze; die höchste auftretende Iterationszahl beträgt
-$11$ bei einer Schranke von $20$. Im Ausziehversuch (Abschnitt~\ref{sec:testbeispiel}) greift die
-Obergrenze dagegen in $3{,}5\,\%$ (hex8) bzw.\ $4{,}6\,\%$ der Inkremente (hex20) bei bis zu $26$
-Iterationen. Für die betroffenen Inkremente ist die Zulässigkeit der Lösung im Sinne der
+$11$ bei einer Schranke von $20$. Auch im Ausziehversuch (Abschnitt~\ref{sec:testbeispiel}) greift
+die Obergrenze nicht: die zugehörige Laufzeitdiagnose \code{active\_set\_iteration\_cap} meldet sich
+in keinem der beiden Läufe, obwohl einzelne Inkrementversuche $23$ (hex8) bzw.\ $25$
+Newton-Iterationen (hex20) brauchen -- letzteres die Iterationsgrenze des Lösers selbst. Das Set
+ist dort also bereits vorher über das PDASS-Kriterium oder die Anti-Cycling-Regel eingefroren.
+Greift die Obergrenze doch einmal, ist die Zulässigkeit der Lösung im Sinne der
 Signorini-Bedingungen nicht durch das Verfahren garantiert, sondern nachzuweisen; Test~10 leistet
 das für ein konvergiertes Modell und weist zugleich aus, ob das Set des letzten Increments über die
 Obergrenze eingefroren wurde.
@@ -2309,9 +2374,49 @@ gewichtete Spalt bleibt an einem solchen Knoten ein Mittel mit teilweise negativ
 verliert damit seine Deutung als mittlere Öffnung; er kann positiv sein, während Teile der Facette
 durchdringen. Die Vorzeichenbehandlung ist also eine Absicherung, kein Ersatz für die
 Integral-Positivität. Die praktische Konsequenz steht in Abschnitt~\ref{sec:basistrafo}: für
-quadratische Flächen CONQUAD8 verwenden, CONQUAD9 nur bei voller Überdeckung -- mit der im
-folgenden Abschnitt vermessenen Einschränkung, dass auch CONQUAD8 seine Positivitätsgarantie
-verliert, sobald der Rückfallpfad greift.
+quadratische Flächen CONQUAD8 verwenden, CONQUAD9 nur bei voller Überdeckung -- mit der
+Einschränkung, dass auch CONQUAD8 keine Positivitätsgarantie bei Teilüberdeckung besitzt. Sein
+Negativgebiet ist nur klein (Abschnitt~\ref{sec:alphachoice}); auf dem Rückfallpfad entfällt auch
+dieser Vorteil (Abschnitt~\ref{sec:sliver}).
+
+\paragraph{Tragweite für das Ergebnis.}
+Wie weit die Sache trägt, lässt sich für CONQUAD8 auf dem konsistenten Weg genau eingrenzen -- drei
+Aussagen, die zusammen erklären, warum ein negatives Knotengewicht ein Genauigkeitsbefund an
+wenigen Randknoten bleibt und keine Aussage über die übertragene Last gefährdet.
+
+\emph{Erstens} bleibt die Kraftübertragung unberührt. Die Zeilensummen-Identität
+$\sum_K D_{IK}=\sum_J C_{IJ}$ \eqref{eq:rowsum} gilt unabhängig vom Vorzeichen des Gewichts und
+wird auch an Knoten mit $\tilde D_{jj}<0$ auf $10^{-16}$ eingehalten
+(\file{05\_quadratic\_segmentation}, in denselben Konfigurationen mitgeprüft, in denen das Gewicht
+kippt). Was die Slave-Seite abgibt, kommt auf der Master-Seite an; eine Reaktionskraft-Auswertung
+wie im Ausziehversuch kann durch negative Gewichte weder gewinnen noch verlieren.
+
+\emph{Zweitens} sind die tragenden Knoten strukturell ausgeschlossen. Für ein \emph{voll}
+überdecktes Slave-Element ist $\int_{\gamma_c^{\text{ovl}}}\tilde N_j=\int_{\text{ele}}\tilde N_j>0$,
+und das gilt bereits ab $\alpha>\tfrac18$. Betroffen sein können also nur Knoten am \emph{Rand der
+Kontaktzone} -- dort, wo das Slave-Netz über das Master-Netz hinausragt und der überdeckte Anteil
+im Negativgebiet der Eckfunktion liegt.
+
+\emph{Drittens} ist ein solches Gewicht der Größe nach beschränkt. Aus der punktweisen Schranke
+$\tilde N_j\ge-\tfrac{1}{324}$ (Abschnitt~\ref{sec:alphachoice}) folgt unmittelbar
+\begin{equation}
+\tilde D_{jj} \;\ge\; -\tfrac{1}{324}\,\big|\gamma_c^{\text{ovl}}\big| ,
+\label{eq:negweightbound}
+\end{equation}
+also höchstens $0{,}31\,\%$ der überdeckten Fläche -- gegenüber $\tfrac{5}{36}=13{,}9\,\%$, die
+derselbe Eckknoten bei voller Überdeckung trägt. Das ist ein Faktor $45$. Und da die Knotenkraft
+$-\lambda_j\tilde D_{jj}$ ist \eqref{eq:nodalforce}, ist der Beitrag eines solchen Knotens zur
+übertragenen Kraft um denselben Faktor kleiner als der eines voll überdeckten. Die drei
+Messpunkte aus Abschnitt~\ref{sec:alphachoice} halten \eqref{eq:negweightbound} mit Faktor $2$ bis
+$4{,}5$ Abstand ein.
+
+Offen bleibt genau eine Sache, und die ist nicht durch obige Schranke gedeckt: die \emph{lokale}
+Durchdringung an einem solchen Knoten wird nicht automatisch bemerkt, weil $\tilde g_j$ dort seine
+Deutung verloren hat. Wer sie ausschließen will, prüft den physikalischen Spalt am konvergierten
+Zustand (\file{10\_signorini\_check}) statt den gewichteten. Und \eqref{eq:negweightbound} gilt
+\emph{nur} auf dem konsistenten Weg: auf dem Rückfallpfad erreichen die Gewichte $-1{,}0$ des
+größten Gewichts (Abschnitt~\ref{sec:sliver}), dort greift keine der drei Eingrenzungen außer der
+ersten.
 
 \subsection{Deutung des Multiplikators bei teilweiser Überdeckung}
 \label{sec:lambdadeutung}
@@ -2395,15 +2500,19 @@ $\mathrm{cond}(\bm M_t)$ bis $2{,}8\cdot10^{24}$. Er ist damit kein bloß theore
 sondern an gekrümmten Kontakträndern mit wandernder Kontaktzone der Normalfall.
 
 \paragraph{Konsequenz für die Knotengewichte.}
-Die Positivität $\tilde D_{jj}\ge0$ für CONQUAD8 beruht darauf, dass auf dem konsistenten Weg
-$\tilde D_{jj}=\int_{\text{Überlappung}}\tilde N_j$ gilt und die transformierte Basis $\tilde N_j$
-punktweise nicht-negativ ist (Abschnitt~\ref{sec:basistrafo}); das Integral einer nicht-negativen
-Funktion über ein beliebiges Teilgebiet bleibt nicht-negativ. Auf dem Rückfallpfad steht an dieser
-Stelle $\int_{\text{Überlappung}}\Phi_j^{\text{ref}}$ mit den dualen Funktionen des
-\emph{Voll}-Elements. Diese sind punktweise vorzeichenwechselnd: ihre definierende Eigenschaft ist
-die Biorthogonalität \eqref{eq:biorth} über das \emph{ganze} Element, nicht Nicht-Negativität. Das
-Integral über ein Teilgebiet kann daher jedes Vorzeichen annehmen. Die Positivitätsaussage ist damit an den konsistenten
-Weg gebunden und gilt auf dem Rückfallpfad für CONQUAD8 ebenso wenig wie für CONQUAD9. Ein
+Auf dem konsistenten Weg ist $\tilde D_{jj}=\int_{\text{Überlappung}}\tilde N_j$. Für CONQUAD8 ist
+diese Größe bei Teilüberdeckung durch die Basistransformation \emph{nicht} abgesichert:
+$\alpha=\tfrac13$ sichert nur das Voll-Element-Integral; punktweise nichtnegativ wäre $\tilde N_j$
+erst ab $\alpha\ge\tfrac38$ \eqref{eq:alphastar}. Liegt die Überlappung überwiegend im
+verbleibenden Negativgebiet der Eckfunktion, wird das Gewicht auch ohne Rückfall negativ --
+gemessen ab $14\,\%$ Eckenüberdeckung, bei $9\,\%$ mit $-0{,}26\,\%$ des größten Gewichts
+(Abschnitt~\ref{sec:alphachoice}).
+
+Der Rückfallpfad verschärft das um Größenordnungen. Dort steht an derselben Stelle
+$\int_{\text{Überlappung}}\Phi_j^{\text{ref}}$ mit den dualen Funktionen des \emph{Voll}-Elements.
+Diese sind punktweise vorzeichenwechselnd -- ihre definierende Eigenschaft ist die
+Biorthogonalität \eqref{eq:biorth} über das \emph{ganze} Element, nicht Nichtnegativität --, und das
+Integral über ein Teilgebiet kann daher jedes Vorzeichen und jede Größenordnung annehmen. Ein
 CONQUAD8-Paar mit schrumpfender Überdeckung zeigt den Übergang:
 
 \begin{center}
@@ -2429,8 +2538,10 @@ bleiben frei davon. Diese Zahlen stammen aus einem instrumentierten Lauf: die La
 selbst meldet je Constraint nur das \emph{erste} Auftreten und beziffert daher weder die Anzahl
 der betroffenen Increments noch das schlechteste Verhältnis. Die
 Vorzeichenbehandlung aus Abschnitt~\ref{sec:sgnd} deckt diesen Fall ab, sodass die Lösungen
-gültig bleiben; negative Knotengewichte sind damit aber keine Eigenheit des CONQUAD9, sondern
-eine Eigenschaft jeder Sliver-Zelle unabhängig vom Elementtyp. Die Konditionsschranke $10^{12}$
+gültig bleiben; negative Knotengewichte sind damit aber keine Eigenheit des CONQUAD9. Sie treten
+bei jeder Sliver-Zelle unabhängig vom Elementtyp auf -- und beim CONQUAD8 zusätzlich, wie oben
+gezeigt, schon ohne Sliver, sobald die Überdeckung im Negativgebiet der Eckfunktion liegt. Die
+Konditionsschranke $10^{12}$
 tauscht demnach eine unbrauchbare Inverse gegen den Verlust der Integral-Positivität; beide
 Alternativen sind an einer entarteten Zelle unbefriedigend, und der Rückfall ist die numerisch
 robustere von beiden.
@@ -2758,7 +2869,7 @@ Auf dem Ausziehversuch (Abschnitt~\ref{sec:testbeispiel}, CONQUAD4) spricht als 
 die Selbstprüfung des Active Sets an, und zwar auf allen sechs Kontaktpaaren an je einem bis zwei
 Slave-Knoten. Da die Meldung je Constraint und Ursache nur \emph{einmal} ausgegeben wird, steht
 damit fest, \emph{dass} sie an jedem Kontaktpaar mindestens einmal ausgelöst hat -- nicht, wie oft
-und in welchen Increments. Und da dieselbe Rechnung $13$ Cutbacks enthält, ist nach der oben
+und in welchen Increments. Und da dieselbe Rechnung $12$ Cutbacks enthält, ist nach der oben
 beschriebenen Reichweite der Prüfung nicht auszuschließen, dass ein Teil der Meldungen aus
 gescheiterten Versuchen stammt und insoweit gegenstandslos ist. Belastbar ist die schwächere
 Aussage: an mindestens einem Increment je Kontaktpaar hat der Indikator am konvergierten Zustand
@@ -2768,6 +2879,27 @@ Newton-Verfahrens adressieren würde (Abschnitt~\ref{sec:ausblick:lin}). Wer die
 Signorini-Zulässigkeit dieses Modells wirklich feststellen will, prüft sie am Endzustand
 (\file{10\_signorini\_check}). Weder Sliver-Rückfall noch negatives Knotengewicht noch eine
 fehlgeschlagene Rückabbildung treten dort auf.
+
+Die quadratische Variante desselben Modells (CONQUAD8) meldet dieselbe Selbstprüfung ebenfalls auf
+allen sechs Kontaktpaaren und darüber hinaus \emph{negative Knotengewichte}: auf dem Kontaktpaar
+\code{contact\_l\_head\_vert} an fünf Slave-Knoten, im ungünstigsten Fall bei $-0{,}85$ des größten
+Gewichts, und das bereits ab Increment~1. Der Sliver-Rückfall spricht dabei \emph{nicht} an: es ist
+der in Abschnitt~\ref{sec:alphachoice} beschriebene Fall, in dem die Überdeckung eines
+Slave-Elements im Negativgebiet der transformierten Eckfunktion liegt und $\tilde D_{jj}$ schon auf
+dem konsistenten Weg negativ wird. Das gemeldete Verhältnis ist relativ zum größten Gewicht
+\emph{derselben} Fläche; über die absolute Größe der Gewichte sagt es nichts, und die Diagnose
+nennt nur das erste Auftreten. Die Vorzeichenbehandlung aus Abschnitt~\ref{sec:sgnd} trägt den
+Fall; der gewichtete Spalt ist an diesen Knoten aber kein mittleres Öffnungsmaß mehr.
+
+Für die Bewertung der Kurven in Abschnitt~\ref{sec:testbeispiel} ist das ohne Belang, und zwar aus
+den in Abschnitt~\ref{sec:sgnd} genannten Gründen: die Zeilensummen-Identität und damit die
+übertragene Kraft sind vom Vorzeichen des Gewichts unabhängig, betroffen sein können nur Knoten am
+Rand der Kontaktzone -- die tragenden, voll überdeckten sind ausgeschlossen --, und die Größe eines
+negativen Gewichts ist nach \eqref{eq:negweightbound} auf $\tfrac{1}{45}$ dessen beschränkt, was
+derselbe Knoten bei voller Überdeckung trüge. Der Umfang passt dazu: $5$ der $43$ Slave-Knoten
+\emph{eines} der sechs Kontaktpaare, bei $498$ Multiplikatorzeilen im Modell, also rund $1\,\%$.
+Was offenbleibt, ist ausschließlich eine mögliche lokale Durchdringung an diesen Knoten; sie wäre
+über den physikalischen Spalt am Endzustand zu prüfen, nicht über $\tilde g_j$.
 
 % =====================================================================
 \section{Verifikation}
@@ -2786,7 +2918,7 @@ Eigenschaft & Prüfung \\
 \textbf{Polygon-Clipping} & Schnitt-/Triangulierungsgeometrie gegen analytische Überlappungen, einschließlich des Flächen\emph{gewinns} bei nicht-konvexem Subject (\file{02\_polygon\_clipping}). \\
 \textbf{Koppelmatrizen} & $\bm D,\bm M$, Zeilensummen-Identität \eqref{eq:rowsum} ($<10^{-14}$) und Überlappungsfläche gegen den analytischen Wert (\file{03\_coupling\_matrices}). \\
 \textbf{Biorthogonalität} & \eqref{eq:biorth} gegen \emph{unabhängige} Referenzen: geschlossene duale Basis des CONQUAD4, Nachrechnung mit einer höhergradigen Quadraturregel, und -- als einzige Prüfung des Produktionspfads -- Diagonalität von $\bm D\bm T_e^{\!\top}$ nach \eqref{eq:DTdiag} aus der echten Segmentquadratur, auch bei Teilüberdeckung (\file{04\_dual\_biorthogonality}). \\
-\textbf{Quadratische Segmentierung} & Sub-Cell-Zerlegung + Segmentquadratur für CONQUAD8/9, CONTRI6; Schwellen der Sub-Cell-Konvexität und Übergang zum Rückfallpfad samt Vorzeichenwechsel von $\tilde D_{jj}$ (\file{05\_quadratic\_segmentation}). \\
+\textbf{Quadratische Segmentierung} & Sub-Cell-Zerlegung + Segmentquadratur für CONQUAD8/9, CONTRI6; Schwellen der Sub-Cell-Konvexität und Übergang zum Rückfallpfad samt Vorzeichenwechsel von $\tilde D_{jj}$. Dazu die Grenze der Basistransformation: bei $\alpha=\tfrac13$ ist die CONQUAD8-Eckfunktion nicht punktweise nichtnegativ, und das knotenweise Gewicht kippt schon auf dem \emph{konsistenten} Pfad, sobald die Überlappung im Negativgebiet liegt -- gegen die geschlossene Form $-\tfrac{1}{36}(s-1)^4(8s-5)$ gerechnet, Vorzeichenwechsel bei $s=\tfrac58$ (\file{05\_quadratic\_segmentation}). \\
 \textbf{Active-Set / PDASS} & Aktivierung bei Durchdringung, Freeze/Anti-Cycling sowie Vorzeichenbehandlung bei negativem Knotengewicht (\file{06\_active\_set\_pdass}). \\
 \textbf{Patch-Test 2D} & Bausteine \emph{und} Löser-Patch-Test: CPE4/CONLINE2 und CPE8/CONLINE3, je konform und nichtkonform (\file{07\_patch\_test\_2d}). \\
 \textbf{Patch-Test hex20} & 3D-Patch-Test, vier Netz-/Ordnungskombinationen mit geraden Kanten plus eine verzerrte Variante (\file{08\_patch\_test\_hex20}). Gepaart werden CONQUAD8/CONQUAD8 (passend und nichtpassend) sowie beide gemischten Ordnungen, CONQUAD8-Slave gegen CONQUAD4-Master und umgekehrt. \\
@@ -3104,29 +3236,30 @@ Abbildung~\ref{fig:pot} stellt beide Rechnungen den drei Laborversuchen gegenüb
 \caption[Ausziehversuch nach Dejori: Kraft-Weg-Kurven]{Ausziehversuch nach Dejori:
 Kraft-Weg-Kurven der linearen (hex8) und der quadratischen
 (hex20) Diskretisierung gegen das Streuband der drei Laborversuche. Beide Rechnungen verwenden
-dieselbe Gesamt-Auflagerbettung. Das Kreuz markiert jeweils das
-Ende der Rechnung. Erzeugt mit \file{POT\_Dejori/plot\_comparison.py}.}
+dieselbe Gesamt-Auflagerbettung. Die quadratische Rechnung läuft bis zur vorgegebenen
+Endverschiebung von $1{,}1$\,mm durch; das Kreuz markiert den Abbruch der linearen Rechnung.
+Erzeugt mit \file{POT\_Dejori/plot\_comparison.py}.}
 \label{fig:pot}
 \end{figure}
 
 \begin{center}
 \small
-\begin{tabular}{lccc}
+\begin{tabular}{lcccc}
 \toprule
- & Sekantensteifigkeit ($u\le0{,}03$\,mm) & $F_{\max}$ & $u$ bei $F_{\max}$ \\
+ & Sekantensteifigkeit ($u\le0{,}03$\,mm) & $F_{\max}$ & $u$ bei $F_{\max}$ & $u$ am Ende \\
 \midrule
-hex8 (\code{GC3D8}/\code{CONQUAD4})    & $199{,}1$\,kN/mm & $22{,}50$\,kN & $0{,}143$\,mm \\
-hex20 (\code{GC3D20R}/\code{CONQUAD8}) & $197{,}7$\,kN/mm & $19{,}85$\,kN & $0{,}121$\,mm \\
+hex8 (\code{GC3D8}/\code{CONQUAD4})    & $199{,}1$\,kN/mm & $22{,}50$\,kN & $0{,}143$\,mm & $0{,}815$\,mm \\
+hex20 (\code{GC3D20R}/\code{CONQUAD8}) & $197{,}6$\,kN/mm & $19{,}77$\,kN & $0{,}121$\,mm & $1{,}100$\,mm \\
 \midrule
-Versuch 1 & --- & $19{,}53$\,kN & $0{,}087$\,mm \\
-Versuch 2 & --- & $16{,}63$\,kN & $0{,}133$\,mm \\
-Versuch 3 & --- & $17{,}63$\,kN & $0{,}082$\,mm \\
+Versuch 1 & --- & $19{,}53$\,kN & $0{,}087$\,mm & --- \\
+Versuch 2 & --- & $16{,}63$\,kN & $0{,}133$\,mm & --- \\
+Versuch 3 & --- & $17{,}63$\,kN & $0{,}082$\,mm & --- \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 \paragraph{Anfangssteifigkeit: elementordnungsunabhängig.}
-Die Sekantensteifigkeiten stimmen auf $0{,}7\,\%$ überein. Das ist das erwartete Ergebnis: im
+Die Sekantensteifigkeiten stimmen auf $0{,}8\,\%$ überein. Das ist das erwartete Ergebnis: im
 nahezu elastischen Bereich, vor Einsetzen nennenswerter Schädigung, darf die Elementordnung die
 Systemsteifigkeit kaum beeinflussen, und der Mortar-Kontakt überträgt in beiden Fällen dieselbe
 Last. Es bestätigt zugleich die Referenztests aus \file{Control\_Tests}, in denen hex8, hex20 und
@@ -3136,49 +3269,62 @@ richtige Richtung, da der trilineare Ansatzraum im 20-Knoten-Serendipity-Raum en
 reduzierte Integration die Steifigkeit zusätzlich senkt.
 
 \paragraph{Traglast: Einfluss der Diskretisierung.}
-Am Peak trennen sich die Kurven. Die quadratische Rechnung trifft mit $19{,}85$\,kN die Oberkante
+Am Peak trennen sich die Kurven. Die quadratische Rechnung trifft mit $19{,}77$\,kN die Oberkante
 des Versuchsstreubands ($16{,}6\ldots19{,}5$\,kN), die lineare überschätzt mit $22{,}50$\,kN alle
 drei Versuche um $15$ bis $35\,\%$ und erreicht den Peak zudem später ($0{,}143$ statt
 $0{,}121$\,mm). Das ist ein echter Diskretisierungseffekt: der Ausziehversuch ist am Bolzenkopf
 lokalisierungsdominiert, und lineare Elemente verschmieren den dortigen Dehnungsgradienten über die
 Elementlänge. Die lokale Spannungsspitze wird dadurch unterschätzt, die Schädigung setzt verspätet
-ein, und die Kurve läuft auf einen höheren, späteren Peak. Im entfestigenden Ast liegt die lineare
-Rechnung durchgehend über der quadratischen und näher am Versuchsband -- bei einem
-lokalisierenden Material ist das kein Qualitätsmerkmal, sondern Ausdruck der gröberen Auflösung der
-Schädigungszone.
+ein, und die Kurve läuft auf einen höheren, späteren Peak.
 
-\subsection{Abbruchverhalten und Rechenaufwand}
+\paragraph{Entfestigender Ast.}
+Nach dem Peak liegt die lineare Rechnung durchgehend über der quadratischen: sie verläuft auf
+$95\,\%$ ihres Nachbruchbereichs innerhalb des Streubands, die quadratische auf $24\,\%$. Bei
+einem lokalisierenden Material ist die bessere Übereinstimmung der linearen Rechnung kein
+Qualitätsmerkmal, sondern Ausdruck der gröberen Auflösung der Schädigungszone. Die quadratische
+Kurve fällt steiler ab, unterschreitet das Streuband zwischen $u\approx0{,}3$ und $0{,}9$\,mm und
+kehrt ab $u=0{,}89$\,mm wieder in das Band zurück; bis zur vorgegebenen Endverschiebung läuft sie
+auf ein Restkraftplateau von $3{,}1$\,kN aus, das sind $16\,\%$ der Traglast. Der zu tiefe Verlauf
+dazwischen ist derselbe Befund wie am Peak, nur mit umgekehrtem Vorzeichen: die feiner aufgelöste
+Schädigungszone entfestigt schneller.
+
+\subsection{Ende der Rechnung und Rechenaufwand}
 Die beiden Rechnungen enden aus \emph{unterschiedlichen} Gründen; das ist für die Bewertung der
 Kurven wesentlich.
 
 \paragraph{hex8: Materialversagen.}
-Die lineare Rechnung läuft bis $u=0{,}795$\,mm, also weit über den Peak hinaus, und bricht dort im
-entfestigenden Ast ab: die Kurve endet mit \emph{senkrechter Tangente}
-($\mathrm dF/\mathrm du\to-\infty$; über die letzten Inkremente $-452$\,kN/mm, während $u$ praktisch
-stehenbleibt). Der Beton kann der aufgezwungenen Verschiebung nicht mehr folgen -- das Material
-versagt. Der Löser meldet entsprechend, dass die Schrittweite nicht weiter reduziert werden kann.
-Die Kurve ist damit inhaltlich vollständig: Anstieg, Traglast und ein großer Teil des
-Nachbruchbereichs sind erfasst. Aufwand: $184$ Inkremente, $13$ Cutbacks, rund $1200$
-Newton-Iterationen, etwa $25$ Minuten Rechenzeit.
+Die lineare Rechnung erreicht die vorgegebene Endverschiebung nicht. Sie läuft bis
+$u=0{,}815$\,mm, also weit über den Peak hinaus, und bricht dort im entfestigenden Ast ab: die
+Kurve endet mit \emph{senkrechter Tangente} ($\mathrm dF/\mathrm du\to-\infty$; die
+Sekantensteifigkeit fällt über die letzten Inkremente von $-27$ auf $-166$\,kN/mm, während $u$
+praktisch stehenbleibt). Der Beton kann der aufgezwungenen Verschiebung nicht mehr
+folgen -- das Material versagt. Der Löser meldet entsprechend, dass die Schrittweite nicht weiter
+reduziert werden kann (\code{Cannot reduce increment size}), und beendet den Step. Die Kurve ist
+damit inhaltlich vollständig: Anstieg, Traglast und ein großer Teil des Nachbruchbereichs sind
+erfasst. Aufwand: $131$ Inkremente, $12$ Cutbacks, $1\,009$ Newton-Iterationen, rund $21$ Minuten
+Rechenzeit.
 
-\paragraph{hex20: händischer Abbruch.}
-Die quadratische Rechnung versagt nicht, sie kommt nicht mehr voran. Nach $5902$ Inkrementen,
-$302$ Cutbacks und rund $34\,000$ Newton-Iterationen war sie erst bei $u=0{,}838$\,mm, also
-$76\,\%$ der vorgegebenen $1{,}1$\,mm -- bei einer Laufzeit von $49{,}5$ Stunden
-(gut zwei Tagen). Die Schrittweite war zu diesem Zeitpunkt auf etwa $10^{-4}$\,mm je Inkrement
-gefallen, bei nahezu waagrechter Kurve ($\mathrm dF/\mathrm du\approx-2$\,kN/mm). Hochgerechnet
-hätte allein der verbleibende Weg nochmals mehr als einen Tag benötigt, ohne dass ein qualitativ
-neues Ergebnis zu erwarten gewesen wäre. Die Rechnung wurde deshalb händisch abgebrochen; das
-Kreuz in Abbildung~\ref{fig:pot} markiert diesen Punkt, nicht ein Versagen.
+\paragraph{hex20: vollständiger Durchlauf.}
+Die quadratische Rechnung erreicht die vorgegebenen $1{,}1$\,mm und endet regulär mit dem
+Laststep. Der Aufwand dafür ist erheblich: $1\,176$ Inkremente, $46$ Cutbacks, $8\,459$
+Newton-Iterationen, $12{,}2$ Stunden ($43\,858$\,s). Er ist zudem stark auf den Bereich um die
+Traglast konzentriert -- $7\,350$ der $8\,459$ Iterationen, also $87\,\%$, entfallen auf die
+ersten $74\,\%$ des Weges (bis zu jenem $u=0{,}815$\,mm, an dem die lineare Rechnung abbricht).
+Der auslaufende Ast danach ist vergleichsweise billig.
 
 \paragraph{Einordnung.}
-Der Aufwandsunterschied -- rund $29$-mal so viele Newton-Iterationen bei $3{,}5$-mal so vielen
-Knoten -- ist nicht allein Netzgröße. Er ist auch die praktische Auswirkung der fehlenden
-konsistenten Linearisierung (Abschnitt~\ref{sec:frozen}): ohne die geometrischen Ableitungen ist
-der Konvergenzradius kleiner, das Verfahren greift häufiger zu Cutbacks, und die Schrittweite
-erholt sich im entfestigenden Bereich nicht mehr. Genau hier läge der Gewinn einer konsistenten
-Linearisierung (Abschnitt~\ref{sec:ausblick:lin}) -- nicht in der Genauigkeit der Kurve, sondern darin,
-sie überhaupt in vertretbarer Zeit zu Ende rechnen zu können.
+Auf diesem gemeinsamen Wegstück lassen sich beide Rechnungen direkt vergleichen, und der Aufwand
+zerfällt in zwei Faktoren: die quadratische Rechnung braucht das $7{,}3$-fache an
+Newton-Iterationen ($7\,350$ gegenüber $1\,009$), und jede einzelne Iteration kostet mit $5{,}2$
+statt $1{,}25$\,s das $4{,}2$-fache. Der zweite Faktor ist Netzgröße ($3{,}5$-mal so viele Knoten);
+der erste ist es nicht -- dieselbe Last, dieselbe Geometrie, dieselben sechs Kontaktpaare, nur mehr
+Newton-Schritte je Wegstück. Dafür kommen zwei Ursachen in Frage, die diese Rechnung nicht trennt:
+die feiner aufgelöste und damit steilere Lokalisierung des Materialmodells, und die fehlende
+konsistente Linearisierung des Kontaktbeitrags (Abschnitt~\ref{sec:frozen}) -- ohne die
+geometrischen Ableitungen ist der Konvergenzradius kleiner, und das Verfahren greift häufiger zu
+Cutbacks ($46$ gegenüber $12$). Hier läge der Gewinn einer konsistenten Linearisierung
+(Abschnitt~\ref{sec:ausblick:lin}): nicht in der Genauigkeit der Kurve, sondern in der Rechenzeit,
+die sie kostet.
 
 % =====================================================================
 \section{Zusammenfassung}

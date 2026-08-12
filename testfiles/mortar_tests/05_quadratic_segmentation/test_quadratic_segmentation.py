@@ -144,12 +144,20 @@ def run_quad_test(el_type, points_func):
     check("sum(D) = Überlappungsfläche", np.sum(D), 0.7, tol=1e-10)
     check("max|rowsum(D)-rowsum(C)|", np.max(np.abs(np.sum(D, axis=1) - np.sum(C, axis=1))), 0.0, tol=1e-12)
 
-    # Gelumpte Gewichte bei PARTIELLER Überdeckung: durch die segment-
-    # quadraturbasierten dualen Koeffizienten (konsistente Randbehandlung,
-    # Cichosz & Bischoff 2011 / MOOSE reinitDual) sind sie robust positiv,
-    # solange die transformierte Basis punktweise nicht-negativ ist (CONQUAD4,
-    # CONQUAD8). Die Lagrange-Mittelknotenfunktionen des CONQUAD9 wechseln
-    # punktweise das Vorzeichen, daher sind dort winzige negative Gewichte an
+    # Gelumpte Gewichte bei PARTIELLER Überdeckung. Die segmentquadratur-
+    # basierten dualen Koeffizienten (konsistente Randbehandlung, Cichosz &
+    # Bischoff 2011 / MOOSE reinitDual) halten sie hier positiv -- aber NICHT
+    # aufgrund eines Positivitätssatzes: die transformierte CONQUAD8-Eckfunktion
+    # ist bei alpha = 1/3 nicht punktweise nicht-negativ (Minimum -1/324 auf
+    # 12,4 % der Elementfläche; dafür wäre alpha >= 3/8 nötig). Bei dieser
+    # STREIFEN-Überdeckung liegt nur ein kleiner Teil des Negativgebiets in der
+    # Überlappung und wird vom positiven Anteil überwogen -- deshalb hält die
+    # scharfe Schranke. Wird die Überlappung dagegen in das Negativgebiet
+    # gelegt, kippt das Gewicht; das hält
+    # test_partial_coverage_corner_can_turn_weight_negative fest.
+    # Echt abgesichert ist nur CONQUAD4 (bilineare N sind punktweise >= 0).
+    # Die CONQUAD9-Formfunktionen wechseln punktweise das Vorzeichen (Minimum
+    # -1/8 auf 49,8 % der Fläche), daher sind dort winzige negative Gewichte an
     # überdeckungsfernen Knoten möglich (vom sgn_D-Guard im Active-Set
     # abgefangen). Toleriert werden 5% des größten Gewichts.
     lumped = np.sum(D, axis=1)
@@ -340,11 +348,15 @@ def run_sliver_fallback_test():
     Das ist kein theoretischer Zweig: ueber die Control_Tests und Patch-Tests wird
     er vier von 3989 Slave-Elementauswertungen betreten, ausschliesslich in den
     gekruemmten Hertz-Modellen. Und er hat eine Konsequenz, die festgehalten
-    gehoert: die Positivitaet von D_II beruht darauf, dass auf dem konsistenten Weg
-    D_II = int_ueberlappung(N_tilde) gilt und die transformierte Basis punktweise
-    nicht-negativ ist. Auf dem Rueckfallpfad steht dort das Integral der dualen
-    Funktionen des VOLLEN Elements, und die wechseln punktweise das Vorzeichen --
-    CONQUAD8 verliert seine Positivitaetsgarantie also ebenso wie CONQUAD9.
+    gehoert. Auf dem konsistenten Weg ist D_II = int_ueberlappung(N_tilde); das
+    kann fuer CONQUAD8 schon dort negativ werden, weil die transformierte Basis
+    bei alpha = 1/3 nicht punktweise nicht-negativ ist (siehe
+    test_partial_coverage_corner_can_turn_weight_negative), aber nur knapp und nur
+    bei einer Ueberdeckung, die im kleinen Negativgebiet der Eckfunktion liegt.
+    Auf dem Rueckfallpfad steht dort dagegen das Integral der dualen Funktionen
+    des VOLLEN Elements. Die wechseln ueber das halbe Element das Vorzeichen, und
+    das Integral ueber ein Teilgebiet nimmt jedes Vorzeichen UND jede
+    Groessenordnung an -- hier bis -1.0 des groessten Gewichts.
 
     Der Test misst den Uebergang, statt ihn zu behaupten.
     """
@@ -403,6 +415,150 @@ def run_sliver_fallback_test():
           "mit dem Vorzeichenwechsel von D_II zusammen.")
 
 
+def _quad8_shape_functions(xi, eta):
+    """Serendipity-Formfunktionen des quad8, hier unabhaengig von
+    ``element.py`` notiert, damit der Vergleich keine Tautologie ist.
+    Knotenreihenfolge wie ueblich: erst die vier Ecken, dann die vier
+    Kantenmitten (Ecke 0 bei (-1,-1), Mitte 4 zwischen Ecke 0 und 1)."""
+    return np.array([
+        0.25 * (1 - xi) * (1 - eta) * (-xi - eta - 1),
+        0.25 * (1 + xi) * (1 - eta) * (xi - eta - 1),
+        0.25 * (1 + xi) * (1 + eta) * (xi + eta - 1),
+        0.25 * (1 - xi) * (1 + eta) * (-xi + eta - 1),
+        0.5 * (1 - xi * xi) * (1 - eta),
+        0.5 * (1 + xi) * (1 - eta * eta),
+        0.5 * (1 - xi * xi) * (1 + eta),
+        0.5 * (1 - xi) * (1 - eta * eta),
+    ])
+
+
+def _transformed_corner_min(alpha, n=401):
+    """Kleinster Wert der transformierten Eckfunktion ueber das Referenzquadrat.
+
+    N_tilde_0 = N_0 + alpha*(N_4 + N_7), Popp et al. (2012), Gl. (4.5).
+    """
+    g = np.linspace(-1.0, 1.0, n)
+    X, Y = np.meshgrid(g, g)
+    N = _quad8_shape_functions(X, Y)
+    return float((N[0] + alpha * (N[4] + N[7])).min())
+
+
+def _corner_weight_closed_form(s):
+    """Geschlossene Form fuer das Knotengewicht des Eckknotens 0 bei einer
+    Ueberlappung, die nur die gegenueberliegende Ecke [s,1]^2 bedeckt.
+
+    Slave = CONQUAD8 auf [0,1]^2 mit alpha = 1/3, lokal xi = 2x-1. Damit ist
+
+        D_II(Ecke 0) = int_{[s,1]^2} N_tilde_0 dA = -(s-1)^4 (8s-5) / 36,
+
+    hergeleitet durch symbolische Integration von N_tilde_0 und hier als
+    Referenz festgehalten (der Test braucht dafuer kein sympy). Nullstellen bei
+    s = 5/8 und s = 1; fuer s > 5/8, also unterhalb von (3/8)^2 = 14.0625 %
+    Ueberdeckung, ist das Gewicht NEGATIV.
+    """
+    return -((s - 1.0) ** 4) * (8.0 * s - 5.0) / 36.0
+
+
+def test_partial_coverage_corner_can_turn_weight_negative():
+    """CONQUAD8 hat bei Teilueberdeckung keine Positivitaetsgarantie.
+
+    Die Basistransformation nach Popp et al. (2012), Gl. (4.5), sichert die
+    INTEGRAL-Positivitaet ueber das VOLLE Element -- unverzerrt ab alpha > 1/8;
+    Popp waehlt 1/5, Farah (2018, Gl. (6.20)) fuer tet10 den hier verwendeten
+    Wert 1/3. Keine der beiden Quellen behauptet punktweise Nichtnegativitaet
+    fuer die transformierte quadratische Basis; Popp nennt diese staerkere
+    Eigenschaft (S. B429) ausdruecklich nur fuer die ordnungsreduzierte
+    (bi)lineare Multiplikatorwahl.
+
+    Das ist relevant, weil segmentbasiert ueber die TATSAECHLICHE Ueberlappung
+    integriert wird: fuer beliebige Teilgebiete braucht es die punktweise
+    Bedingung, und die gilt fuer die quad8-Eckfunktion erst ab alpha >= 3/8.
+    Bei alpha = 1/3 bleibt ein Negativgebiet von 12.4 % der Elementflaeche mit
+    Minimum -1/324. Liegt die Ueberlappung darin, wird D_II negativ -- ohne
+    Sliver-Rueckfall, auf dem konsistenten Weg.
+
+    Der Test haelt beides fest: die punktweise Eigenschaft der Basis und ihre
+    Folge auf dem Produktionspfad, gegen die geschlossene Form gerechnet.
+    """
+    print("\n* CONQUAD8: Teilueberdeckung im Negativgebiet der Eckfunktion")
+
+    # (1) Die transformierte Basis ist bei alpha = 1/3 NICHT punktweise
+    #     nicht-negativ; erst ab alpha* = 3/8 ist sie es.
+    ConClass = getElementClass("CONQUAD8", "edelweiss")
+    T_e = ConClass("CONQUAD8", 1).getBasisTransformation()
+    alpha = float(T_e[0, 4])
+    assert abs(alpha - 1.0 / 3.0) < 1e-14, (
+        f"Dieser Test ist auf alpha = 1/3 geschrieben, implementiert ist {alpha}. Wurde alpha "
+        f"bewusst geaendert (z.B. auf 3/8, ab dem die Basis punktweise nicht-negativ waere), "
+        f"sind die geschlossene Form in _corner_weight_closed_form, die Schwelle s = 5/8 und die "
+        f"Doku-Abschnitte 8.2/8.3/8.4/13.4 nachzuziehen"
+    )
+    print(f"  [OK]   implementiertes alpha: {alpha:.12f}")
+    check("min N_tilde_Ecke (alpha = 1/3)", _transformed_corner_min(alpha), -1.0 / 324.0, tol=1e-6)
+    assert _transformed_corner_min(3.0 / 8.0) > -1e-12, (
+        "Ab alpha = 3/8 muss die transformierte Eckfunktion punktweise nicht-negativ sein"
+    )
+    assert _transformed_corner_min(1.0 / 5.0) < -0.07, (
+        "Bei Popps alpha = 1/5 muss das Negativgebiet deutlich tiefer sein als bei 1/3"
+    )
+
+    # (2) Folge auf dem Produktionspfad: Master so verschoben, dass nur die
+    #     gegenueberliegende Ecke [s,1]^2 ueberdeckt ist.
+    print(f"  {'s':>6} {'Ueberdeckung':>13} {'D_II Ecke 0':>14} {'geschlossen':>14} {'Rueckfall':>10}")
+    print("  " + "-" * 62)
+    slave_pts = quad8_points()
+    for s in (0.3, 0.5, 0.6, 0.65, 0.7, 0.8):
+        master_pts = [[x + s, y + s, z] for x, y, z in quad8_points()]
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            constraint = build_single_facet_model("CONQUAD8", slave_pts, master_pts)
+            D, C = constraint.compute_mortar_coupling_matrices()
+            D, C = D.toarray(), C.toarray()
+        fell_back = any("degenerate overlap" in str(w.message) for w in caught)
+
+        weights = np.sum(D, axis=1)
+        expected = _corner_weight_closed_form(s)
+        print(f"  {s:>6.3f} {100 * (1 - s) ** 2:>12.2f}% {weights[0]:>14.3e} {expected:>14.3e} "
+              f"{('ja' if fell_back else 'nein'):>10}")
+
+        # Der Rueckfallpfad darf hier nirgends greifen -- sonst misst der Test
+        # die Sliver-Entartung statt der punktweisen Eigenschaft der Basis.
+        assert not fell_back, (
+            f"Bei s = {s} darf der Sliver-Rueckfall NICHT greifen; sonst prueft dieser Test "
+            f"nicht mehr den konsistenten Weg (dafuer ist run_sliver_fallback_test da)"
+        )
+        # Produktionspfad gegen die geschlossene Form. Die Segmentquadratur
+        # trifft sie auf ~1e-14 absolut; bei Werten der Groessenordnung 1e-4
+        # sind das acht signifikante Stellen. Die Schranke 1e-12 laesst dafuer
+        # Luft, ohne die Aussage zu verwaessern.
+        check(f"D_II(Ecke 0) bei s = {s}", float(weights[0]), expected, tol=1e-12)
+        # Ueberdeckte Flaeche und Zeilensummen-Identitaet bleiben unberuehrt --
+        # ein negatives D_II verletzt die Impulserhaltung NICHT.
+        check(f"Ueberlappungsflaeche bei s = {s}", float(np.sum(D)), (1.0 - s) ** 2, tol=1e-12)
+        check(
+            f"max|rowsum(D)-rowsum(C)| bei s = {s}",
+            float(np.max(np.abs(weights - np.sum(C, axis=1)))),
+            0.0,
+            tol=1e-12,
+        )
+
+        # (3) Das Vorzeichen kippt bei s = 5/8, nicht irgendwo.
+        if s < 5.0 / 8.0:
+            assert weights[0] > 0.0, (
+                f"Oberhalb von 14.06 % Ueberdeckung (s = {s} < 5/8) muss das Eckgewicht positiv sein"
+            )
+        else:
+            assert weights[0] < 0.0, (
+                f"Unterhalb von 14.06 % Ueberdeckung (s = {s} > 5/8) MUSS das Eckgewicht negativ "
+                f"werden -- alpha = 1/3 sichert nur das Voll-Element-Integral. Schlaegt das fehl, "
+                f"wurde alpha geaendert; dann sind Doku-Abschnitte 8.3/8.4/13.4 nachzuziehen"
+            )
+
+    print("  [PASS] Vorzeichenwechsel bei s = 5/8 (14.06 % Ueberdeckung), ohne Sliver-Rueckfall, "
+          "in Uebereinstimmung mit der geschlossenen Form.")
+
+
 def test_quadratic_segmentation():
     run_quad_test("CONQUAD4", lambda shift_x=0.0: quad8_points(shift_x)[:4])
     run_quad_test("CONQUAD8", quad8_points)
@@ -418,6 +574,7 @@ if __name__ == "__main__":
     print("====================================================")
 
     test_quadratic_segmentation()
+    test_partial_coverage_corner_can_turn_weight_negative()
 
     print("\n====================================================")
     print("ALLE SEGMENTIERUNGSTESTS ERFOLGREICH PASSIERT!")

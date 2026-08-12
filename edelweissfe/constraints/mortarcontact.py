@@ -1256,18 +1256,29 @@ class Constraint(ConstraintBase):
                 # Measured over the Control_Tests and patch-test suite: 4 of 3989
                 # slave-element evaluations take this path, all of them in the
                 # curved Hertz models with CONQUAD8. It is not a dead branch, and
-                # it has a consequence worth naming: the positivity of D_II rests
-                # on D_II = int_overlap(N_tilde) with a pointwise non-negative
-                # transformed basis. Here the reference-element dual functions are
-                # used instead, and those DO change sign over a partial overlap -
-                # so CONQUAD8 loses its positivity guarantee too, not just
-                # CONQUAD9. Measured: below ~0.1 % coverage D_II flips sign.
+                # it has a consequence worth naming.
+                #
+                # D_II = int_overlap(N_tilde) would be non-negative for ANY
+                # sub-region if N_tilde were pointwise non-negative. It is not,
+                # for CONQUAD8 at alpha = 1/3: the transformed corner function
+                # dips to -1/324 over 12.4 % of the reference square, and
+                # pointwise non-negativity would need alpha >= 3/8 (CONLINE3 gets
+                # it at alpha = 1/3 because its threshold is 1/4). So a partial
+                # overlap can produce D_II < 0 on the CONSISTENT path already -
+                # see test_partial_coverage_corner_can_turn_weight_negative in
+                # testfiles/mortar_tests/05_quadratic_segmentation.
+                #
+                # This branch is worse by orders of magnitude: the reference-
+                # element dual functions are used instead, and those change sign
+                # over half the element, so the integral over a sub-region takes
+                # any sign AND any magnitude. Measured: below ~0.1 % coverage
+                # D_II flips sign, at -1.0 of the largest weight.
                 self._warn_once(
                     "sliver_fallback",
                     f"degenerate overlap on slave facet {s_num}: cond(M_t) = {cond_M_t:.2e} >= 1e12, "
                     f"falling back to reference-element dual coefficients. Biorthogonality then "
-                    f"holds on the full element only, and the nodal weights D_II lose their "
-                    f"positivity guarantee there - for CONQUAD8 as well.",
+                    f"holds on the full element only, and the nodal weights D_II can take any sign "
+                    f"and magnitude there - for CONQUAD8 as well.",
                 )
                 A_e = dual_mats[s_num][2]
 

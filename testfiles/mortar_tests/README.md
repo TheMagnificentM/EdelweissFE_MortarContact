@@ -41,7 +41,7 @@ cd Control_Tests && python final_report.py
 | `02_polygon_clipping` | Baustein | Sutherland–Hodgman und Fächer-Triangulierung gegen analytische Überlappungen; Flächen**verlust** bei nicht-konvexem Clip-Fenster und Flächen**gewinn** bei nicht-konvexem Subject |
 | `03_coupling_matrices` | Baustein | Aufbau von `D`/`C`, Zeilensummen-Identität, Überlappungsfläche, Positivität der Knotengewichte |
 | `04_dual_biorthogonality` | Baustein | Biorthogonalität gegen **unabhängige** Referenzen: geschlossene duale Basis des CONQUAD4, Nachrechnung mit höhergradiger Quadratur, und Diagonalität von `D @ T_e.T` aus der echten Segmentquadratur (Produktionspfad, auch bei Teilüberdeckung); Positivität der dualen Gewichte |
-| `05_quadratic_segmentation` | Baustein | Sub-Cell-Zerlegung + Segmentquadratur für CONQUAD8/9 und CONTRI6; **Schwellen**, ab denen Sub-Zellen nicht-konvex werden, und was das kostet; **Übergang** zum Sliver-Rückfallpfad (`cond(M_t) ≥ 1e12`) samt Vorzeichenwechsel von `D_II` |
+| `05_quadratic_segmentation` | Baustein | Sub-Cell-Zerlegung + Segmentquadratur für CONQUAD8/9 und CONTRI6; **Schwellen**, ab denen Sub-Zellen nicht-konvex werden, und was das kostet; **Übergang** zum Sliver-Rückfallpfad (`cond(M_t) ≥ 1e12`) samt Vorzeichenwechsel von `D_II`; und die Grenze der Basistransformation — bei α = 1/3 ist die CONQUAD8-Eckfunktion nicht punktweise nicht-negativ (dafür bräuchte es α ≥ 3/8), also kippt `D_II` schon auf dem **konsistenten** Pfad, sobald die Überlappung im Negativgebiet liegt (gegen die geschlossene Form gerechnet) |
 | `06_active_set_pdass` | Baustein | NCP-Indikator, Neubestimmung je Newton-Iteration, Freeze/Anti-Cycling, Vorzeichenbehandlung bei negativem Knotengewicht, BVH-Suche |
 | `07_patch_test_2d` | Löser | 2D-Patch-Test CPE4/CONLINE2 und CPE8/CONLINE3, konform und nichtkonform; dazu die Bausteine einzeln und der Eingabeschutz gegen überlappende Flächen |
 | `08_patch_test_hex20` | Löser | 3D-Patch-Test, fünf Netz-/Ordnungskombinationen inkl. verzerrtem Interface |
@@ -72,8 +72,11 @@ negatives Knotengewicht gemeinsam auf den beiden hex20-Hertz-Modellen **und** im
 Knotengewicht und Active-Set-Selbstprüfung in den beiden Regressionsfällen von
 `06_active_set_pdass`; nicht-konvexe Slave-Sub-Zelle und Sliver-Rückfall in
 `05_quadratic_segmentation`, das genau diese Schwellen vermisst. Die übrigen sechs treten nicht
-auf. Auf dem Ausziehversuch (`POT_Dejori`, CONQUAD4) meldet sich als einzige
-Diagnose die Active-Set-Selbstprüfung, auf allen sechs Kontaktpaaren an je einem bis zwei Knoten.
+auf. Auf dem Ausziehversuch (`POT_Dejori`) meldet sich in der hex8-Variante (CONQUAD4) als
+einzige Diagnose die Active-Set-Selbstprüfung, auf allen sechs Kontaktpaaren an je einem bis zwei
+Knoten; die hex20-Variante (CONQUAD8) meldet zusätzlich **negative Knotengewichte** auf einem der
+sechs Paare — ohne Sliver-Rückfall, also der oben genannte Fall der nur integral gesicherten
+Basistransformation.
 Was sie jeweils bedeuten, steht in der Doku, Abschnitt „Eingabeprüfungen und Laufzeitdiagnosen".
 
 ## Zwei Fallstricke außerhalb des Kontakts
