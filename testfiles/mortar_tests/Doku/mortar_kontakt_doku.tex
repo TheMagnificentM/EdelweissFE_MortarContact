@@ -1689,25 +1689,37 @@ wird der hex20-Patch-Test exakt bestanden (Abschnitt~\ref{sec:verif}).
 \subsection{Gemittelte Knotennormale}
 \label{sec:knotennormale}
 Der gewichtete Spalt \eqref{eq:wgap_pos} und die Projektion benötigen eine eindeutige Normale pro
-Slave-Knoten. Sie ist die \emph{gemittelte Knotennormale} von \citet[Gl.~(37)]{popp2010}, in
-derselben Form bei \citet[Gl.~(4.41)]{farah}: die Normale der angrenzenden Facette wird an der
-Naturkoordinate $\bm\xi_j$ \emph{dieses Knotens} ausgewertet, über die angrenzenden Facetten
-summiert und erst danach normiert (\code{compute\_normals}):
+Slave-Knoten. Sie ist die \emph{gemittelte Knotennormale} von \citet[Gl.~(37)]{popp2010}: die
+Normale der angrenzenden Facette wird an der Naturkoordinate $\bm\xi_j$ \emph{dieses Knotens}
+ausgewertet, auf Einheitslänge gebracht, über die angrenzenden Facetten summiert, und die Summe
+wird erneut normiert (\code{compute\_normals}):
 \begin{equation}
-\bm n_j = \frac{\sum_{f\ni j}\bm n_{j,f}}{\big\|\sum_{f\ni j}\bm n_{j,f}\big\|},
+\bm n_j = \frac{\sum_{f\ni j}\hat{\bm n}_{j,f}}{\big\|\sum_{f\ni j}\hat{\bm n}_{j,f}\big\|},
+\qquad
+\hat{\bm n}_{j,f} = \frac{\bm n_{j,f}}{\|\bm n_{j,f}\|},
 \qquad
 \bm n_{j,f} =
 \left.\frac{\partial\bm x}{\partial\xi}\times\frac{\partial\bm x}{\partial\eta}\right|_{\bm\xi_j}
-\quad\text{(3D)},
+\ \text{(3D)},
 \qquad
 \bm n_{j,f} = \bm R\left.\frac{\partial\bm x}{\partial\xi}\right|_{\xi_j}
-\quad\text{(2D)},
+\ \text{(2D)},
 \label{eq:nodalnormal}
 \end{equation}
 mit $\bm R=\left[\begin{smallmatrix}0&1\\-1&0\end{smallmatrix}\right]$. Warum das wichtig ist,
 sagt \citet[Abschn.~4.4]{farah} in einem Satz: die Knotennormalen sind
 \emph{``of utmost importance \dots\ since they define the local direction in which the contact
 force acts''}. Sie gehen ausschließlich \emph{normiert} ein -- als Richtung, nicht als Gewicht.
+
+\paragraph{Zur Zuordnung der beiden Quellen.} \eqref{eq:nodalnormal} ist wörtlich
+\citet[Gl.~(37)]{popp2010}, dort über die angrenzenden \emph{Slave}-Elemente gemittelt.
+\citet[Gl.~(4.41)]{farah} hat dieselbe Form, ist dort aber für die \emph{Master}-Seite
+formuliert; seine Slave-Normale folgt im Regelfall aus der Closest-Point-Projektion
+(\citealp[Gl.~(4.42)]{farah}), und die Mittelung tritt bei ihm als Rückfall auf, wenn diese
+Projektion versagt (\emph{``in rare cases the closest-point-projections fail the slave side nodal
+normals are calculated via the well-established averaging procedure described in Popp et al.''}).
+Gemeinsam ist beiden, dass sie \emph{Einheits}normalen summieren -- siehe den Absatz zur
+Gewichtung.
 
 \paragraph{Warum an der Knotenkoordinate und nicht je Facette.}
 Die naheliegende Alternative ist \emph{eine} Normale je Facette, gebildet aus deren Eckknoten --
@@ -1738,24 +1750,57 @@ positive Gewichtung auf dieselbe Richtung normiert. Deshalb ändert sich in der 
 Referenzreihe (\file{Control\_Tests}, alle Interfaces eben) nichts über die Rundung hinaus, und
 deshalb hat auch kein Löser-Testfall den Unterschied je gesehen.
 
-\paragraph{Die Gewichtung ist eine offene Wahl -- auch in der Literatur.}
-Summiert wird oben die \emph{nicht} normierte Facettennormale; ihre Länge ist die lokale
-Flächen-Jacobideterminante, sodass eine große Facette einen gemeinsamen Knoten stärker zieht als
-eine kleine. Das ist eine von mehreren dokumentierten Möglichkeiten, und die Quellen sind sich
-darin uneinig:
+\paragraph{Warum die Beiträge ungewichtet summiert werden.}
+Die Gewichtung, mit der die angrenzenden Facetten in \eqref{eq:nodalnormal} eingehen, ist in der
+Literatur nicht einheitlich; drei Varianten sind belegt:
 \begin{itemize}\itemsep2pt
-  \item \citet[Gl.~(37)]{popp2010} summieren die \emph{Einheits}normalen, also ungewichtet. Sie
-        halten dazu ausdrücklich fest, das geschehe \emph{``for simplicity''}, die gewichtete
-        Erweiterung nach \citet{yangmeng2005} sei \emph{``straightforward and has been tested as
-        well, but does not change the results considerably''}.
+  \item \citet[Gl.~(37)]{popp2010} und \citet[Gl.~(4.41)]{farah} summieren die
+        \emph{Einheits}normalen, also ungewichtet. Popp hält dazu ausdrücklich fest, das geschehe
+        \emph{``for simplicity''}, die gewichtete Erweiterung nach \citet{yangmeng2005} sei
+        \emph{``straightforward and has been tested as well, but does not change the results
+        considerably''}.
   \item \citet[Gl.~(51)]{yangmeng2005} gewichten in 2D mit $\hat{\bm n}_A = l_2\bm n_{A1} +
         l_1\bm n_{A2}$, also \emph{invers} zur eigenen Kantenlänge -- dort zieht die
         \emph{kleinere} Facette stärker.
-  \item Der Code gewichtet mit der lokalen Jacobideterminante, also mit der eigenen Facettengröße.
+  \item Summiert man die \emph{nicht} normierten $\bm n_{j,f}$, so ist deren Länge die lokale
+        Flächen-Jacobideterminante: dann zieht die \emph{größere} Facette stärker.
 \end{itemize}
-Auf einem gleichmäßigen Netz fallen alle drei zusammen; die Testreihe kann sie daher nicht
-unterscheiden. Der \emph{entscheidende} Punkt -- die Auswertung an $\bm\xi_j$ statt je Facette --
-ist von der Gewichtung unberührt und in allen drei Quellen derselbe.
+Der Code folgt der ersten Variante. Auf einem gleichmäßigen Netz sind alle drei identisch -- die
+Beiträge sind dort gleich groß, jede positive Gewichtung normiert auf dieselbe Richtung --, und
+weil die übrige Testreihe ausschließlich gleichmäßige Netze benutzt, sieht sie den Unterschied
+nicht. Sichtbar wird er erst auf einem \emph{graduierten} Netz, und dort ist die ungewichtete Form
+messbar genauer (Test~01, graduierter Zylinderausschnitt, benachbarte Facetten im Größenverhältnis
+$2$, gemessen an den Knoten mit ungleich großen Nachbarn, Abschnitt~\ref{sec:verif}):
+
+\begin{center}
+\small
+\begin{tabular}{lrr}
+\toprule
+Elementtyp & Einheitsnormalen \eqref{eq:nodalnormal} & flächengewichtet \\
+\midrule
+CONQUAD4, CONLINE2            & $1{,}9099^\circ$  & $3{,}8197^\circ$ \\
+CONQUAD8, CONQUAD9, CONLINE3  & $0{,}0147^\circ$  & $0{,}0211^\circ$ \\
+CONTRI3                       & $3{,}8254^\circ$  & $5{,}3509^\circ$ \\
+CONTRI6                       & $0{,}0210^\circ$  & $0{,}0261^\circ$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Der Grund ist anschaulich: die größere Facette mittelt über einen größeren Bogen und ist
+damit die \emph{schlechtere} Schätzung der Normalen an einem gemeinsamen Knoten. Ihr mehr Gewicht
+zu geben zieht die Knotennormale von der exakten weg. Für den linearen Fall lässt sich das
+geschlossen nachrechnen: bei Nachbargrößen $h$ und $2h$ liegt die ungewichtete Mittelung um $h/4$
+neben der exakten Normale, die flächengewichtete um $h/2$ -- genau der gemessene Faktor $2$.
+
+Ein zweiter Grund ist unabhängig von der Genauigkeit: die Flächen-Jacobideterminante trägt die
+Größe des \emph{Referenz}elements mit. Ein Viereck der Fläche $A$ liefert $A/4$ (Referenzquadrat
+$[-1,1]^2$), ein Dreieck derselben Fläche $2A$ (Einheitsdreieck) -- ein Faktor $8$. Eine
+Flächengewichtung hinge damit am Elementtyp statt an der Geometrie, und zwei Netze derselben
+Fläche, eines aus Vierecken und eines aus Dreiecken, bekämen an einer Knickstelle verschiedene
+Knotennormalen. Mit Einheitsnormalen entfällt das ersatzlos.
+
+Der \emph{entscheidende} Punkt -- die Auswertung an $\bm\xi_j$ statt je Facette -- ist von der
+Gewichtung unberührt und in allen drei Quellen derselbe.
 
 \paragraph{Knotenreihenfolge.}
 \eqref{eq:nodalnormal} setzt voraus, dass die Tabelle der Knoten-Naturkoordinaten
@@ -2289,8 +2334,9 @@ und den Patch-Tests \file{07}/\file{08}) friert das Set ausschließlich über da
 die Anti-Cycling-Regel noch über die Obergrenze; die höchste auftretende Iterationszahl beträgt
 $11$ bei einer Schranke von $20$. Auch im Ausziehversuch (Abschnitt~\ref{sec:testbeispiel}) greift
 die Obergrenze nicht: die zugehörige Laufzeitdiagnose \code{active\_set\_iteration\_cap} meldet sich
-in keinem der beiden Läufe, obwohl einzelne Inkrementversuche $23$ (hex8) bzw.\ $25$
-Newton-Iterationen (hex20) brauchen -- letzteres die Iterationsgrenze des Lösers selbst. Das Set
+in keinem der beiden Läufe, obwohl einzelne Inkrementversuche in beiden die Iterationsgrenze des
+Lösers selbst erreichen ($25$ Newton-Iterationen; konvergierte Inkremente brauchen höchstens $24$
+in hex8 und $23$ in hex20). Das Set
 ist dort also bereits vorher über das PDASS-Kriterium oder die Anti-Cycling-Regel eingefroren.
 Greift die Obergrenze doch einmal, ist die Zulässigkeit der Lösung im Sinne der
 Signorini-Bedingungen nicht durch das Verfahren garantiert, sondern nachzuweisen; Test~10 leistet
@@ -2936,10 +2982,11 @@ nichtnegativ, sodass $\tilde D_{jj}>0$ auch bei Teilüberdeckung gilt -- solange
 nicht greift, der diese Zusage für jeden Elementtyp aufhebt.
 
 Auf dem Ausziehversuch (Abschnitt~\ref{sec:testbeispiel}, CONQUAD4) spricht als einzige Diagnose
-die Selbstprüfung des Active Sets an, und zwar auf allen sechs Kontaktpaaren an je einem bis zwei
-Slave-Knoten. Da die Meldung je Constraint und Ursache nur \emph{einmal} ausgegeben wird, steht
-damit fest, \emph{dass} sie an jedem Kontaktpaar mindestens einmal ausgelöst hat -- nicht, wie oft
-und in welchen Increments. Und da dieselbe Rechnung $12$ Cutbacks enthält, ist nach der oben
+die Selbstprüfung des Active Sets an, und zwar auf zwei der sechs Kontaktpaare -- den beiden
+Schaftflanken -- an je zwei Slave-Knoten. Da die Meldung je Constraint und Ursache nur
+\emph{einmal} ausgegeben wird, steht damit fest, \emph{dass} sie an diesen beiden Kontaktpaaren
+mindestens einmal ausgelöst hat -- nicht, wie oft
+und in welchen Increments. Und da dieselbe Rechnung $17$ Cutbacks enthält, ist nach der oben
 beschriebenen Reichweite der Prüfung nicht auszuschließen, dass ein Teil der Meldungen aus
 gescheiterten Versuchen stammt und insoweit gegenstandslos ist. Belastbar ist die schwächere
 Aussage: an mindestens einem Increment je Kontaktpaar hat der Indikator am konvergierten Zustand
@@ -2952,8 +2999,9 @@ fehlgeschlagene Rückabbildung treten dort auf.
 
 Die quadratische Variante desselben Modells (CONQUAD8) meldet dieselbe Selbstprüfung ebenfalls auf
 allen sechs Kontaktpaaren und darüber hinaus \emph{negative Knotengewichte}: auf dem Kontaktpaar
-\code{contact\_l\_head\_vert} an fünf Slave-Knoten, im ungünstigsten Fall bei $-0{,}85$ des größten
-Gewichts, und das bereits ab Increment~1. Der Sliver-Rückfall spricht dabei \emph{nicht} an: es ist
+\code{contact\_l\_head\_vert} an acht Slave-Knoten, im ungünstigsten Fall bei $-1{,}000$ des größten
+Gewichts -- das negative Gewicht ist dort also dem Betrag nach das größte dieser Fläche --, und das
+bereits ab Increment~1. Der Sliver-Rückfall spricht dabei \emph{nicht} an: es ist
 der in Abschnitt~\ref{sec:alphachoice} beschriebene Fall, in dem die Überdeckung eines
 Slave-Elements im Negativgebiet der transformierten Eckfunktion liegt und $\tilde D_{jj}$ schon auf
 dem konsistenten Weg negativ wird. Das gemeldete Verhältnis ist relativ zum größten Gewicht
@@ -2966,8 +3014,9 @@ den in Abschnitt~\ref{sec:sgnd} genannten Gründen: die Zeilensummen-Identität 
 übertragene Kraft sind vom Vorzeichen des Gewichts unabhängig, betroffen sein können nur Knoten am
 Rand der Kontaktzone -- die tragenden, voll überdeckten sind ausgeschlossen --, und die Größe eines
 negativen Gewichts ist nach \eqref{eq:negweightbound} auf $\tfrac{1}{45}$ dessen beschränkt, was
-derselbe Knoten bei voller Überdeckung trüge. Der Umfang passt dazu: $5$ der $43$ Slave-Knoten
-\emph{eines} der sechs Kontaktpaare, bei $498$ Multiplikatorzeilen im Modell, also rund $1\,\%$.
+derselbe Knoten bei voller Überdeckung trüge. Der Umfang passt dazu: $8$ der $43$ Slave-Knoten
+\emph{eines} der sechs Kontaktpaare, bei $498$ Multiplikatorzeilen im Modell, also rund
+$1{,}6\,\%$.
 Was offenbleibt, ist ausschließlich eine mögliche lokale Durchdringung an diesen Knoten; sie wäre
 über den physikalischen Spalt am Endzustand zu prüfen, nicht über $\tilde g_j$.
 
@@ -2984,7 +3033,7 @@ folgenden Bausteine belegen die Korrektheit der obigen Herleitungen.
 \toprule
 Eigenschaft & Prüfung \\
 \midrule
-\textbf{Knotennormalen} & Gemittelte Knotennormale \eqref{eq:nodalnormal} gegen die \emph{analytische} Normale eines Zylinderausschnitts, mit einer geforderten Mindest-Konvergenzordnung; dazu die Orientierung (nach außen) und die Übereinstimmung der Knoten-Naturkoordinaten mit den Formfunktionen, $N_a(\bm\xi_b)=\delta_{ab}$, für alle sieben Elementtypen (\file{01\_node\_normals}). \\
+\textbf{Knotennormalen} & Gemittelte Knotennormale \eqref{eq:nodalnormal} gegen die \emph{analytische} Normale eines Zylinderausschnitts, mit einer geforderten Mindest-Fehlerreduktion unter Netzverfeinerung; auf einem \emph{graduierten} Netz zusätzlich die Gewichtung zwischen den Nachbarfacetten, die auf gleichmäßigen Netzen prinzipiell unsichtbar ist; dazu die Orientierung (nach außen) und die Übereinstimmung der Knoten-Naturkoordinaten mit den Formfunktionen, $N_a(\bm\xi_b)=\delta_{ab}$, für alle sieben Elementtypen (\file{01\_node\_normals}). \\
 \textbf{Polygon-Clipping} & Schnitt-/Triangulierungsgeometrie gegen analytische Überlappungen, einschließlich des Flächen\emph{gewinns} bei nicht-konvexem Subject (\file{02\_polygon\_clipping}). \\
 \textbf{Koppelmatrizen} & $\bm D,\bm M$, Zeilensummen-Identität \eqref{eq:rowsum} ($<10^{-14}$) und Überlappungsfläche gegen den analytischen Wert (\file{03\_coupling\_matrices}). \\
 \textbf{Biorthogonalität} & \eqref{eq:biorth} gegen \emph{unabhängige} Referenzen: geschlossene duale Basis des CONQUAD4, Nachrechnung mit einer höhergradigen Quadraturregel, und -- als einzige Prüfung des Produktionspfads -- Diagonalität von $\bm D\bm T_e^{\!\top}$ nach \eqref{eq:DTdiag} aus der echten Segmentquadratur, auch bei Teilüberdeckung (\file{04\_dual\_biorthogonality}). \\
@@ -3046,11 +3095,28 @@ Eigenschaft & Prüfung \\
         \end{tabular}
         \end{center}
 
-        Geprüft wird nicht bloß, dass der Fehler fällt, sondern eine Mindest\emph{ordnung}
-        ($\ge1{,}8$ linear, $\ge3{,}5$ quadratisch). Das ist der eigentliche Regressionsschutz:
-        eine facettenweise gebildete Normale erfüllt jede blosse Reduktion ebenfalls, fällt aber
-        auf Faktor $2{,}00$ bei rund dem $250$-fachen Fehler zurück -- nachgestellt und als
-        \emph{fehlschlagend} verifiziert.
+        Geprüft wird nicht bloß, dass der Fehler fällt, sondern eine
+        Mindest\emph{fehlerreduktion} bei Halbierung der Elementgröße ($\ge1{,}8$ linear,
+        $\ge3{,}5$ quadratisch; die geforderte Reduktion, nicht die Konvergenzordnung -- die
+        beiden Schranken entsprechen den Ordnungen $1$ und $2$). Das ist der eigentliche
+        Regressionsschutz: eine facettenweise gebildete Normale erfüllt jede blosse Reduktion
+        ebenfalls, fällt aber auf Faktor $2{,}00$ bei rund dem $250$-fachen Fehler zurück --
+        nachgestellt und als \emph{fehlschlagend} verifiziert.
+
+        Ein zweiter, davon unabhängiger Fall prüft die \emph{Gewichtung} zwischen den
+        Nachbarfacetten. Er braucht ein \emph{graduiertes} Netz: auf gleichmäßigen Netzen -- und
+        das sind alle übrigen der Reihe -- liefert jede positive Gewichtung dieselbe Richtung.
+        Gemessen wird auf demselben Zylinderausschnitt mit Elementbreiten in geometrischer Folge
+        (Faktor $2$), und zwar nur an den Knoten, deren Nachbarfacetten sich um mehr als $10\,\%$
+        unterscheiden. Diese Einschränkung ist nötig, weil der größte Winkelfehler des Patches am
+        \emph{Rand} sitzt, an einem Knoten mit nur einer angrenzenden Facette -- dort gibt es
+        nichts zu gewichten, und mit $7{,}64^\circ$ gegenüber $1{,}91^\circ$ im Inneren überdeckt
+        er den Effekt vollständig. Die Schranken liegen zwischen den Werten der beiden Varianten
+        (Tabelle in Abschnitt~\ref{sec:knotennormale}); die flächengewichtete Summe reißt jede von
+        ihnen, ebenfalls nachgestellt und als \emph{fehlschlagend} verifiziert. Geprüft werden
+        Werte und nicht eine Rate: bei fester Graduierung bleibt das Größenverhältnis benachbarter
+        Facetten unter Verfeinerung konstant und damit auch der Fehleranteil aus der Gewichtung
+        (gemessen $1{,}910^\circ \to 1{,}819^\circ$ von $n=4$ auf $n=6$, CONQUAD4).
 
         Damit die quadratischen Typen wirklich die Formel messen und nicht das Netz, werden die
         Knoten, die der Testaufbau selbst anlegt -- das CONQUAD9-Zentrum und die CONTRI6-Diagonal\-mitte,
@@ -3332,29 +3398,34 @@ Druckauswertung, nicht die übertragene Kraft.
 \label{sec:testbeispiel}
 
 Als anwendungsnahes Testbeispiel wird der Ausziehversuch eines Kopfbolzendübels aus einem
-Betonquader nachgerechnet (Versuchsreihe VA1, Einbindetiefe 6\,cm). Er ist das eigentliche
-Zielproblem des Mortar-Kontakts in diesem Projekt: der Anker ist ein eigener Körper, der nur über
-den Kontakt Kräfte in den Beton einleitet, und die Netze beider Körper sind an der Kontaktfläche
-nichtkonform. Anders als die Patch- und Referenztests aus Abschnitt~\ref{sec:verif} ist dieses
-Beispiel weder analytisch lösbar noch spannungshomogen -- es zeigt, wie sich die Formulierung
-unter realen Bedingungen verhält, einschließlich ihrer Grenzen.
+Betonquader nachgerechnet (Versuchsreihe VA1, Einbindetiefe 6\,cm). Der Anker ist ein eigener
+Körper, der seine Last ausschließlich über den Kontakt in den Beton einleitet; die Netze beider
+Körper sind an der Kontaktfläche nichtkonform. Anders als die Patch- und Referenztests aus
+Abschnitt~\ref{sec:verif} ist das Beispiel weder analytisch lösbar noch spannungshomogen.
 
 \subsection{Modell}
 Der Beton ist mit gradientenerweiterter Schädigungsplastizität (\code{GCDP}) modelliert, Anker und
-Auflager linear-elastisch ($E=210\,000$\,MPa). Das Modell ist ein 4\,mm dicker Scheibenschnitt; die
-ausgewertete Kraft wird mit dem Faktor 20 auf die reale Probenbreite von 80\,mm hochgerechnet. Der
-Anker wird verschiebungsgesteuert um bis zu 1{,}1\,mm nach oben gezogen. Der Kontakt zwischen Stahl
-und Beton ist in \textbf{sechs} getrennte Mortar-Constraints zerlegt (links und rechts, je
-Schaftflanke, Kopfunterseite und Kopfflanke); der Beton ist jeweils die Slave-Seite. Die Zerlegung
-ist bewusst so gewählt: an der 90$^\circ$-Kante zwischen Schaft und Kopf wäre eine gemeinsame
-Kontaktfläche mit mehrdeutiger, gemittelter Knotennormale behaftet
-(Abschnitt~\ref{sec:normalen}); getrennte Constraints erhalten dort die flächeneigene Normale.
+Auflager linear-elastisch ($E=210\,000$\,MPa, $\nu=0{,}3$). Das Modell ist ein 4\,mm dicker
+Scheibenschnitt; die ausgewertete Kraft wird mit dem Faktor 20 auf die reale Probenbreite von
+80\,mm hochgerechnet. Der Ankerkopf wird verschiebungsgesteuert um 1{,}1\,mm nach oben gezogen, bei
+Symmetriebedingungen in $x$ und $z$. Die Schrittsteuerung läuft mit
+\code{maxInc}${}=10^{-2}$, \code{minInc}${}=10^{-7}$ und höchstens $25$ Newton-Iterationen je
+Inkrement.
 
-Gerechnet wird dasselbe Modell zweimal: einmal linear (\code{GC3D8} für den Beton, Kontaktelemente
-\code{CONQUAD4}) und einmal quadratisch (\code{GC3D20R}, \code{CONQUAD8}). Die beiden Netze sind
-\emph{geometrisch identisch} -- gleiche Elementzahl (9162 Betonelemente), gleiche sechs
-Kontaktflächen mit gleicher Facettenzahl, und die Eckknoten stimmen auf Maschinengenauigkeit
-überein; das quadratische Netz hat lediglich zusätzliche Kantenmittelknoten.
+Der Kontakt zwischen Stahl und Beton ist in \textbf{sechs} getrennte Mortar-Constraints zerlegt
+(links und rechts, je Schaftflanke, Kopfunterseite und Kopfflanke), jeweils mit
+$c_n=41\,069$; der Beton ist durchgehend die Slave-Seite. Die Zerlegung ist bewusst so gewählt: an
+der 90$^\circ$-Kante zwischen Schaft und Kopf wäre eine gemeinsame Kontaktfläche mit mehrdeutiger,
+gemittelter Knotennormale behaftet (Abschnitt~\ref{sec:normalen}); getrennte Constraints erhalten
+dort die flächeneigene Normale.
+
+Gerechnet wird dasselbe Modell zweimal: einmal linear (\code{GC3D8} für den Beton, \code{C3D8} für
+den Stahl, Kontaktelemente \code{CONQUAD4}) und einmal quadratisch (\code{GC3D20R}, \code{C3D20R},
+\code{CONQUAD8}). Die beiden Netze sind \emph{geometrisch identisch} -- je $9\,162$ Beton- und
+$418$ Stahlelemente, dieselben sechs Kontaktflächen mit je $188$ Facetten, und die Eckknoten
+stimmen auf Maschinengenauigkeit überein; das quadratische Netz hat lediglich zusätzliche
+Kantenmittelknoten. Daraus folgen $19\,736$ Knoten und $204$ Lagrange-Multiplikatoren im linearen
+gegen $68\,496$ Knoten und $498$ Multiplikatoren im quadratischen Fall.
 
 Die Auflager sind als elastische Bettung über \code{directionalspringpenalty} abgebildet. Da dieser
 Constraint eine unabhängige Einzelfeder der Steifigkeit \code{penalty} auf jeden Knoten des
@@ -3363,6 +3434,8 @@ elementordnungsabhängig. Beide Rechnungen verwenden dieselbe Gesamtbettung von 
 Auflager, umgerechnet über die Knotenzahl: \code{penalty}${}=920$ bei $10$ Knoten (hex8) und
 \code{penalty}${}=400$ bei $23$ Knoten (hex20).
 
+Beide Läufe wurden zeitgleich und mit demselben Codestand gerechnet.
+
 \subsection{Ergebnis}
 Abbildung~\ref{fig:pot} stellt beide Rechnungen den drei Laborversuchen gegenüber.
 
@@ -3370,11 +3443,10 @@ Abbildung~\ref{fig:pot} stellt beide Rechnungen den drei Laborversuchen gegenüb
 \centering
 \includegraphics[width=0.95\linewidth]{force_disp_hex8_vs_hex20.pdf}
 \caption[Ausziehversuch nach Dejori: Kraft-Weg-Kurven]{Ausziehversuch nach Dejori:
-Kraft-Weg-Kurven der linearen (hex8) und der quadratischen
-(hex20) Diskretisierung gegen das Streuband der drei Laborversuche. Beide Rechnungen verwenden
-dieselbe Gesamt-Auflagerbettung. Die quadratische Rechnung läuft bis zur vorgegebenen
-Endverschiebung von $1{,}1$\,mm durch; das Kreuz markiert den Abbruch der linearen Rechnung.
-Erzeugt mit \file{POT\_Dejori/plot\_comparison.py}.}
+Kraft-Weg-Kurven der linearen (hex8) und der quadratischen (hex20) Diskretisierung gegen das
+Streuband der drei Laborversuche. Beide Rechnungen verwenden dieselbe Gesamt-Auflagerbettung.
+Keine der beiden erreicht die vorgegebene Endverschiebung von $1{,}1$\,mm; die Kreuze markieren
+das jeweilige Ende. Erzeugt mit \file{POT\_Dejori/plot\_comparison.py}.}
 \label{fig:pot}
 \end{figure}
 
@@ -3384,8 +3456,8 @@ Erzeugt mit \file{POT\_Dejori/plot\_comparison.py}.}
 \toprule
  & Sekantensteifigkeit ($u\le0{,}03$\,mm) & $F_{\max}$ & $u$ bei $F_{\max}$ & $u$ am Ende \\
 \midrule
-hex8 (\code{GC3D8}/\code{CONQUAD4})    & $199{,}1$\,kN/mm & $22{,}50$\,kN & $0{,}143$\,mm & $0{,}815$\,mm \\
-hex20 (\code{GC3D20R}/\code{CONQUAD8}) & $197{,}6$\,kN/mm & $19{,}77$\,kN & $0{,}121$\,mm & $1{,}100$\,mm \\
+hex8 (\code{GC3D8}/\code{CONQUAD4})    & $199{,}1$\,kN/mm & $22{,}50$\,kN & $0{,}143$\,mm & $0{,}785$\,mm \\
+hex20 (\code{GC3D20R}/\code{CONQUAD8}) & $197{,}4$\,kN/mm & $19{,}81$\,kN & $0{,}124$\,mm & $0{,}749$\,mm \\
 \midrule
 Versuch 1 & --- & $19{,}53$\,kN & $0{,}087$\,mm & --- \\
 Versuch 2 & --- & $16{,}63$\,kN & $0{,}133$\,mm & --- \\
@@ -3394,71 +3466,58 @@ Versuch 3 & --- & $17{,}63$\,kN & $0{,}082$\,mm & --- \\
 \end{tabular}
 \end{center}
 
-\paragraph{Anfangssteifigkeit: elementordnungsunabhängig.}
-Die Sekantensteifigkeiten stimmen auf $0{,}8\,\%$ überein. Das ist das erwartete Ergebnis: im
-nahezu elastischen Bereich, vor Einsetzen nennenswerter Schädigung, darf die Elementordnung die
-Systemsteifigkeit kaum beeinflussen, und der Mortar-Kontakt überträgt in beiden Fällen dieselbe
-Last. Es bestätigt zugleich die Referenztests aus \file{Control\_Tests}, in denen hex8, hex20 und
-hex20R exakt dieselbe Steifigkeit liefern. Für den verbleibenden Unterschied gilt: das
-quadratische, reduziert integrierte Modell ist geringfügig \emph{weicher} -- die theoretisch
-richtige Richtung, da der trilineare Ansatzraum im 20-Knoten-Serendipity-Raum enthalten ist und
-reduzierte Integration die Steifigkeit zusätzlich senkt.
+\paragraph{Anfangssteifigkeit.}
+Die Sekantensteifigkeiten unterscheiden sich um $0{,}9\,\%$; das quadratische, reduziert
+integrierte Modell ist das geringfügig weichere. Das deckt sich mit den Referenztests aus
+\file{Control\_Tests}, in denen hex8, hex20 und hex20R dieselbe Steifigkeit liefern.
 
-\paragraph{Traglast: Einfluss der Diskretisierung.}
-Am Peak trennen sich die Kurven. Die quadratische Rechnung trifft mit $19{,}77$\,kN die Oberkante
-des Versuchsstreubands ($16{,}6\ldots19{,}5$\,kN), die lineare überschätzt mit $22{,}50$\,kN alle
-drei Versuche um $15$ bis $35\,\%$ und erreicht den Peak zudem später ($0{,}143$ statt
-$0{,}121$\,mm). Das ist ein echter Diskretisierungseffekt: der Ausziehversuch ist am Bolzenkopf
-lokalisierungsdominiert, und lineare Elemente verschmieren den dortigen Dehnungsgradienten über die
-Elementlänge. Die lokale Spannungsspitze wird dadurch unterschätzt, die Schädigung setzt verspätet
-ein, und die Kurve läuft auf einen höheren, späteren Peak.
+\paragraph{Traglast.}
+Am Peak trennen sich die Kurven. Die quadratische Rechnung liegt mit $19{,}81$\,kN an der Oberkante
+des Versuchsstreubands ($16{,}63\ldots19{,}53$\,kN) und überschreitet die drei Versuche um $1$,
+$19$ und $12\,\%$; die lineare überschätzt sie mit $22{,}50$\,kN um $15$, $35$ und $28\,\%$ und
+erreicht den Peak später ($0{,}143$ gegenüber $0{,}124$\,mm).
 
 \paragraph{Entfestigender Ast.}
-Nach dem Peak liegt die lineare Rechnung durchgehend über der quadratischen: sie verläuft auf
-$95\,\%$ ihres Nachbruchbereichs innerhalb des Streubands, die quadratische auf $24\,\%$. Bei
-einem lokalisierenden Material ist die bessere Übereinstimmung der linearen Rechnung kein
-Qualitätsmerkmal, sondern Ausdruck der gröberen Auflösung der Schädigungszone. Die quadratische
-Kurve fällt steiler ab, unterschreitet das Streuband zwischen $u\approx0{,}3$ und $0{,}9$\,mm und
-kehrt ab $u=0{,}89$\,mm wieder in das Band zurück; bis zur vorgegebenen Endverschiebung läuft sie
-auf ein Restkraftplateau von $3{,}1$\,kN aus, das sind $16\,\%$ der Traglast. Der zu tiefe Verlauf
-dazwischen ist derselbe Befund wie am Peak, nur mit umgekehrtem Vorzeichen: die feiner aufgelöste
-Schädigungszone entfestigt schneller.
+Nach dem Peak liegt die lineare Rechnung durchgehend über der quadratischen. Auf $81\,\%$ ihres
+Nachbruchwegs verläuft sie innerhalb des Streubands, dazwischen -- zwischen $u=0{,}154$ und
+$0{,}590$\,mm -- darüber; am Ende steht sie bei $8{,}43$\,kN, also $37{,}5\,\%$ der eigenen
+Traglast. Die quadratische Kurve fällt steiler ab: sie unterschreitet das Streuband ab
+$u=0{,}200$\,mm und kehrt bis zum Ende der Rechnung nicht mehr in das Band zurück, sodass nur
+$6\,\%$ ihres Nachbruchwegs innerhalb liegen; am Ende steht sie bei $3{,}82$\,kN, also
+$19{,}3\,\%$ ihrer Traglast.
 
 \subsection{Ende der Rechnung und Rechenaufwand}
-Die beiden Rechnungen enden aus \emph{unterschiedlichen} Gründen; das ist für die Bewertung der
-Kurven wesentlich.
+Beide Rechnungen enden vor der vorgegebenen Endverschiebung von $1{,}1$\,mm, aus
+\emph{unterschiedlichen} Gründen.
 
 \paragraph{hex8: Materialversagen.}
-Die lineare Rechnung erreicht die vorgegebene Endverschiebung nicht. Sie läuft bis
-$u=0{,}815$\,mm, also weit über den Peak hinaus, und bricht dort im entfestigenden Ast ab: die
-Kurve endet mit \emph{senkrechter Tangente} ($\mathrm dF/\mathrm du\to-\infty$; die
-Sekantensteifigkeit fällt über die letzten Inkremente von $-27$ auf $-166$\,kN/mm, während $u$
-praktisch stehenbleibt). Der Beton kann der aufgezwungenen Verschiebung nicht mehr
-folgen -- das Material versagt. Der Löser meldet entsprechend, dass die Schrittweite nicht weiter
-reduziert werden kann (\code{Cannot reduce increment size}), und beendet den Step. Die Kurve ist
-damit inhaltlich vollständig: Anstieg, Traglast und ein großer Teil des Nachbruchbereichs sind
-erfasst. Aufwand: $131$ Inkremente, $12$ Cutbacks, $1\,009$ Newton-Iterationen, rund $21$ Minuten
-Rechenzeit.
+Die lineare Rechnung läuft bis $u=0{,}785$\,mm ($71{,}4\,\%$ des vorgegebenen Wegs), also weit über
+den Peak hinaus, und bricht im entfestigenden Ast ab. Der Löser reduziert die Schrittweite bis auf
+\code{minInc}${}=10^{-7}$, meldet dort \code{Cannot reduce increment size} und beendet den Step; die
+zuletzt gemeldeten Residuenausreißer sitzen im Verschiebungs- und im Schädigungsfeld. Die Kurve
+erfasst Anstieg, Traglast und einen großen Teil des Nachbruchbereichs. Aufwand: $199$ Inkremente,
+$17$ Cutbacks, $1\,391$ Newton-Iterationen, $1\,725$\,s Rechenzeit (rund $29$ Minuten).
 
-\paragraph{hex20: vollständiger Durchlauf.}
-Die quadratische Rechnung erreicht die vorgegebenen $1{,}1$\,mm und endet regulär mit dem
-Laststep. Der Aufwand dafür ist erheblich: $1\,176$ Inkremente, $46$ Cutbacks, $8\,459$
-Newton-Iterationen, $12{,}2$ Stunden ($43\,858$\,s). Er ist zudem stark auf den Bereich um die
-Traglast konzentriert -- $7\,350$ der $8\,459$ Iterationen, also $87\,\%$, entfallen auf die
-ersten $74\,\%$ des Weges (bis zu jenem $u=0{,}815$\,mm, an dem die lineare Rechnung abbricht).
-Der auslaufende Ast danach ist vergleichsweise billig.
+\paragraph{hex20: händischer Abbruch.}
+Die quadratische Rechnung wurde nicht vom Löser beendet, sondern nach rund $11$ Stunden von Hand
+abgebrochen (Prozess beendet, daher keine Laufzeittabelle im Log; die Zeit ist aus den
+Dateizeitstempeln abgeleitet). Sie stand zu diesem Zeitpunkt bei Inkrement $1\,296$ und
+$u=0{,}749$\,mm ($68{,}1\,\%$ des vorgegebenen Wegs) und lief konvergent weiter, aber mit
+Schrittweiten, bei denen der Restweg nicht mehr in vertretbarer Zeit erreichbar war: die letzten
+$50$ Inkremente entsprechen Wegschritten von $6{,}6\cdot10^{-6}$ bis $3{,}2\cdot10^{-5}$\,mm bei
+einem Restweg von $0{,}35$\,mm. Aufwand bis dahin: $1\,296$ Inkremente, $63$ Cutbacks, $8\,653$
+Newton-Iterationen.
 
-\paragraph{Einordnung.}
-Auf diesem gemeinsamen Wegstück lassen sich beide Rechnungen direkt vergleichen, und der Aufwand
-zerfällt in zwei Faktoren: die quadratische Rechnung braucht das $7{,}3$-fache an
-Newton-Iterationen ($7\,350$ gegenüber $1\,009$), und jede einzelne Iteration kostet mit $5{,}2$
-statt $1{,}25$\,s das $4{,}2$-fache. Der zweite Faktor ist Netzgröße ($3{,}5$-mal so viele Knoten);
-der erste ist es nicht -- dieselbe Last, dieselbe Geometrie, dieselben sechs Kontaktpaare, nur mehr
-Newton-Schritte je Wegstück. Dafür kommen zwei Ursachen in Frage, die diese Rechnung nicht trennt:
-die feiner aufgelöste und damit steilere Lokalisierung des Materialmodells, und die fehlende
-konsistente Linearisierung des Kontaktbeitrags (Abschnitt~\ref{sec:frozen}) -- ohne die
-geometrischen Ableitungen ist der Konvergenzradius kleiner, und das Verfahren greift häufiger zu
-Cutbacks ($46$ gegenüber $12$). Hier läge der Gewinn einer konsistenten Linearisierung
+\paragraph{Einordnung des Aufwands.}
+Auf dem gemeinsamen Wegstück bis $u=0{,}749$\,mm braucht die quadratische Rechnung $8\,645$
+Newton-Iterationen gegenüber $1\,110$ der linearen, also das $7{,}8$-fache, und jede einzelne
+Iteration kostet mit rund $4{,}6$ gegenüber $1{,}24$\,s das $3{,}7$-fache. Der zweite Faktor ist
+Netzgröße ($3{,}5$-mal so viele Knoten); der erste ist es nicht -- dieselbe Last, dieselbe
+Geometrie, dieselben sechs Kontaktpaare, nur mehr Newton-Schritte je Wegstück, und entsprechend
+mehr Cutbacks ($63$ gegenüber $17$). Dafür kommen zwei Ursachen in Frage, die diese Rechnung nicht
+trennt: die feiner aufgelöste und damit steilere Lokalisierung des Materialmodells, und die
+fehlende konsistente Linearisierung des Kontaktbeitrags (Abschnitt~\ref{sec:frozen}), ohne die der
+Konvergenzradius kleiner ist. Hier läge der Gewinn einer konsistenten Linearisierung
 (Abschnitt~\ref{sec:ausblick:lin}): nicht in der Genauigkeit der Kurve, sondern in der Rechenzeit,
 die sie kostet.
 
@@ -3515,12 +3574,11 @@ Sie zu ergänzen ist kein Zusatzterm, sondern erfordert Ableitungen entlang der 
 Segmentierungskette. Der Reihe nach sind das:
 \begin{enumerate}\itemsep2pt
   \item die Knotennormale $\bm n_j$ nach \eqref{eq:nodalnormal} -- die Ableitung einer normierten
-        Summe von Kreuzprodukten. Für diesen einen Punkt ist die Herleitung bereits vorhanden und
-        unmittelbar übertragbar: \citet[Gl.~(A1)--(A2)]{popp2010} linearisieren genau
-        \eqref{eq:nodalnormal}. Weil dort die \emph{Einheits}normalen der Nachbarfacetten summiert
-        werden, hier dagegen die mit der Jacobideterminante gewichteten (siehe
-        Abschnitt~\ref{sec:knotennormale}), entfällt für den Code sogar die innere
-        Normierungsableitung (A2), und es bleibt $\delta\hat{\bm n}_j=\sum_f\delta\bm n_{j,f}$;
+        Summe normierter Kreuzprodukte. Für diesen einen Punkt ist die Herleitung bereits
+        vorhanden und \emph{wörtlich} übertragbar: \citet[Gl.~(A1)--(A2)]{popp2010} linearisieren
+        genau \eqref{eq:nodalnormal} in derselben Gestalt, (A1) die äußere Normierung der Summe
+        und (A2) die innere Normierung der einzelnen Facettenbeiträge. Beide Schritte werden
+        gebraucht, keiner entfällt;
   \item die Hilfsebene: Stützpunkt $\bm p_0$, Normale und Tangentenbasis $\bm t_1,\bm t_2$, die
         alle von den Koordinaten der Slave-Sub-Zelle abhängen;
   \item die Projektion beider Facetten in diese Ebene;

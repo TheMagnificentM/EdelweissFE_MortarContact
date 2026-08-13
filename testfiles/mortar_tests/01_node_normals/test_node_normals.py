@@ -30,13 +30,15 @@ D  Orientierung            Alle Normalen zeigen aus dem Koerper heraus (positive
                            gedrehte Normale kehrt Spalt- und Druckvorzeichen um
                            und macht aus dem Kontakt eine Verklebung; nichts im
                            Constraint faengt das ab.
-E  2D-Sehnenformel         Auf einer gekruemmten CONLINE3-Kante ist die exakte
-                           flaechengewichtete Facettennormale die gedrehte Sehne
-                           zwischen den beiden ECKknoten, denn
-                              int n dGamma = int [t_y, -t_x] dxi = R (x_1 - x_0)
-                           unabhaengig von der Kruemmung. Genau das wird
-                           nachgerechnet -- der Test, der den obigen Fehler
-                           gefunden haette.
+E  Knotenreihenfolge       N_a(xi_b) = delta_ab fuer alle sieben Elementtypen:
+                           die Tabelle der Knoten-Naturkoordinaten muss zur
+                           Knotenreihenfolge der Formfunktionen passen, sonst
+                           bekommt ein Knoten still die Normale eines anderen.
+F  Gewichtung              Auf einem GRADUIERTEN gekruemmten Netz, an den Knoten
+                           mit ungleich grossen Nachbarfacetten. Nur dort ist die
+                           Gewichtung zwischen den Facetten ueberhaupt sichtbar;
+                           auf gleichmaessigen Netzen liefert jede Gewichtung
+                           dieselbe Richtung, und C sieht sie deshalb nicht.
 
 Elementtypen: CONQUAD4/8/9, CONTRI3/6 (3D) und CONLINE2/3 (2D).
 """
@@ -398,7 +400,109 @@ def run_curved(el_type, dim, refinements=(2, 4), min_ratio=1.8):
 
 
 # ===========================================================================
-# E: exakte Sehnenformel der 2D-Facettennormale
+# F: Gewichtung zwischen den Nachbarfacetten, auf einem graduierten Netz
+# ===========================================================================
+
+
+def graded_x(n, q, length=2.0):
+    """Verzieht die x-Koordinate so, dass die Elementbreiten eine geometrische
+    Folge mit Faktor ``q`` bilden -- benachbarte Facetten sind damit ungleich gross.
+
+    Die Abbildung ist STUECKWEISE LINEAR mit Knicken genau auf den Elementgrenzen
+    des gleichmaessigen Netzes. Das ist kein Detail: innerhalb eines Elements ist
+    sie damit affin, sodass die Kantenmittelknoten der quadratischen Typen in der
+    Mitte ihres Elements bleiben. Eine glatte Graduierung (etwa x -> x^2) wuerde sie
+    aus der Mitte schieben und der Test maesse dann diese Verzerrung mit statt der
+    Gewichtung.
+    """
+    src = np.linspace(0.0, length, n + 1)
+    w = np.array([q**i for i in range(n)], dtype=float)
+    w *= length / w.sum()
+    dst = np.concatenate([[0.0], np.cumsum(w)])
+
+    def f(X):
+        X = np.asarray(X, dtype=float).copy()
+        X[0] = float(np.interp(X[0], src, dst))
+        return X
+
+    return f
+
+
+def run_curved_graded(el_type, dim, max_deg, n=4, q=2.0, size_ratio=1.1):
+    """Knotennormale auf einem graduierten Zylindernetz, an den Knoten mit
+    ungleich grossen Nachbarfacetten.
+
+    Warum dieser Testfall ueberhaupt noetig ist: die Gewichtung, mit der die
+    Beitraege der angrenzenden Facetten in die Knotennormale eingehen, ist auf
+    jedem GLEICHMAESSIGEN Netz wirkungslos -- alle Beitraege sind dort gleich gross
+    bzw. symmetrisch, jede positive Gewichtung normiert auf dieselbe Richtung. Die
+    uebrige Testreihe benutzt ausschliesslich gleichmaessige Netze und kann eine
+    falsche Gewichtung deshalb nicht bemerken.
+
+    Warum nur ein Teil der Knoten gemessen wird: der groesste Winkelfehler des
+    Patches sitzt am RAND, an einem Knoten mit nur einer angrenzenden Facette. Dort
+    gibt es nichts zu gewichten, und er ueberdeckt den Effekt vollstaendig (bei
+    n = 4, q = 2 misst er 7,64 Grad gegenueber 1,91 Grad im Inneren). Gemessen wird
+    deshalb an den Knoten, deren Nachbarfacetten sich um mehr als ``size_ratio``
+    unterscheiden -- genau die Knoten, an denen die Gewichtung ueberhaupt wirkt.
+
+    Die Schranken sind Werte, keine Konvergenzraten. Bei fester Graduierungsrate
+    bleibt das Groessenverhaeltnis benachbarter Facetten unter Verfeinerung
+    konstant, und damit auch der Anteil des Fehlers, der aus der Gewichtung stammt:
+    gemessen faellt er von n = 4 auf n = 6 nur von 1,910 auf 1,819 Grad (CONQUAD4).
+    Eine Ratenschranke waere hier also gerade nicht der Regressionsschutz.
+    """
+    print(f"\n* {el_type} ({dim}D), Zylinder graduiert (n = {n}, Faktor {q})")
+    grade = graded_x(n, q)
+
+    def warp(X):
+        return cylinder_warp(grade(X))
+
+    _, contact = build_model(el_type, dim, n=n, warp=warp, snap=cylinder_snap)
+    normals = contact.undeformed_normals
+
+    # Groesse jeder angrenzenden Facette am jeweiligen Knoten: die Laenge des
+    # unnormierten Elementnormalenvektors, also die lokale Flaechen-Jacobideterminante.
+    jac_per_node = {}
+    for el, _faceID in contact.non_mortar_facets:
+        coords = np.array([nd.coordinates for nd in el.nodes])
+        dN = el.getShapeFunctionDerivativesAtNodes()
+        for local, nd in enumerate(el.nodes):
+            if nd not in contact.slave_node_to_idx:
+                continue
+            t = dN[local] @ coords
+            n_f = np.cross(t[0], t[1]) if dim == 3 else np.array([t[0][1], -t[0][0]])
+            jac_per_node.setdefault(contact.slave_node_to_idx[nd], []).append(
+                float(np.linalg.norm(n_f))
+            )
+
+    worst, n_measured = 0.0, 0
+    for i, node in enumerate(contact.non_mortar_nodes):
+        sizes = jac_per_node.get(i, [])
+        if len(sizes) < 2 or max(sizes) / min(sizes) <= size_ratio:
+            continue
+        n_measured += 1
+        n_exact = exact_cylinder_normal(node.coordinates, dim)
+        c = float(np.clip(np.dot(normals[i], n_exact), -1.0, 1.0))
+        worst = max(worst, np.degrees(np.arccos(c)))
+
+    print(f"  {n_measured} Knoten mit ungleichen Nachbarfacetten, "
+          f"max. Winkelfehler = {worst:.5f} Grad (Schranke {max_deg:.4f})")
+    if n_measured == 0:
+        print("  [FAIL] Kein Knoten mit ungleichen Nachbarfacetten - das Netz ist "
+              "nicht graduiert, der Test misst nichts!")
+        return False
+    if not worst <= max_deg:
+        print(f"  [FAIL] Winkelfehler {worst:.5f} Grad ueber der Schranke "
+              f"{max_deg:.4f} Grad!")
+        return False
+
+    print(f"  [PASS] {el_type} ({dim}D), graduiert")
+    return True
+
+
+# ===========================================================================
+# E: Knotenreihenfolge gegen die Formfunktionen
 # ===========================================================================
 
 
@@ -473,6 +577,30 @@ def test_node_normals():
         results.append(run_curved(el_type, dim=3, min_ratio=3.5))
     results.append(run_curved("CONLINE2", dim=2, min_ratio=1.8))
     results.append(run_curved("CONLINE3", dim=2, min_ratio=3.5))
+
+    # F: Gewichtung. Die Schranken liegen jeweils zwischen dem Wert der
+    # implementierten Gewichtung (Summe der EINHEITSnormalen, Popp Gl. 37 /
+    # Farah Gl. 4.41) und dem der naheliegenden Alternative, die die
+    # unnormierten Beitraege summiert und damit nach der lokalen
+    # Flaechen-Jacobideterminante gewichtet. Gemessen bei n = 4, q = 2:
+    #
+    #   Typ                  Einheitsnormalen   Jacobi-gewichtet   Schranke
+    #   CONQUAD4 / CONLINE2           1.90986            3.81972       2.70
+    #   CONQUAD8 / 9 / CONLINE3       0.01471            0.02106       0.0176
+    #   CONTRI3                       3.82540            5.35087       4.50
+    #   CONTRI6                       0.02102            0.02610       0.0234
+    #
+    # Die Jacobi-Variante reisst damit jede dieser Schranken - das ist der
+    # eigentliche Regressionsschutz. Sie ist dort schlechter, weil die groessere
+    # Facette ueber einen groesseren Bogen mittelt, also die SCHLECHTERE Schaetzung
+    # der Normalen liefert; ihr mehr Gewicht zu geben zieht die Knotennormale von
+    # der exakten weg.
+    for el_type, bound in (("CONQUAD4", 2.70), ("CONQUAD8", 0.0176),
+                           ("CONQUAD9", 0.0176), ("CONTRI3", 4.50),
+                           ("CONTRI6", 0.0234)):
+        results.append(run_curved_graded(el_type, dim=3, max_deg=bound))
+    results.append(run_curved_graded("CONLINE2", dim=2, max_deg=2.70))
+    results.append(run_curved_graded("CONLINE3", dim=2, max_deg=0.0176))
 
     results.append(run_nodal_natural_coordinates())
 

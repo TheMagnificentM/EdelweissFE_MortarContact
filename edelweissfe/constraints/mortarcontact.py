@@ -393,8 +393,9 @@ def facet_normal(coords: np.ndarray) -> np.ndarray:
 
     It is deliberately NOT what compute_normals builds the nodal normal n_I from:
     one constant direction per facet cannot distinguish a mid-side node from its
-    corners, which costs an order of convergence on a curved slave surface. See
-    compute_normals.
+    corners, which costs an order of convergence on a curved slave surface. Note
+    also that its length is the facet AREA, whereas compute_normals sums unit
+    normals and so carries no area weighting at all. See compute_normals.
     """
     if len(coords) == 3:
         return 0.5 * np.cross(coords[1] - coords[0], coords[2] - coords[0])
@@ -898,19 +899,42 @@ class Constraint(ConstraintBase):
     def compute_normals(self, U_np: np.ndarray = None) -> np.ndarray:
         """Averaged outward-pointing unit normal at every non-mortar (slave) node.
 
-        The averaged nodal normal of Popp, Gitterle, Gee & Wall (2010) and Farah
-        (2018), Sec. 4.1: the element normal x,xi cross x,eta is evaluated at the
-        node's OWN natural coordinate in each adjacent facet, the contributions are
-        summed and the result is normalized. Summing before normalizing is what
-        weights a facet by its local surface Jacobian, and normalizing at the end is
-        what makes the field continuous across facet boundaries.
+        The averaged nodal normal of Popp, Gitterle, Gee & Wall (2010), Eq. (37),
+        in the same form in Farah (2018), Sec. 4.4.1, Eq. (4.41): the element normal
+        x,xi cross x,eta is evaluated at the node's OWN natural coordinate in each
+        adjacent facet, each contribution is normalized to unit length, the unit
+        normals are summed, and the sum is normalized again. Normalizing at the end
+        is what makes the field continuous across facet boundaries.
 
-        On a FLAT slave surface this is exactly the facet-constant normal it
-        replaced - all contributions are parallel there, so any positive weighting
-        normalizes to the same direction, whatever the facet sizes. The two differ
-        only where the slave surface is curved, and then only for quadratic facet
-        types, whose mid-side nodes a facet-constant normal cannot distinguish from
-        their corners.
+        Two properties this rests on, both measured in 01_node_normals:
+
+        1. Evaluated per NODE, not per facet. A single facet-constant normal (the
+           diagonal cross product of the corner nodes in 3D, the corner chord in 2D)
+           assigns the same direction to a corner and to a mid-side node of the SAME
+           quadratic facet, so the curvature of that facet never reaches the normal
+           and the field converges only linearly: on the cylinder patch, CONQUAD8
+           and CONQUAD9 then produce exactly the CONQUAD4 error (7.16 deg -> 3.58
+           deg, rate 1), i.e. the quadratic facet types buy nothing at all.
+
+        2. The contributions are summed UNWEIGHTED, as in both references. Summing
+           the un-normalized cross products instead would weight each facet by its
+           local surface Jacobian, and that is measurably worse on a graded mesh:
+           the larger facet averages over a wider arc and is therefore the poorer
+           estimate of the normal, so giving it more weight pulls the nodal normal
+           away from the exact one (cylinder patch, neighbour size ratio 2, nodes
+           with unequal neighbours: 3.82 deg weighted against 1.91 deg unweighted
+           for CONQUAD4, 0.0211 against 0.0147 deg for CONQUAD8/9). It
+           would also make the weight depend on the element type rather than on the
+           geometry, because the surface Jacobian carries the size of the reference
+           element - a triangle and a quadrilateral of EQUAL area contribute in the
+           ratio 8:1.
+
+        All these variants coincide exactly wherever the contributions at a node are
+        parallel (a FLAT slave surface) or of equal length and symmetric about the
+        node (a uniform mesh on a curved one): any positive weighting then normalizes
+        to the same direction. It is the equal size of the adjacent facets that does
+        this, not mesh uniformity as such - on a curved surface meshed uniformly in
+        the PARAMETER but not in facet size, the variants differ again.
 
         If U_np is provided, the normal vectors are calculated in the deformed
         configuration. Otherwise, they are calculated in the undeformed one.
@@ -938,23 +962,16 @@ class Constraint(ConstraintBase):
             
             coords = np.array(coords)
 
-            # Element normal evaluated AT each node's own natural coordinate, summed
-            # over the adjacent facets and normalized below - the averaged nodal
-            # normal of Popp, Gitterle, Gee & Wall (2010) and Farah (2018), Sec. 4.1.
+            # Element normal evaluated AT each node's own natural coordinate,
+            # normalized, and summed over the adjacent facets - the averaged nodal
+            # normal of Popp, Gitterle, Gee & Wall (2010), Eq. (37), and Farah (2018),
+            # Eq. (4.41). Both sum UNIT element normals; see the docstring for what
+            # each of the two steps is worth, measured.
             #
-            # The point is that it is evaluated per NODE, not per facet. A single
-            # facet-constant normal (the diagonal cross product of the corner nodes in
-            # 3D, the corner chord in 2D) assigns the same direction to a corner and
-            # to a mid-side node of the SAME quadratic facet, so the curvature of that
-            # facet never reaches the normal and the field converges only linearly:
-            # measured on the cylinder patch of 01_node_normals, CONQUAD8 and CONQUAD9
-            # produced exactly the CONQUAD4 error (7.16 deg -> 3.58 deg, rate 1), i.e.
-            # the quadratic facet types bought nothing at all.
-            #
-            # The magnitude of the un-normalized contribution is the local surface
-            # Jacobian, so a large facet still outweighs a small one at a shared node;
-            # for an undistorted linear facet it is the facet area up to the constant
-            # factor that the normalization removes.
+            # A contribution of zero length is a degenerate facet at that node. It is
+            # dropped rather than divided by: the sum below then rests on the
+            # remaining facets, and if there are none the node ends up with a zero
+            # normal, which is reported right after this loop.
             dN_at_nodes = el.getShapeFunctionDerivativesAtNodes()
             for local, node in enumerate(facet_nodes):
                 if node not in node_to_idx:
@@ -964,7 +981,10 @@ class Constraint(ConstraintBase):
                     n_node = np.cross(t[0], t[1])
                 else:
                     n_node = np.array([t[0][1], -t[0][0]])
-                normals[node_to_idx[node]] += n_node
+                len_n = np.linalg.norm(n_node)
+                if len_n <= 1e-14:
+                    continue
+                normals[node_to_idx[node]] += n_node / len_n
 
         # Normalize the normal vectors
         degenerate = []
@@ -981,11 +1001,13 @@ class Constraint(ConstraintBase):
             # built by contracting with n_I, so both collapse to zero, the
             # indicator s_n is zero, and the node can NEVER become active. It
             # silently drops out of the contact. Causes are a degenerate facet
-            # (zero area) or facets whose area-weighted normals cancel, which is
-            # what a node on a sharp fold between two opposing facets does.
+            # (zero area, skipped in the loop above) or facets whose unit normals
+            # cancel, which is what a node on a sharp fold between two opposing
+            # facets does - and note that with unit contributions the cancellation
+            # no longer needs the two facets to be of equal size.
             self._warn_once(
                 "degenerate_nodal_normal",
-                f"{len(degenerate)} slave node(s) with a vanishing area-weighted normal "
+                f"{len(degenerate)} slave node(s) with a vanishing averaged nodal normal "
                 f"(first: local index {degenerate[0]}). Such nodes carry no contact at all - "
                 f"the weighted gap and the pressure both contract with n_I and vanish with it, "
                 f"so the active-set indicator can never turn them on. Usual causes: a "
