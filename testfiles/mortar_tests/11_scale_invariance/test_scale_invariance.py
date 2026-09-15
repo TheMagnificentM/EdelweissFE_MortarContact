@@ -80,6 +80,26 @@ RTOL = 1e-8
 DEFAULT_SCALAR_FLUX_TOL = 1e-8
 
 
+from conftest import constraint_tolerance, requires_lagrange
+
+
+def contact_multipliers(model, constraint_name="contact"):
+    """Knotenweise Kontaktmultiplikatoren, unabhaengig von der Formulierung.
+
+    Bei ``formulation=lagrange`` sind sie Skalarunbekannte des Gesamtsystems und
+    stehen in ``model.scalarVariables``. Bei ``formulation=penalty`` sind sie gar
+    keine Freiheitsgrade - sie folgen dem gewichteten Spalt -, weshalb der
+    Constraint die assemblierten Werte in ``lambda_nodal`` bereitstellt. Gleiche
+    Groesse, gleiche Vorzeichenkonvention, also prueft ein Test ueber diesen
+    Helfer in beiden Formulierungen dasselbe.
+    """
+    lam = np.array([v.value for v in model.scalarVariables.values()], dtype=float).flatten()
+    if lam.size:
+        return lam
+    c = model.constraints[constraint_name]
+    return np.array(getattr(c, "lambda_nodal", []), dtype=float).flatten()
+
+
 def scalar_flux_tolerance(k, dim):
     """Absolute Schranke fuer das Residuum der lambda-Zeile, mit der Skala gefuehrt.
 
@@ -298,7 +318,7 @@ def _run(name, inp_text, setup_text, k, nx_a, dim):
         max_err_uy = max(max_err_uy, abs(u[1] - (-PRESSURE * y / E_MOD)))
 
     mc = model.constraints["contact"]
-    lambdas = np.array([sv.value for sv in mc.scalarVariables])
+    lambdas = contact_multipliers(model)
     rowsum = mc.current_D_rowsum
     lam_mean = np.sum(lambdas * rowsum) / np.sum(rowsum)
     g_weak, g_sep, active = _weighted_gaps(model, dim)
@@ -352,9 +372,9 @@ def run_scaled_3d(name, el_type, con_type, nx_a, nx_b, k, scalar_tol=None):
     return _run(name, _with_scalar_tol(inp_text, tol), setup_text, k, nx_a, dim=3)
 
 
-def report(k, res, dim):
+def report(k, res, dim, rtol=RTOL):
     """Bewertet einen Lauf und meldet nebenbei die Entartung der Suchmarge."""
-    tol = RTOL * res["u_ref"]
+    tol = rtol * res["u_ref"]
     lam_err = np.max(np.abs(res["lambdas"] - PRESSURE)) / PRESSURE
     mean_err = abs(res["lam_mean"] - PRESSURE) / PRESSURE
 
@@ -380,7 +400,7 @@ def report(k, res, dim):
     if res["err_ux"] > tol or res["err_uy"] > tol:
         print("  [FAIL] Verschiebungsfeld skaliert nicht wie die exakte Loesung!")
         ok = False
-    if lam_err > RTOL or mean_err > RTOL:
+    if lam_err > rtol or mean_err > rtol:
         print("  [FAIL] Kontaktdruck ist nicht skaleninvariant!")
         ok = False
     if ok:
@@ -405,12 +425,12 @@ VARIANTS_3D = [
 SCALES = [1e-3, 1.0, 1e3]
 
 
-def _sweep(tag, runner, el_type, con_type, nx_a, nx_b, dim, results, pressures):
+def _sweep(tag, runner, el_type, con_type, nx_a, nx_b, dim, results, pressures, rtol=RTOL):
     print(f"\n--- {dim}D-Variante {el_type}/{con_type} (nicht passend, {nx_a} gegen {nx_b}) ---")
     for k in SCALES:
         name = f"{tag}_k{SCALES.index(k)}"
         res = runner(name, el_type, con_type, nx_a, nx_b, k)
-        results.append(report(k, res, dim))
+        results.append(report(k, res, dim, rtol))
         pressures[(tag, k)] = np.sort(res["lambdas"])
 
     # Direkter Vergleich der Skalen untereinander, nicht nur gegen die
@@ -419,12 +439,12 @@ def _sweep(tag, runner, el_type, con_type, nx_a, nx_b, dim, results, pressures):
     for k in SCALES:
         diff = np.max(np.abs(pressures[(tag, k)] - ref)) / PRESSURE
         print(f"  Multiplikatoren k = {k:g} gegen k = 1: max. rel. Differenz {diff:.3e}")
-        if diff > RTOL:
+        if diff > rtol:
             print("  [FAIL] Multiplikatoren unterscheiden sich zwischen den Skalen!")
             results.append(False)
 
 
-def test_lambda_residual_floor_is_scale_dependent():
+def test_lambda_residual_floor_is_scale_dependent(formulation):
     with default_tolerances_restored():
         """Haelt fest, WO die absolute Skalar-Schranke des Loesers unerreichbar wird.
 
@@ -443,6 +463,13 @@ def test_lambda_residual_floor_is_scale_dependent():
         annehmen, obwohl die Loesung stimmt. Der Test belegt, dass genau das bei
         k = 1e3 in 3D eintritt und bei k = 1 noch nicht.
         """
+        requires_lagrange(
+            formulation,
+            "the quantity measured here is the residual of the MULTIPLIER ROW of the "
+            "global system, g_weak, checked against the solver's absolute bound for "
+            "scalar variables. The penalty branch carries no multiplier row and no "
+            "scalar unknowns at all, so neither the residual nor the bound exists",
+        )
         print("\n=== Boden des lambda-Residuums ueber der Laengenskala (3D) ===")
         rows = []
         for k in (1.0, 1e3):
@@ -486,17 +513,23 @@ def test_lambda_residual_floor_is_scale_dependent():
               "configuration=fluxResidualTolerance / scalar variables=<passend>.")
 
 
-def test_scale_invariance():
+def test_scale_invariance(formulation):
     with default_tolerances_restored():
         print("\n=== Skaleninvarianz des Zwei-Block-Patch-Tests ===")
         results = []
         pressures = {}
 
+        # Skaleninvarianz ist eine Eigenschaft der Geometrieverarbeitung und gilt
+        # in jeder Formulierung. Wie genau die Zwangsbedingung dabei erfuellt wird,
+        # haengt dagegen an der Formulierung - deshalb wird die Schranke skaliert
+        # und nicht die Aussage geaendert.
+        rtol = constraint_tolerance(formulation, RTOL)
+
         for tag, el_type, con_type, nx_a, nx_b in VARIANTS_2D:
-            _sweep(tag, run_scaled_2d, el_type, con_type, nx_a, nx_b, 2, results, pressures)
+            _sweep(tag, run_scaled_2d, el_type, con_type, nx_a, nx_b, 2, results, pressures, rtol)
 
         for tag, el_type, con_type, nx_a, nx_b in VARIANTS_3D:
-            _sweep(tag, run_scaled_3d, el_type, con_type, nx_a, nx_b, 3, results, pressures)
+            _sweep(tag, run_scaled_3d, el_type, con_type, nx_a, nx_b, 3, results, pressures, rtol)
 
         n_fail = results.count(False)
         assert n_fail == 0, f"{n_fail} Skalierungspruefungen fehlgeschlagen"

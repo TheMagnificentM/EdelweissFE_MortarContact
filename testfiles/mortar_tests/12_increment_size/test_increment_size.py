@@ -117,6 +117,26 @@ def setup(model):
 """
 
 
+from conftest import constraint_tolerance, requires_lagrange
+
+
+def contact_multipliers(model, constraint_name="contact"):
+    """Knotenweise Kontaktmultiplikatoren, unabhaengig von der Formulierung.
+
+    Bei ``formulation=lagrange`` sind sie Skalarunbekannte des Gesamtsystems und
+    stehen in ``model.scalarVariables``. Bei ``formulation=penalty`` sind sie gar
+    keine Freiheitsgrade - sie folgen dem gewichteten Spalt -, weshalb der
+    Constraint die assemblierten Werte in ``lambda_nodal`` bereitstellt. Gleiche
+    Groesse, gleiche Vorzeichenkonvention, also prueft ein Test ueber diesen
+    Helfer in beiden Formulierungen dasselbe.
+    """
+    lam = np.array([v.value for v in model.scalarVariables.values()], dtype=float).flatten()
+    if lam.size:
+        return lam
+    c = model.constraints[constraint_name]
+    return np.array(getattr(c, "lambda_nodal", []), dtype=float).flatten()
+
+
 def run(name, n_inc, el_type="CPE4", con_type="CONLINE2", nx_a=8, nx_b=10):
     """Ein Lauf mit vorgegebener maximaler Increment-Groesse."""
     setup_path = os.path.join(TESTDIR, f"generated_setup_{name}.py")
@@ -138,7 +158,7 @@ def run(name, n_inc, el_type="CPE4", con_type="CONLINE2", nx_a=8, nx_b=10):
     model, _ = finiteElementSimulation(parseInputFile(inp_path), verbose=False, suppressPlots=True)
 
     mc = model.constraints["contact"]
-    lambdas = np.array([sv.value for sv in mc.scalarVariables])
+    lambdas = contact_multipliers(model)
     rowsum = mc.current_D_rowsum
 
     # Physikalisch massgeblich ist die KNOTENKRAFT lambda * D_II, nicht lambda:
@@ -171,7 +191,7 @@ def _order(errors, ns):
     return orders
 
 
-def test_increment_size_convergence():
+def test_increment_size_convergence(formulation):
     print("\n=== Fehler der eingefrorenen Geometrie ueber die Increment-Groesse ===")
     print(f"  Indenter: parabolische Unterseite, Stich {CURVATURE}, Endverschiebung {U_TOP}")
 

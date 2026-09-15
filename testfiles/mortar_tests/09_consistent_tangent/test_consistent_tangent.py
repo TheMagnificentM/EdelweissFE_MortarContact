@@ -75,6 +75,9 @@ TOL_FD = 1e-8
 H_FD = 1.0e-6
 
 
+from conftest import constraint_tolerance  # noqa: F401  (Testhelfer der Mortar-Suite)
+
+
 def build_contact(el_type, slave_pts, master_pts, dim=3, cn=1000.0):
     """Zwei gegenueberliegende Kontaktfacetten als minimales Constraint-Modell."""
     model = FEModel(dimension=dim)
@@ -124,7 +127,16 @@ def make_state(constraint, normal_offsets, lambdas):
         idx = constraint.node_to_global_idx[nd]
         n_I = constraint.undeformed_normals[local]
         U[sf * idx : sf * idx + dim] = normal_offsets[local] * n_I
-    U[sf * len(constraint.nodes) :] = lambdas
+    # Druckschaetzer: im Sattelpunkt die Multiplikator-Unbekannten am Ende von U,
+    # im Penalty-Zweig der akkumulierte Schaetzer z_aug des augmentierten
+    # Verfahrens. In beiden Faellen bedeutet ein positiver Wert Druck, und in
+    # beiden ist er waehrend der FD-Auswertung konstant - genau das macht die
+    # Ableitung vergleichbar.
+    if constraint.formulation == "lagrange":
+        U[sf * len(constraint.nodes) :] = lambdas
+    else:
+        constraint.z_aug[:] = lambdas
+        constraint.z_aug_converged[:] = lambdas
     return U
 
 
@@ -250,7 +262,26 @@ LINE3_SLAVE = [[0.0, 0.0], [1.0, 0.0], [0.5, 0.0]]
 LINE3_MASTER = [[0.2, -0.01], [1.2, -0.01], [0.7, -0.01]]
 
 
-def test_consistent_tangent():
+def test_consistent_tangent(formulation):
+    """Die assemblierte Tangente gegen zentrale Differenzen des Residuums.
+
+    Der Test laeuft in allen drei Formulierungen und prueft in jeder eine ANDERE
+    Tangente, denn das Zwangsgesetz geht unterschiedlich in K ein:
+
+      lagrange       Sattelpunkt-Kopplung, K[x, lambda] = D*n bzw. -C*n, und die
+                     Multiplikatorzeile selbst.
+      penalty        der Beitrag ist Rang eins, K_ab = kappa*v_a*v_b mit
+                     v_a = w_a*n_I - der erste Term von Puso & Laursen (2004),
+                     Gl. (25). Die beiden uebrigen Terme (Linearisierung der
+                     Knotennormale und der Mortar-Gewichte) fehlen bewusst, weil
+                     die Geometrie im Increment eingefroren ist; deshalb ist die
+                     hier gepruefte Groesse die exakte Jacobi-Matrix des
+                     EINGEFRORENEN Residuums und nicht die des vollen Problems.
+      penalty_uzawa  dieselbe Tangente - der augmentierte Schaetzer p^k ist
+                     waehrend der Gleichgewichtsiteration konstant und traegt
+                     nichts zur Ableitung bei. Dass beide Penalty-Varianten
+                     dasselbe K liefern, ist selbst eine Aussage des Tests.
+    """
     results = []
 
     results.append(

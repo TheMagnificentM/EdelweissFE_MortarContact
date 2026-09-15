@@ -113,6 +113,26 @@ maxInc=0.5, minInc=1e-3, maxNumInc=100, maxIter=25, stepLength=1
 """
 
 
+from conftest import constraint_tolerance, requires_lagrange
+
+
+def contact_multipliers(model, constraint_name="contact"):
+    """Knotenweise Kontaktmultiplikatoren, unabhaengig von der Formulierung.
+
+    Bei ``formulation=lagrange`` sind sie Skalarunbekannte des Gesamtsystems und
+    stehen in ``model.scalarVariables``. Bei ``formulation=penalty`` sind sie gar
+    keine Freiheitsgrade - sie folgen dem gewichteten Spalt -, weshalb der
+    Constraint die assemblierten Werte in ``lambda_nodal`` bereitstellt. Gleiche
+    Groesse, gleiche Vorzeichenkonvention, also prueft ein Test ueber diesen
+    Helfer in beiden Formulierungen dasselbe.
+    """
+    lam = np.array([v.value for v in model.scalarVariables.values()], dtype=float).flatten()
+    if lam.size:
+        return lam
+    c = model.constraints[constraint_name]
+    return np.array(getattr(c, "lambda_nodal", []), dtype=float).flatten()
+
+
 def run_variant(name, elA, nxA, nzA, conA, elB, nxB, nzB, conB, distort=False,
                 tol_u=1e-8, tol_lam=1e-8, tol_lam_mean=None):
     print(f"\n* Variante: {name}")
@@ -174,7 +194,7 @@ def run_variant(name, elA, nxA, nzA, conA, elB, nxB, nzB, conB, distort=False,
         raise AssertionError("Patch-Test fehlgeschlagen -- siehe [FAIL] oben")
 
     # --- Kontrolle 2: konstanter Kontaktdruck (Multiplikatoren) ---
-    lambdas = np.array([v.value for v in model.scalarVariables.values()]).flatten()
+    lambdas = contact_multipliers(model)
     if len(lambdas) == 0:
         print("  [FAIL] Keine Kontakt-Multiplikatoren im Modell gefunden!")
         raise AssertionError("Patch-Test fehlgeschlagen -- siehe [FAIL] oben")
@@ -209,18 +229,30 @@ def run_variant(name, elA, nxA, nzA, conA, elB, nxB, nzB, conB, distort=False,
     os.remove(setup_path)
 
 
-def test_patch_test_hex20():
-    run_variant("hex20_hex20_matching", "C3D20", 2, 2, "CONQUAD8", "C3D20", 2, 2, "CONQUAD8")
-    run_variant("hex20_hex20_nonmatching", "C3D20", 2, 2, "CONQUAD8", "C3D20", 3, 3, "CONQUAD8")
-    run_variant("hex20_slave_hex8_master", "C3D20", 2, 2, "CONQUAD8", "C3D8", 3, 3, "CONQUAD4")
-    run_variant("hex8_slave_hex20_master", "C3D8", 3, 3, "CONQUAD4", "C3D20", 2, 2, "CONQUAD8")
+def test_patch_test_hex20(formulation):
+    # Wie exakt der Patch-Test ueberhaupt erfuellbar ist, haengt an der
+    # Formulierung - der Sattelpunkt erzwingt g_A = 0, Penalty laesst eine
+    # Durchdringung der Ordnung 1/kappa stehen. Die geometrische Aussage des
+    # Tests (konstanter Druck, exaktes Verschiebungsfeld ueber ein nichtpassendes
+    # Interface) ist in jeder Formulierung dieselbe, nur ihre erreichbare
+    # Genauigkeit nicht.
+    tol = constraint_tolerance(formulation, 1e-8)
+    run_variant("hex20_hex20_matching", "C3D20", 2, 2, "CONQUAD8", "C3D20", 2, 2, "CONQUAD8",
+                tol_u=tol, tol_lam=tol)
+    run_variant("hex20_hex20_nonmatching", "C3D20", 2, 2, "CONQUAD8", "C3D20", 3, 3, "CONQUAD8",
+                tol_u=tol, tol_lam=tol)
+    run_variant("hex20_slave_hex8_master", "C3D20", 2, 2, "CONQUAD8", "C3D8", 3, 3, "CONQUAD4",
+                tol_u=tol, tol_lam=tol)
+    run_variant("hex8_slave_hex20_master", "C3D8", 3, 3, "CONQUAD4", "C3D20", 2, 2, "CONQUAD8",
+                tol_u=tol, tol_lam=tol)
     # Bei gekrümmten Elementkanten (verzerrtes Netz) gilt der Patch-Test nur
     # näherungsweise (linearisiertes Integrationsgebiet). Einzelne Multiplikatoren
     # an Randknoten mit kleinen dualen Gewichten weichen lokal stärker ab; die
     # übertragene GESAMTKRAFT (gewichtetes Mittel) ist die physikalisch
     # maßgebliche Größe und bleibt auf ~1e-4 genau.
     run_variant("hex20_hex20_distorted", "C3D20", 2, 2, "CONQUAD8", "C3D20", 3, 3, "CONQUAD8",
-                distort=True, tol_u=1e-2, tol_lam=0.2, tol_lam_mean=1e-3)
+                distort=True, tol_u=1e-2, tol_lam=0.2,
+                tol_lam_mean=constraint_tolerance(formulation, 1e-3))
 
 
 if __name__ == "__main__":
@@ -228,7 +260,7 @@ if __name__ == "__main__":
     print("MORTAR KONTAKT-PATCH-TEST (HEX20 / SERENDIPITY)")
     print("====================================================")
 
-    test_patch_test_hex20()
+    test_patch_test_hex20("lagrange")
 
     print("\n====================================================")
     print("ALLE PATCH-TESTS ERFOLGREICH PASSIERT!")

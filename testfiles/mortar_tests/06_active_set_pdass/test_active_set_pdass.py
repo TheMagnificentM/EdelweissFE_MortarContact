@@ -33,6 +33,14 @@ from edelweissfe.points.node import Node
 from edelweissfe.variables.fieldvariable import FieldVariable
 from edelweissfe.timesteppers.timestep import TimeStep
 
+from conftest import (  # Testhelfer der Mortar-Suite
+    constraint_tolerance,
+    requires_lagrange,
+    requires_pressure_estimate,
+    set_nodal_pressure,
+)
+
+
 def run_active_set_test():
     print("================ RUNNING MORTAR ACTIVE SET (PDASS) TEST ================")
     
@@ -173,13 +181,21 @@ def set_slave_z(constraint, U_np, values):
         U_np[constraint.sizeField * idx + 2] = values[local]
 
 
-def test_ncp_indicator():
+def test_ncp_indicator(formulation):
     """The NCP indicator s_n = p_n - c_n*inv_D*g_sep decides - not penetration alone.
 
     At a CLOSED gap (g_sep = 0) a positive normal pressure keeps the node active
     and a tensile (negative) pressure releases it. This is the branch a pure
     penetration heuristic cannot represent (Gitterle et al. 2010, Eq. (55)).
     """
+    requires_pressure_estimate(
+        formulation,
+        "the branch tested here - a CLOSED gap whose branch is decided by the "
+        "pressure rather than by penetration - needs a pressure estimate that is "
+        "independent of the current gap. Pure penalty has none: its pressure is "
+        "kappa*g_A alone, i.e. exactly the penetration heuristic this test "
+        "distinguishes itself from",
+    )
     print("\n--- Running Normal NCP Indicator Test ---")
     constraint, U_np, dU, PExt, K = build_two_block_contact()
 
@@ -191,18 +207,15 @@ def test_ncp_indicator():
     print("  g_sep = 0, p_n = 0 -> active set:", constraint.active_set)
     assert not np.any(constraint.active_set), "s_n = 0 must not activate"
 
-    idx_LM_0 = constraint.sizeField * len(constraint._nodes)
-    sgn_D = np.sign(constraint.current_D_rowsum)
-
-    # Increment 2: g_sep = 0 but COMPRESSIVE pressure p_n = lambda*sgn_D = +1 > 0
-    U_np[idx_LM_0:] = sgn_D
+    # Increment 2: g_sep = 0 but COMPRESSIVE pressure p_n = +1 > 0
+    set_nodal_pressure(constraint, U_np, 1.0)
     PExt.fill(0.0); K.fill(0.0)
     constraint.applyConstraint(U_np, dU, PExt, K, TimeStep(2, 0.0, 0.0, 0.0, 0.0, 0.0))
     print("  g_sep = 0, p_n = +1 -> active set:", constraint.active_set)
     assert np.all(constraint.active_set), "positive pressure at closed gap must be active"
 
     # Increment 3: g_sep = 0 but TENSILE pressure p_n = -1 < 0 -> released
-    U_np[idx_LM_0:] = -sgn_D
+    set_nodal_pressure(constraint, U_np, -1.0)
     PExt.fill(0.0); K.fill(0.0)
     constraint.applyConstraint(U_np, dU, PExt, K, TimeStep(3, 0.0, 0.0, 0.0, 0.0, 0.0))
     print("  g_sep = 0, p_n = -1 -> active set:", constraint.active_set)
@@ -210,7 +223,7 @@ def test_ncp_indicator():
     print("[PASS] Normal NCP Indicator Test Successful!")
 
 
-def test_active_set_reevaluated_every_iteration():
+def test_active_set_reevaluated_every_iteration(formulation):
     """No fixed iteration cutoff: the indicator is re-evaluated in EVERY Newton
     iteration as long as the discrete state has not settled - also past iteration
     5, where the previous heuristic stopped updating (Hueber & Wohlmuth 2005).
@@ -239,12 +252,19 @@ def test_active_set_reevaluated_every_iteration():
     print("[PASS] Active Set Re-evaluation Test Successful (updated up to iteration 7)!")
 
 
-def test_active_set_pdass_termination():
+def test_active_set_pdass_termination(formulation):
     """PDASS convergence criterion (Hueber & Wohlmuth 2005): the semi-smooth
     iteration is frozen once the discrete state has SETTLED - unchanged for two
     consecutive iterations past a warm-up - and not after a fixed iteration count.
     The next increment restarts it.
     """
+    requires_lagrange(
+        formulation,
+        "the PDASS freeze and its anti-cycling bookkeeping exist only for the "
+        "semi-smooth active-set iteration of the saddle-point formulation; the "
+        "penalty branch has no discrete state to settle - the set follows the "
+        "pressure p = z + kappa*g in every iteration",
+    )
     print("\n--- Running PDASS Termination Test ---")
     constraint, U_np, dU, PExt, K = build_two_block_contact()
     timeStep = TimeStep(1, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -331,7 +351,7 @@ def build_quad9_partial_overlap(shift_x=0.3, cn=1000.0):
     return constraint, np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), np.zeros((nDof, nDof))
 
 
-def test_negative_nodal_weight_opens_correctly():
+def test_negative_nodal_weight_opens_correctly(formulation):
     """A node with NEGATIVE D_II must still deactivate when the gap is open.
 
     Regression test for a sign bug in the active-set indicator. With D_II < 0 both

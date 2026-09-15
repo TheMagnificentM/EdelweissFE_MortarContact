@@ -89,6 +89,11 @@ U_TOP = 0.02  # Betrag der aufgebrachten Oberseitenverschiebung
 # Vorzeichenaussagen; toleriert wird nur das Löserrauschen, bezogen auf die
 # jeweilige Referenzgröße (Druck bzw. Länge) -- absolute Schranken wären
 # einheitenabhängig.
+#: Die gerade gepruefte Formulierung. Als Liste, damit die Pruefroutinen weiter
+#: unten sie sehen, ohne dass jede von ihnen einen zusaetzlichen Parameter
+#: durchreichen muss; der Test setzt sie zu Beginn.
+_FORMULATION = ["lagrange"]
+
 RTOL_P = 1e-7
 RTOL_G = 1e-7
 
@@ -111,6 +116,26 @@ RTOL_G_FRESH = 5e-4
 # ===========================================================================
 # Die Nachprüfung
 # ===========================================================================
+
+
+from conftest import constraint_tolerance, requires_lagrange
+
+
+def contact_multipliers(model, constraint_name="contact"):
+    """Knotenweise Kontaktmultiplikatoren, unabhaengig von der Formulierung.
+
+    Bei ``formulation=lagrange`` sind sie Skalarunbekannte des Gesamtsystems und
+    stehen in ``model.scalarVariables``. Bei ``formulation=penalty`` sind sie gar
+    keine Freiheitsgrade - sie folgen dem gewichteten Spalt -, weshalb der
+    Constraint die assemblierten Werte in ``lambda_nodal`` bereitstellt. Gleiche
+    Groesse, gleiche Vorzeichenkonvention, also prueft ein Test ueber diesen
+    Helfer in beiden Formulierungen dasselbe.
+    """
+    lam = np.array([v.value for v in model.scalarVariables.values()], dtype=float).flatten()
+    if lam.size:
+        return lam
+    c = model.constraints[constraint_name]
+    return np.array(getattr(c, "lambda_nodal", []), dtype=float).flatten()
 
 
 def check_signorini(model, constraint_name="contact"):
@@ -141,7 +166,7 @@ def check_signorini(model, constraint_name="contact"):
     normals = mc.current_normals
     rowsum = mc.current_D_rowsum
 
-    lam = np.array([sv.value for sv in mc.scalarVariables])
+    lam = contact_multipliers(model)
 
     p_n = np.zeros(nSlave)
     g_sep = np.zeros(nSlave)
@@ -231,8 +256,14 @@ def check_signorini_fresh_geometry(model, constraint_name="contact"):
 
 def report_and_assert(name, res, p_ref, g_ref):
     """Gibt die Auswertung aus und prüft die drei Bedingungen."""
+    # RTOL_G begrenzt die ZWANGSVERLETZUNG (Restspalt an aktiven Knoten,
+    # Komplementaritaet). Wie klein die sein kann, haengt an der Formulierung:
+    # der Sattelpunkt erzwingt g_A = 0 als Gleichung, das augmentierte Verfahren
+    # treibt es auf die Augmentierungstoleranz, reines Penalty laesst O(1/kappa)
+    # stehen. RTOL_P dagegen begrenzt eine DRUCK-Groesse (p_n >= 0) und bleibt
+    # unveraendert - ein Zugdruck waere in jeder Formulierung falsch.
     eps_p = RTOL_P * p_ref
-    eps_g = RTOL_G * g_ref
+    eps_g = constraint_tolerance(_FORMULATION[0], RTOL_G) * g_ref
 
     p_n, g_sep, lam = res["p_n"], res["g_sep"], res["lam"]
     act, inact, unc = res["active"], res["inactive"], res["uncovered"]
@@ -494,11 +525,11 @@ def report_fresh_geometry(name, model, u_ref):
           f"offen {pen_inactive:+.3e}   (Schranke {RTOL_G_FRESH * u_ref:.1e})")
 
     ok = True
-    if pen_active > RTOL_G_FRESH * u_ref:
+    if pen_active > constraint_tolerance(_FORMULATION[0], RTOL_G_FRESH) * u_ref:
         print("  [FAIL] Aktiver Knoten dringt im tatsaechlichen Zustand ein -- der "
               "Staffelungsfehler ist groesser als zugelassen!")
         ok = False
-    if pen_inactive > RTOL_G_FRESH * u_ref:
+    if pen_inactive > constraint_tolerance(_FORMULATION[0], RTOL_G_FRESH) * u_ref:
         print("  [FAIL] Inaktiver Knoten dringt im tatsaechlichen Zustand ein!")
         ok = False
     return ok
@@ -574,7 +605,8 @@ CASES_3D = [
 ELEMENTS_3D = [("C3D8", "CONQUAD4"), ("C3D20", "CONQUAD8")]
 
 
-def test_signorini_conditions():
+def test_signorini_conditions(formulation):
+    _FORMULATION[0] = formulation
     print("\n=== Signorini-Nachpruefung der konvergierten Loesung ===")
     results = []
     has_open = False   # Knoten MIT Gegenueber, aber lambda = 0

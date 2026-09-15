@@ -80,6 +80,26 @@ BLOCK_HEIGHT = 1.0
 # ===========================================================================
 
 
+from conftest import constraint_tolerance, requires_lagrange
+
+
+def contact_multipliers(model, constraint_name="contact"):
+    """Knotenweise Kontaktmultiplikatoren, unabhaengig von der Formulierung.
+
+    Bei ``formulation=lagrange`` sind sie Skalarunbekannte des Gesamtsystems und
+    stehen in ``model.scalarVariables``. Bei ``formulation=penalty`` sind sie gar
+    keine Freiheitsgrade - sie folgen dem gewichteten Spalt -, weshalb der
+    Constraint die assemblierten Werte in ``lambda_nodal`` bereitstellt. Gleiche
+    Groesse, gleiche Vorzeichenkonvention, also prueft ein Test ueber diesen
+    Helfer in beiden Formulierungen dasselbe.
+    """
+    lam = np.array([v.value for v in model.scalarVariables.values()], dtype=float).flatten()
+    if lam.size:
+        return lam
+    c = model.constraints[constraint_name]
+    return np.array(getattr(c, "lambda_nodal", []), dtype=float).flatten()
+
+
 def make_nodes_2d(model, start_id, points):
     nodes = []
     for i, pt in enumerate(points):
@@ -322,7 +342,7 @@ def run_patch_variant(name, el_type, con_type, nx_a, nx_b, tol=1e-8):
         return False
 
     # --- Kontrolle 2: konstanter Kontaktdruck ---
-    lambdas = np.array([v.value for v in model.scalarVariables.values()]).flatten()
+    lambdas = contact_multipliers(model)
     if len(lambdas) == 0:
         print("  [FAIL] Keine Kontakt-Multiplikatoren im Modell gefunden!")
         return False
@@ -357,7 +377,7 @@ def run_patch_variant(name, el_type, con_type, nx_a, nx_b, tol=1e-8):
     return True
 
 
-def test_2d_solver_patch_tests():
+def test_2d_solver_patch_tests(formulation):
     print("\n=== Kontakt-Patch-Test durch den Loeser (2D) ===")
     variants = [
         ("cpe4_matching", "CPE4", "CONLINE2", 2, 2),
@@ -365,7 +385,13 @@ def test_2d_solver_patch_tests():
         ("cpe8_matching", "CPE8", "CONLINE3", 2, 2),
         ("cpe8_nonmatching", "CPE8", "CONLINE3", 2, 3),
     ]
-    results = [run_patch_variant(*v) for v in variants]
+    # Der Patch-Test prueft EXAKTHEIT, und wie exakt die Zwangsbedingung ueberhaupt
+    # erfuellt werden kann, haengt an der Formulierung: der Sattelpunkt erfuellt
+    # g_A = 0 bis auf das Rauschen des linearen Loesers, das augmentierte Verfahren
+    # bis auf seine Augmentierungstoleranz, reines Penalty laesst eine Durchdringung
+    # der Ordnung 1/kappa stehen (Puso & Laursen 2004, Gl. (24)). Geprueft wird also
+    # in jeder Formulierung dieselbe Aussage, an der ihr angemessenen Schranke.
+    results = [run_patch_variant(*v, tol=constraint_tolerance(formulation, 1e-8)) for v in variants]
     assert all(results), f"{results.count(False)} von {len(results)} 2D-Patch-Test-Varianten fehlgeschlagen"
 
 
