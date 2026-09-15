@@ -27,6 +27,8 @@
 import math
 import warnings
 
+from dataclasses import dataclass
+
 import numpy as np
 from scipy.sparse import coo_matrix, csr_matrix
 
@@ -35,10 +37,9 @@ from edelweissfe.constraints.base.constraintbase import ConstraintBase
 from edelweissfe.models.femodel import FEModel
 from edelweissfe.timesteppers.timestep import TimeStep
 from edelweissfe.utils.caseinsensitivedict import CaseInsensitiveDict
-from edelweissfe.utils.inputlanguage import InputLanguage, Module
+from edelweissfe.utils.schema import buildSchemaFromOptions, schemaField
 from edelweissfe.utils.misc import (
     caseInsensitiveKwargsChecker,
-    castKwargsValuesAndAddDefaults,
 )
 
 """
@@ -97,125 +98,142 @@ than only additively contribute to K/PExt - a bigger architectural change,
 not attempted here.
 """
 
-module = Module(
-    "mortarcontact",
-    "A mortar contact constraint with Lagrange multipliers and dual basis functions.",
-)
+@dataclass(frozen=True)
+class MortarContactSchema:
+    """Die Optionen dieses Constraints, hier deklariert und nirgends sonst veraendert.
 
-inputLanguage = InputLanguage()
+    Ersetzt die frueher hier stehende ``Module``/``InputLanguage``-Deklaration; die
+    Beschreibungstexte sind unveraendert uebernommen. Casting, Vorgabewerte und
+    Gross-/Kleinschreibung erledigt :func:`buildSchemaFromOptions`.
+    """
 
-keyword = "constraint"
-if keyword in inputLanguage:
-    inputLanguage[keyword].addModule(module)
+    nonMortarSurface: str | None = schemaField(
+        description=(
+            "The non-mortar (slave) surface name."
+        ),
+        dtype=str,
+        default=None,
+        required=True,
+    )
 
-module.addRequiredArg("nonMortarSurface", "The non-mortar (slave) surface name.", str)
-module.addRequiredArg("mortarSurface", "The mortar (master) surface name.", str)
-module.addOptionalArg("field", "The field this constraint acts on (e.g. displacement).", str, "displacement")
-module.addOptionalArg(
-    "cn",
-    "Semi-smooth-Newton complementarity parameter c_n (> 0) of the normal contact "
-    "NCP. It enters the semi-smooth active-set indicator s_n = p_n - c_n*g_sep "
-    "(active iff s_n > 0; Gitterle et al. 2010 Eq. 55; Hueber & Wohlmuth 2005; MOOSE "
-    "ComputeWeightedGapLMMechanicalContact), where g_sep = g_weak/D_II is the weak gap "
-    "normalized by the nodal mortar weight D_II, i.e. the physical nodal opening, so "
-    "that c_n*g_sep is a pressure directly comparable to p_n. "
-    "Purely algorithmic - no effect on the converged solution (g_sep -> 0 there), so "
-    "the converged normal-contact result is identical to any admissible active-set "
-    "rule. It MUST be chosen at the order of Young's modulus of the softer contacting "
-    "body. The admissible values form a BAND, and both ends are documented: Hueber & "
-    "Wohlmuth (2005), sec. 7 and Table 7, report a lower bound c0 below which the "
-    "active set does not converge, note that 'for c > c0, the influence of c on Nl is "
-    "negligible', and find that 'c0 depends linearly on E'; Gitterle et al. (2010), "
-    "Table I, show the other end, where c_n = 1e5 and 1e6 produce repeated active-set "
-    "changes (chattering) and non-convergence. Popp & Gee & Wall (2009) suggest "
-    "'the order of Young's modulus E of the contacting bodies'. Farah (2018), text to "
-    "Eq. (3.58), repeats that suggestion but uses c_n = 1 for all examples. Purely "
-    "algorithmic either way - no effect on the converged solution (g_sep -> 0 there), "
-    "so the converged normal-contact result is identical to any admissible active-set "
-    "rule. "
-    "Leave it at 0 (the default) to derive it as the smallest initial Young's modulus "
-    "among the materials adjacent to the two contact surfaces; the derived value is "
-    "reported once so it stays checkable.",
-    float,
-    0.0,
-)
-module.addOptionalArg(
-    "formulation",
-    "How the non-penetration constraint is enforced: 'lagrange' (default) uses the "
-    "dual Lagrange multipliers as additional unknowns in a saddle-point system; "
-    "'penalty' eliminates them and follows the mortar penalty form of Puso & Laursen "
-    "(2004), Eq. (24), t_A = kappa*g_A, where g_A is the WEIGHTED gap - identical to "
-    "Puso, Laursen & Solberg (2008), Eq. (7). The two share the entire geometric "
-    "pipeline (search, projection, clipping, segmentation, nodal normals, D and C), "
-    "so they differ in the constraint law alone and are directly comparable.",
-    str,
-    "lagrange",
-)
-module.addOptionalArg(
-    "penaltyStiffness",
-    "Penalty parameter kappa of the mortar penalty form t_A = kappa*g_A (Puso & "
-    "Laursen 2004, Eq. (24); Puso, Laursen & Solberg 2008, Eq. (7)). Only used for "
-    "formulation=penalty. NOTE the unit: g_A is the WEIGHTED gap and carries "
-    "length x area, so kappa is NOT the classical penalty parameter eps_N of the "
-    "continuous formulation (Wriggers 2006, Eq. (30)/(31)), which multiplies the "
-    "pointwise gap and carries pressure per length. The two are related by "
-    "kappa = eps_N / D_II. The weighted form is used here because it is the one "
-    "both Puso papers state, and because it needs NO division by the nodal weight "
-    "D_II - which this code cannot assume to be safely away from zero (see the "
-    "negative-weight discussion for CONQUAD8/CONQUAD9). "
-    "Neither paper gives a rule for choosing kappa ('a suitable penalty parameter'). "
-    "Leave it at 0 (the default) to derive it as E/(h*D_mean) from the smallest "
-    "initial Young's modulus adjacent to the interface, the characteristic facet "
-    "size h and the mean nodal weight - i.e. a contact stiffness per unit area of "
-    "E/h, the stiffness of one adjacent element layer. That derivation is an "
-    "engineering rule of THIS implementation, not a literature value, and the "
-    "derived number is reported once so it stays checkable. With the augmented "
-    "Lagrangian enabled the converged result does not depend on kappa; it only "
-    "controls how fast the augmentation converges.",
-    float,
-    0.0,
-)
-module.addOptionalArg(
-    "augmentedLagrange",
-    "Add the augmented Lagrangian (Uzawa) outer loop on top of formulation=penalty, "
-    "following Puso, Laursen & Solberg (2008), Eq. (18): the nodal pressure estimate "
-    "is advanced as p^(k+1)_A = p^k_A + kappa*g_A, but only 'once convergence of the "
-    "Newton-Raphson loop is achieved', and equilibrium is then re-established. "
-    "OFF by default, so formulation=penalty alone is the pure penalty form "
-    "t_A = kappa*g_A of Eq. (7)/(24) - one formulation, one keyword. "
-    "Switching it on removes the well-known penalty sensitivity: the converged "
-    "solution then satisfies the constraint to the augmentation tolerance instead of "
-    "to O(1/kappa), and no longer depends on kappa, which only sets the rate of the "
-    "outer loop. It requires an equilibrium iteration to nest in and is therefore "
-    "unavailable to an explicit solver. "
-    "Ignored for formulation=lagrange, which enforces the constraint exactly.",
-    bool,
-    False,
-)
-module.addOptionalArg(
-    "augmentationTolerance",
-    "Termination tolerance of the augmented Lagrangian outer loop, as a RELATIVE "
-    "change of the nodal pressure estimate from one augmentation to the next, "
-    "max|p^(k+1)-p^k| <= tol * max|p^(k+1)|. Puso, Laursen & Solberg (2008) leave "
-    "this to the user and name exactly these two possibilities, 'checking the "
-    "non-penetration and stick conditions, or ... monitoring changes of multipliers "
-    "from iteration to iteration'; the multiplier form is used here because it is "
-    "dimensionless and therefore scale-invariant, unlike a bound on the weighted gap "
-    "(see the note on the length scale in the documentation).",
-    float,
-    1.0e-6,
-)
-module.addOptionalArg(
-    "maxAugmentations",
-    "Safeguard cap on the number of augmented-Lagrangian outer iterations per "
-    "increment. Reaching it is reported: the increment then converged on a pressure "
-    "estimate that had not settled, so its constraint violation is whatever the last "
-    "augmentation left - larger than the tolerance asked for.",
-    int,
-    10,
-)
+    mortarSurface: str | None = schemaField(
+        description=(
+            "The mortar (master) surface name."
+        ),
+        dtype=str,
+        default=None,
+        required=True,
+    )
 
-documentation = [module]
+    field: str = schemaField(
+        description=(
+            "The field this constraint acts on (e.g. displacement)."
+        ),
+        dtype=str,
+        default='displacement',
+    )
+
+    cn: float = schemaField(
+        description=(
+            "Semi-smooth-Newton complementarity parameter c_n (> 0) of the normal contact NCP. It enters the "
+            "semi-smooth active-set indicator s_n = p_n - c_n*g_sep (active iff s_n > 0; Gitterle et al. 2010 "
+            "Eq. 55; Hueber & Wohlmuth 2005; MOOSE ComputeWeightedGapLMMechanicalContact), where g_sep = "
+            "g_weak/D_II is the weak gap normalized by the nodal mortar weight D_II, i.e. the physical nodal "
+            "opening, so that c_n*g_sep is a pressure directly comparable to p_n. Purely algorithmic - no "
+            "effect on the converged solution (g_sep -> 0 there), so the converged normal-contact result is "
+            "identical to any admissible active-set rule. It MUST be chosen at the order of Young's modulus "
+            "of the softer contacting body. The admissible values form a BAND, and both ends are documented: "
+            "Hueber & Wohlmuth (2005), sec. 7 and Table 7, report a lower bound c0 below which the active set "
+            "does not converge, note that 'for c > c0, the influence of c on Nl is negligible', and find that "
+            "'c0 depends linearly on E'; Gitterle et al. (2010), Table I, show the other end, where c_n = 1e5 "
+            "and 1e6 produce repeated active-set changes (chattering) and non-convergence. Popp & Gee & Wall "
+            "(2009) suggest 'the order of Young's modulus E of the contacting bodies'. Farah (2018), text to "
+            "Eq. (3.58), repeats that suggestion but uses c_n = 1 for all examples. Purely algorithmic either "
+            "way - no effect on the converged solution (g_sep -> 0 there), so the converged normal-contact "
+            "result is identical to any admissible active-set rule. Leave it at 0 (the default) to derive it "
+            "as the smallest initial Young's modulus among the materials adjacent to the two contact "
+            "surfaces; the derived value is reported once so it stays checkable."
+        ),
+        dtype=float,
+        default=0.0,
+    )
+
+    formulation: str = schemaField(
+        description=(
+            "How the non-penetration constraint is enforced: 'lagrange' (default) uses the dual Lagrange "
+            "multipliers as additional unknowns in a saddle-point system; 'penalty' eliminates them and "
+            "follows the mortar penalty form of Puso & Laursen (2004), Eq. (24), t_A = kappa*g_A, where g_A "
+            "is the WEIGHTED gap - identical to Puso, Laursen & Solberg (2008), Eq. (7). The two share the "
+            "entire geometric pipeline (search, projection, clipping, segmentation, nodal normals, D and C), "
+            "so they differ in the constraint law alone and are directly comparable."
+        ),
+        dtype=str,
+        default='lagrange',
+    )
+
+    penaltyStiffness: float = schemaField(
+        description=(
+            "Penalty parameter kappa of the mortar penalty form t_A = kappa*g_A (Puso & Laursen 2004, Eq. "
+            "(24); Puso, Laursen & Solberg 2008, Eq. (7)). Only used for formulation=penalty. NOTE the unit: "
+            "g_A is the WEIGHTED gap and carries length x area, so kappa is NOT the classical penalty "
+            "parameter eps_N of the continuous formulation (Wriggers 2006, Eq. (30)/(31)), which multiplies "
+            "the pointwise gap and carries pressure per length. The two are related by kappa = eps_N / D_II. "
+            "The weighted form is used here because it is the one both Puso papers state, and because it "
+            "needs NO division by the nodal weight D_II - which this code cannot assume to be safely away "
+            "from zero (see the negative-weight discussion for CONQUAD8/CONQUAD9). Neither paper gives a rule "
+            "for choosing kappa ('a suitable penalty parameter'). Leave it at 0 (the default) to derive it as "
+            "E/(h*D_mean) from the smallest initial Young's modulus adjacent to the interface, the "
+            "characteristic facet size h and the mean nodal weight - i.e. a contact stiffness per unit area "
+            "of E/h, the stiffness of one adjacent element layer. That derivation is an engineering rule of "
+            "THIS implementation, not a literature value, and the derived number is reported once so it stays "
+            "checkable. With the augmented Lagrangian enabled the converged result does not depend on kappa; "
+            "it only controls how fast the augmentation converges."
+        ),
+        dtype=float,
+        default=0.0,
+    )
+
+    augmentedLagrange: bool = schemaField(
+        description=(
+            "Add the augmented Lagrangian (Uzawa) outer loop on top of formulation=penalty, following Puso, "
+            "Laursen & Solberg (2008), Eq. (18): the nodal pressure estimate is advanced as p^(k+1)_A = p^k_A "
+            "+ kappa*g_A, but only 'once convergence of the Newton-Raphson loop is achieved', and equilibrium "
+            "is then re-established. OFF by default, so formulation=penalty alone is the pure penalty form "
+            "t_A = kappa*g_A of Eq. (7)/(24) - one formulation, one keyword. Switching it on removes the "
+            "well-known penalty sensitivity: the converged solution then satisfies the constraint to the "
+            "augmentation tolerance instead of to O(1/kappa), and no longer depends on kappa, which only sets "
+            "the rate of the outer loop. It requires an equilibrium iteration to nest in and is therefore "
+            "unavailable to an explicit solver. Ignored for formulation=lagrange, which enforces the "
+            "constraint exactly."
+        ),
+        dtype=bool,
+        default=False,
+    )
+
+    augmentationTolerance: float = schemaField(
+        description=(
+            "Termination tolerance of the augmented Lagrangian outer loop, as a RELATIVE change of the nodal "
+            "pressure estimate from one augmentation to the next, max|p^(k+1)-p^k| <= tol * max|p^(k+1)|. "
+            "Puso, Laursen & Solberg (2008) leave this to the user and name exactly these two possibilities, "
+            "'checking the non-penetration and stick conditions, or ... monitoring changes of multipliers "
+            "from iteration to iteration'; the multiplier form is used here because it is dimensionless and "
+            "therefore scale-invariant, unlike a bound on the weighted gap (see the note on the length scale "
+            "in the documentation)."
+        ),
+        dtype=float,
+        default=1e-06,
+    )
+
+    maxAugmentations: int = schemaField(
+        description=(
+            "Safeguard cap on the number of augmented-Lagrangian outer iterations per increment. Reaching it "
+            "is reported: the increment then converged on a pressure estimate that had not settled, so its "
+            "constraint violation is whatever the last augmentation left - larger than the tolerance asked "
+            "for."
+        ),
+        dtype=int,
+        default=10,
+    )
 
 
 def map_2d_to_natural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
@@ -572,13 +590,16 @@ def query_bvh(node: BVHNode, q_min, q_max, candidates: list):
 
 
 class Constraint(ConstraintBase):
-    @caseInsensitiveKwargsChecker([kw.name for kw in module.requiredArgs], [kw.name for kw in module.optionalArgs])
-    @castKwargsValuesAndAddDefaults(module)
+    schema = MortarContactSchema
+
     def __init__(self, name: str, model: FEModel, *args, **kwargs):
         super().__init__(name, model, *args, **kwargs)
 
         self.model = model
-        kwargs = CaseInsensitiveDict(kwargs)
+        # Namen aufloesen, Werte casten und Vorgaben einsetzen erledigt das Schema -
+        # einmal hier, damit der direkte Aufruf aus einem Test und der Weg ueber
+        # fromConstraintDefinition dieselben Regeln sehen.
+        kwargs = CaseInsensitiveDict(vars(buildSchemaFromOptions(self.schema, kwargs)))
 
         self._name = name
         # Runtime diagnostics. Initialized early so that the input checks further

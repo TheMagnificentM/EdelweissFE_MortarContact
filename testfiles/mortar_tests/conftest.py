@@ -56,28 +56,45 @@ CONSTRAINT_TOLERANCE_FACTOR = {
 }
 
 
-def _set_defaults(formulation: str):
-    """Stellt die Vorgabewerte des Constraint-Moduls auf eine Formulierung um."""
-    for arg in _mc.module.optionalArgs:
-        if arg.name == "formulation":
-            arg.default = "lagrange" if formulation == "lagrange" else "penalty"
-        elif arg.name == "augmentedLagrange":
-            arg.default = formulation == "penalty_uzawa"
+def _optionsFor(formulation: str) -> dict:
+    """Die Optionen, die eine Formulierung ausmachen."""
+    return {
+        "formulation": "lagrange" if formulation == "lagrange" else "penalty",
+        "augmentedLagrange": formulation == "penalty_uzawa",
+    }
 
 
 @pytest.fixture(params=FORMULATIONS)
 def formulation(request):
     """Laesst einen Test in allen drei Formulierungen laufen.
 
-    Umgestellt werden die DEFAULTS des Constraint-Moduls, nicht die einzelnen
-    Eingabedateien: so laeuft derselbe Test ueber denselben Aufbau, und ein
-    Input, der die Formulierung selbst setzt, behaelt trotzdem Vorrang.
+    Injiziert wird in den Konstruktor des Constraints, NICHT in die Vorgabewerte des
+    Optionsschemas: dessen Felder sind eine frozen dataclass, deren Vorgaben beim
+    Anlegen der Klasse in die ``__init__``-Signatur eingebacken werden -- ein
+    nachtraeglich gesetztes ``__dataclass_fields__[...].default`` bleibt folgenlos
+    und liesse alle drei Parametrisierungen still als ``lagrange`` laufen.
+
+    Eine Option, die der Aufrufer selbst setzt (Testaufbau oder Eingabedatei),
+    behaelt Vorrang; geprueft wird ohne Ruecksicht auf Gross-/Kleinschreibung, weil
+    die Eingabesprache das ebenfalls nicht unterscheidet.
     """
-    saved = {arg.name: arg.default for arg in _mc.module.optionalArgs}
-    _set_defaults(request.param)
-    yield request.param
-    for arg in _mc.module.optionalArgs:
-        arg.default = saved[arg.name]
+    mode = request.param
+    injected = _optionsFor(mode)
+    originalInit = _mc.Constraint.__init__
+
+    def patchedInit(self, name, model, *args, **kwargs):
+        merged = dict(kwargs)
+        present = {str(k).casefold() for k in merged}
+        for key, value in injected.items():
+            if key.casefold() not in present:
+                merged[key] = value
+        originalInit(self, name, model, *args, **merged)
+
+    _mc.Constraint.__init__ = patchedInit
+    try:
+        yield mode
+    finally:
+        _mc.Constraint.__init__ = originalInit
 
 
 def requires_lagrange(formulation: str, reason: str):
@@ -130,6 +147,43 @@ def set_nodal_pressure(constraint, U_np, p_n):
 def constraint_tolerance(formulation: str, base: float) -> float:
     """Schranke an die ZWANGSERFUELLUNG, der Formulierung angemessen."""
     return base * CONSTRAINT_TOLERANCE_FACTOR[formulation]
+
+
+# ---------------------------------------------------------------------------
+# Netzgeneratoren
+# ---------------------------------------------------------------------------
+# Upstream hat die Generatoren von einer Funktion `generateModelData(model,
+# options, journal)` auf Klassen mit Optionsschema umgestellt (Generator(name,
+# model, journal, configuration=...)); die Erzeugung passiert jetzt IM
+# Konstruktor. Die folgenden Adapter halten die Aufrufform der Tests stabil,
+# damit die Umstellung nicht in jeden einzelnen Test hineinreicht.
+
+
+def _runGenerator(generatorModule, generatorDefinition, model, journal, **kwargs):
+    from edelweissfe.utils.schema import buildSchemaFromOptions
+
+    name = (generatorDefinition or {}).get("name", "gen")
+    configuration = buildSchemaFromOptions(generatorModule.Generator.schema, kwargs)
+    # Knoten- und Elementnummern duerfen nur innerhalb einer Topologieaenderung
+    # vergeben werden; die .inp-Strecke oeffnet den Kontext selbst, ein direkter
+    # Aufruf aus einem Test muss es ebenso tun.
+    with model.topologyChanges():
+        generatorModule.Generator(name, model, journal, configuration=configuration)
+    return model
+
+
+def generateBoxMesh(generatorDefinition, model, journal, *args, **kwargs):
+    """boxGen in der Aufrufform der Tests."""
+    from edelweissfe.generators import boxgen
+
+    return _runGenerator(boxgen, generatorDefinition, model, journal, **kwargs)
+
+
+def generatePlaneMesh(generatorDefinition, model, journal, *args, **kwargs):
+    """planeRectQuad in der Aufrufform der Tests."""
+    from edelweissfe.generators import planerectquad
+
+    return _runGenerator(planerectquad, generatorDefinition, model, journal, **kwargs)
 
 
 # ---------------------------------------------------------------------------

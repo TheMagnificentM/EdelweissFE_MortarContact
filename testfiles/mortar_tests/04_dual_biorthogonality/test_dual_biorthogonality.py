@@ -32,13 +32,14 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from edelweissfe.models.femodel import FEModel
-from edelweissfe.generators.boxgen import generateModelData as generateBoxMesh
-from edelweissfe.generators.planerectquad import generateModelData as generatePlaneMesh
 from edelweissfe.journal.journal import Journal
 from edelweissfe.config.elementlibrary import getElementClass
 from edelweissfe.constraints.mortarcontact import Constraint as MortarContact3D
 from edelweissfe.points.node import Node
 from edelweissfe.variables.fieldvariable import FieldVariable
+
+from conftest import generateBoxMesh, generatePlaneMesh  # noqa: F401
+
 
 def get_local_nodes(el, faceID):
     """

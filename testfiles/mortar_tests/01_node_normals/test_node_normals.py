@@ -52,8 +52,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 from edelweissfe.config.elementlibrary import getElementClass
 from edelweissfe.constraints.mortarcontact import Constraint as MortarContact
-from edelweissfe.generators.boxgen import generateModelData as generateBoxMesh
-from edelweissfe.generators.planerectquad import generateModelData as generatePlaneMesh
 from edelweissfe.journal.journal import Journal
 from edelweissfe.models.femodel import FEModel
 from edelweissfe.points.node import Node
@@ -67,6 +65,9 @@ TOL_EXACT = 1e-12
 # ===========================================================================
 # Modellaufbau
 # ===========================================================================
+
+
+from conftest import generateBoxMesh, generatePlaneMesh  # noqa: F401
 
 
 def get_local_nodes(el, faceID):
