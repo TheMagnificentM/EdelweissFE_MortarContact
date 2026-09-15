@@ -218,7 +218,12 @@ def test_element_category_covers_every_element_type_exactly():
 
     assert registeredTypes - libraryTypes == set(), "registered element types absent from elLibrary"
     assert libraryTypes - registeredTypes == set(), "elLibrary element types absent from the registry"
-    assert len(registeredTypes) == 42
+    # 42 Formulierungselemente von upstream plus die sieben Kontaktfacetten dieses
+    # Branches (CONLINE2/3, CONQUAD4/8/9, CONTRI3/6). Letztere tragen weder
+    # Freiheitsgrade noch Quadratur (nInt = 0) und beschreiben allein die Topologie
+    # der Kontaktflaechen; sie stehen trotzdem in beiden Tabellen, weil sie ueber
+    # dieselbe *element-Anweisung der Eingabedatei erzeugt werden.
+    assert len(registeredTypes) == 42 + 7
 
 
 def test_case_insensitive_lookup():
