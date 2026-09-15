@@ -1,8 +1,8 @@
 ============================================================================================
 MORTAR CONTACT - VERIFICATION MATRIX
 ============================================================================================
-generated : 2026-09-15 14:13
-commit    : a4fdf21
+generated : 2026-09-15 15:59
+commit    : 8322ce4
 
 Three formulations of the SAME discrete constraint g_A = 0. They share the whole
 geometric pipeline and differ only in how the constraint is enforced:
