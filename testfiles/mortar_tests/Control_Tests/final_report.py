@@ -160,15 +160,36 @@ FORMULATIONS = ("lagrange", "penalty", "penalty_uzawa")
 
 
 def set_formulation(formulation: str):
+    """Stellt die Kontaktformulierung fuer diesen Prozess ein.
+
+    Injiziert wird in den Konstruktor des Constraints, nicht in die Vorgabewerte des
+    Optionsschemas: dessen Felder sind eine frozen dataclass, deren Vorgaben beim
+    Anlegen der Klasse in die ``__init__``-Signatur eingebacken werden - ein
+    nachtraeglich gesetztes ``__dataclass_fields__[...].default`` bliebe folgenlos
+    und alle drei Laeufe wuerden still als ``lagrange`` rechnen.
+
+    Eine Option, die die Eingabedatei selbst setzt, behaelt Vorrang.
+    """
     from edelweissfe.constraints import mortarcontact as _mc
 
     if formulation not in FORMULATIONS:
         raise SystemExit(f"unknown formulation '{formulation}', expected one of {FORMULATIONS}")
-    for arg in _mc.module.optionalArgs:
-        if arg.name == "formulation":
-            arg.default = "lagrange" if formulation == "lagrange" else "penalty"
-        elif arg.name == "augmentedLagrange":
-            arg.default = formulation == "penalty_uzawa"
+
+    injected = {
+        "formulation": "lagrange" if formulation == "lagrange" else "penalty",
+        "augmentedLagrange": formulation == "penalty_uzawa",
+    }
+    originalInit = _mc.Constraint.__init__
+
+    def patchedInit(self, name, model, *args, **kwargs):
+        merged = dict(kwargs)
+        present = {str(k).casefold() for k in merged}
+        for key, value in injected.items():
+            if key.casefold() not in present:
+                merged[key] = value
+        originalInit(self, name, model, *args, **merged)
+
+    _mc.Constraint.__init__ = patchedInit
     return formulation
 
 

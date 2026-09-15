@@ -1,7 +1,7 @@
 ====================================================================================================
 CONTROL TESTS - CONTACT FORMULATION MATRIX
 ====================================================================================================
-generated : 2026-09-15 14:33
+generated : 2026-09-15 16:36
 
 The two-block reference series and the Hertz benchmark, run in every formulation.
 The saddle point is the REFERENCE: it enforces g_A = 0 as an equation of the system.
@@ -27,18 +27,18 @@ pressure hex20 matching                       4.409e-07            2.993e-03    
 pressure hex20 nonmatching                    8.228e-07            3.097e-03            8.228e-07  ok
 pressure hex20R matching                      4.428e-07            3.006e-03            4.428e-07  ok
 pressure hex20R nonmatching                   8.252e-07            3.100e-03            8.251e-07  ok
-dispcontrol hex8 matching                     4.901e-16            1.912e-03            6.676e-10  ok
-dispcontrol hex8 nonmatching                  3.386e-14            1.717e-03            7.338e-10  ok
-dispcontrol hex20 matching                    2.318e-15            1.447e-03            1.022e-10  ok
-dispcontrol hex20 nonmatching                 1.637e-13            1.343e-03            1.257e-10  ok
-dispcontrol hex20R matching                   2.483e-15            1.445e-03            8.491e-11  ok
-dispcontrol hex20R nonmatching                1.600e-13            1.341e-03            1.114e-10  ok
-stiffness hex8 matching                       6.438e-16            3.749e-03            1.974e-10  ok
-stiffness hex8 nonmatching                    3.192e-14            3.042e-03            1.613e-10  ok
-stiffness hex20 matching                      1.915e-15            2.845e-03            2.116e-11  ok
-stiffness hex20 nonmatching                   1.609e-13            2.245e-03            1.675e-11  ok
-stiffness hex20R matching                     2.469e-15            2.842e-03            1.793e-11  ok
-stiffness hex20R nonmatching                  1.597e-13            2.242e-03            1.412e-11  ok
+dispcontrol hex8 matching                     4.991e-16            1.912e-03            6.676e-10  ok
+dispcontrol hex8 nonmatching                  3.389e-14            1.717e-03            7.338e-10  ok
+dispcontrol hex20 matching                    1.851e-15            1.447e-03            1.022e-10  ok
+dispcontrol hex20 nonmatching                 1.636e-13            1.343e-03            1.257e-10  ok
+dispcontrol hex20R matching                   2.405e-15            1.445e-03            8.491e-11  ok
+dispcontrol hex20R nonmatching                1.582e-13            1.341e-03            1.114e-10  ok
+stiffness hex8 matching                       6.160e-16            3.749e-03            1.974e-10  ok
+stiffness hex8 nonmatching                    3.194e-14            3.042e-03            1.614e-10  ok
+stiffness hex20 matching                      1.982e-15            2.845e-03            2.116e-11  ok
+stiffness hex20 nonmatching                   1.606e-13            2.245e-03            1.675e-11  ok
+stiffness hex20R matching                     2.708e-15            2.842e-03            1.793e-11  ok
+stiffness hex20R nonmatching                  1.579e-13            2.242e-03            1.412e-11  ok
 
 ----------------------------------------------------------------------------------------------------
 SEPARATION  -  max|lambda| - the contact must RELEASE under tension
@@ -56,11 +56,11 @@ SLIDING  -  max|shear stress| - frictionless, must vanish
 ----------------------------------------------------------------------------------------------------
 case                                           lagrange              penalty        penalty_uzawa  verdict
  hex8 matching                                5.204e-15            4.464e-02            2.887e-02  DEVIATES: penalty_uzawa
- hex8 nonmatching                             1.016e-12            6.105e-02            4.175e-02  DEVIATES: penalty, penalty_uzawa
- hex20 matching                               1.223e-13            6.104e-02            3.462e-02  DEVIATES: penalty, penalty_uzawa
- hex20 nonmatching                            1.371e-11            6.988e-02            5.643e-02  DEVIATES: penalty, penalty_uzawa
- hex20R matching                              7.633e-14            3.982e-02            2.341e-02  DEVIATES: penalty_uzawa
- hex20R nonmatching                           4.408e-12            4.653e-02            3.513e-02  DEVIATES: penalty_uzawa
+ hex8 nonmatching                             1.035e-12            6.105e-02            4.175e-02  DEVIATES: penalty, penalty_uzawa
+ hex20 matching                               1.052e-13            6.104e-02            3.462e-02  DEVIATES: penalty, penalty_uzawa
+ hex20 nonmatching                            1.378e-11            6.988e-02            5.643e-02  DEVIATES: penalty, penalty_uzawa
+ hex20R matching                              1.071e-13            3.982e-02            2.341e-02  DEVIATES: penalty_uzawa
+ hex20R nonmatching                           4.223e-12            4.653e-02            3.513e-02  DEVIATES: penalty_uzawa
 
 ----------------------------------------------------------------------------------------------------
 INCLINED  -  rel. L2 displacement error
