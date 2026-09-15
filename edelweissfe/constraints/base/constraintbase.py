@@ -118,6 +118,58 @@ class ConstraintBase(ABC, VIJEntityBase):
 
         self.scalarVariables = scalarVariables
 
+    def requiresCorrectionBeforeConvergence(self) -> bool:
+        """May the increment be declared converged on the state as it stands?
+
+        A constraint that changed its own internal state since the last Newton
+        correction has invalidated the equilibrium the solver is about to accept -
+        the assembled forces are not the ones that produced the current
+        displacements. The typical case is a nested scheme whose multiplier
+        estimate is warm-started at the beginning of an increment.
+
+        This matters because the state under test may never have been corrected at
+        all: at iteration 0 there is no correction yet, and a convergence criterion
+        cannot distinguish "the correction is small" from "there is no correction".
+
+        Constraints that are fully enforced by the equations of the global system -
+        every Lagrange-multiplier constraint - inherit the no-op below.
+
+        Returns
+        -------
+        bool
+            True if at least one Newton correction has to be taken before the
+            convergence of the increment may be tested.
+
+        """
+
+        return False
+
+    def augmentConstraint(self) -> bool:
+        """Perform one outer (augmentation) iteration once the Newton loop of the
+        current increment has converged.
+
+        This is the hook for nested solution strategies in which the constraint is
+        enforced by an OUTER loop around the equilibrium iteration - most notably
+        the augmented Lagrangian (Uzawa) scheme, where the multiplier estimate is
+        updated from the converged constraint violation and equilibrium is then
+        re-established (Puso, Laursen & Solberg 2008, Eq. (18): the augmented
+        Lagrangian counter is advanced only "once convergence of the Newton-Raphson
+        loop is achieved").
+
+        Constraints that are fully enforced within the Newton loop - every
+        constraint using Lagrange multipliers as unknowns, and pure penalty - do
+        not need this and inherit the no-op below.
+
+        Returns
+        -------
+        bool
+            True if the constraint updated its internal state and requires the
+            equilibrium iteration to be resumed, False if it is satisfied.
+
+        """
+
+        return False
+
     @abstractmethod
     def applyConstraint(
         self,

@@ -139,6 +139,81 @@ module.addOptionalArg(
     float,
     0.0,
 )
+module.addOptionalArg(
+    "formulation",
+    "How the non-penetration constraint is enforced: 'lagrange' (default) uses the "
+    "dual Lagrange multipliers as additional unknowns in a saddle-point system; "
+    "'penalty' eliminates them and follows the mortar penalty form of Puso & Laursen "
+    "(2004), Eq. (24), t_A = kappa*g_A, where g_A is the WEIGHTED gap - identical to "
+    "Puso, Laursen & Solberg (2008), Eq. (7). The two share the entire geometric "
+    "pipeline (search, projection, clipping, segmentation, nodal normals, D and C), "
+    "so they differ in the constraint law alone and are directly comparable.",
+    str,
+    "lagrange",
+)
+module.addOptionalArg(
+    "penaltyStiffness",
+    "Penalty parameter kappa of the mortar penalty form t_A = kappa*g_A (Puso & "
+    "Laursen 2004, Eq. (24); Puso, Laursen & Solberg 2008, Eq. (7)). Only used for "
+    "formulation=penalty. NOTE the unit: g_A is the WEIGHTED gap and carries "
+    "length x area, so kappa is NOT the classical penalty parameter eps_N of the "
+    "continuous formulation (Wriggers 2006, Eq. (30)/(31)), which multiplies the "
+    "pointwise gap and carries pressure per length. The two are related by "
+    "kappa = eps_N / D_II. The weighted form is used here because it is the one "
+    "both Puso papers state, and because it needs NO division by the nodal weight "
+    "D_II - which this code cannot assume to be safely away from zero (see the "
+    "negative-weight discussion for CONQUAD8/CONQUAD9). "
+    "Neither paper gives a rule for choosing kappa ('a suitable penalty parameter'). "
+    "Leave it at 0 (the default) to derive it as E/(h*D_mean) from the smallest "
+    "initial Young's modulus adjacent to the interface, the characteristic facet "
+    "size h and the mean nodal weight - i.e. a contact stiffness per unit area of "
+    "E/h, the stiffness of one adjacent element layer. That derivation is an "
+    "engineering rule of THIS implementation, not a literature value, and the "
+    "derived number is reported once so it stays checkable. With the augmented "
+    "Lagrangian enabled the converged result does not depend on kappa; it only "
+    "controls how fast the augmentation converges.",
+    float,
+    0.0,
+)
+module.addOptionalArg(
+    "augmentedLagrange",
+    "Add the augmented Lagrangian (Uzawa) outer loop on top of formulation=penalty, "
+    "following Puso, Laursen & Solberg (2008), Eq. (18): the nodal pressure estimate "
+    "is advanced as p^(k+1)_A = p^k_A + kappa*g_A, but only 'once convergence of the "
+    "Newton-Raphson loop is achieved', and equilibrium is then re-established. "
+    "OFF by default, so formulation=penalty alone is the pure penalty form "
+    "t_A = kappa*g_A of Eq. (7)/(24) - one formulation, one keyword. "
+    "Switching it on removes the well-known penalty sensitivity: the converged "
+    "solution then satisfies the constraint to the augmentation tolerance instead of "
+    "to O(1/kappa), and no longer depends on kappa, which only sets the rate of the "
+    "outer loop. It requires an equilibrium iteration to nest in and is therefore "
+    "unavailable to an explicit solver. "
+    "Ignored for formulation=lagrange, which enforces the constraint exactly.",
+    bool,
+    False,
+)
+module.addOptionalArg(
+    "augmentationTolerance",
+    "Termination tolerance of the augmented Lagrangian outer loop, as a RELATIVE "
+    "change of the nodal pressure estimate from one augmentation to the next, "
+    "max|p^(k+1)-p^k| <= tol * max|p^(k+1)|. Puso, Laursen & Solberg (2008) leave "
+    "this to the user and name exactly these two possibilities, 'checking the "
+    "non-penetration and stick conditions, or ... monitoring changes of multipliers "
+    "from iteration to iteration'; the multiplier form is used here because it is "
+    "dimensionless and therefore scale-invariant, unlike a bound on the weighted gap "
+    "(see the note on the length scale in the documentation).",
+    float,
+    1.0e-6,
+)
+module.addOptionalArg(
+    "maxAugmentations",
+    "Safeguard cap on the number of augmented-Lagrangian outer iterations per "
+    "increment. Reaching it is reported: the increment then converged on a pressure "
+    "estimate that had not settled, so its constraint violation is whatever the last "
+    "augmentation left - larger than the tolerance asked for.",
+    int,
+    10,
+)
 
 documentation = [module]
 
@@ -583,7 +658,25 @@ class Constraint(ConstraintBase):
         self.nNonMortarNodes = len(self.non_mortar_nodes)
         self.nMortarNodes = len(self.mortar_nodes)
 
-        self.nMultipliers = self.nNonMortarNodes
+        # ------------------------------------------------------------------
+        # FORMULATION. Two ways to enforce the same discrete constraint g_A = 0,
+        # sharing the entire geometric pipeline above and below:
+        #   'lagrange'  saddle point, the nodal multipliers are unknowns of the
+        #               global system (Popp et al. 2009/2012; Gitterle et al. 2010).
+        #   'penalty'   the multipliers are eliminated and follow the weighted gap,
+        #               t_A = kappa*g_A (Puso & Laursen 2004, Eq. (24); Puso,
+        #               Laursen & Solberg 2008, Eq. (7)), optionally inside the
+        #               augmented Lagrangian loop of their Eq. (18).
+        # Only the LAGRANGE branch needs additional scalar unknowns.
+        # ------------------------------------------------------------------
+        self.formulation = str(kwargs["formulation"]).strip().lower()
+        if self.formulation not in ("lagrange", "penalty"):
+            raise ValueError(
+                f"MortarContact '{name}': unknown formulation '{kwargs['formulation']}'. "
+                f"Valid choices are 'lagrange' (default) and 'penalty'."
+            )
+
+        self.nMultipliers = self.nNonMortarNodes if self.formulation == "lagrange" else 0
         self._nDof = self.sizeField * len(self._nodes) + self.nMultipliers
 
         self._fieldsOnNodes = [[self.field]] * len(self._nodes)
@@ -598,6 +691,33 @@ class Constraint(ConstraintBase):
         # materials are not reachable yet at this point.
         self.c_n = float(kwargs["cn"])
         self._derive_c_n = self.c_n <= 0.0
+
+        # Penalty parameter kappa of t_A = kappa*g_A. Like c_n it carries a unit, so
+        # a non-positive value means "derive it" - here not at the first assembly but
+        # inside the geometry block, because the rule needs the nodal weights.
+        self.kappa = float(kwargs["penaltyStiffness"])
+        self._derive_kappa = self.kappa <= 0.0
+        self.use_augmented_lagrange = bool(kwargs["augmentedLagrange"])
+        self.augmentation_tolerance = float(kwargs["augmentationTolerance"])
+        self.max_augmentations = int(kwargs["maxAugmentations"])
+
+        # A parameter that belongs to the OTHER formulation is silently inert, which
+        # is exactly the kind of thing that costs an afternoon. Say it once.
+        if self.formulation == "penalty" and float(kwargs["cn"]) > 0.0:
+            self._warn_once(
+                "cn_ignored_in_penalty",
+                "'cn' was given but formulation=penalty ignores it: the complementarity "
+                "parameter belongs to the semi-smooth NCP of the Lagrange-multiplier "
+                "branch. The penalty branch takes its regularization from "
+                "'penaltyStiffness' instead.",
+            )
+        if self.formulation == "lagrange" and float(kwargs["penaltyStiffness"]) > 0.0:
+            self._warn_once(
+                "penalty_ignored_in_lagrange",
+                "'penaltyStiffness' was given but formulation=lagrange ignores it: the "
+                "multipliers are unknowns there and the constraint is enforced exactly. "
+                "Set formulation=penalty to use it.",
+            )
 
         # Node index lookups for fast access
         self.node_to_global_idx = {node: i for i, node in enumerate(self._nodes)}
@@ -636,6 +756,23 @@ class Constraint(ConstraintBase):
         self.active_set_stable_count = 0
         self._seen_states = set()
         self._last_state = None
+
+        # ---------------- state of the penalty / augmented branch ----------------
+        # z_aug is the nodal pressure estimate p^k_A of the augmented Lagrangian
+        # (Puso, Laursen & Solberg 2008, Eq. (18)), in the PHYSICAL convention
+        # p >= 0 in compression. It is zero for pure penalty, where the pressure is
+        # kappa*g_A alone. z_aug_converged carries it across increments (warm start)
+        # and is what a cutback re-attempt is reset to.
+        self.z_aug = np.zeros(self.nNonMortarNodes)
+        self.z_aug_converged = np.zeros(self.nNonMortarNodes)
+        self._augmentation_counter = 0
+        # Last assembled weighted gap and nodal multiplier per slave node. The gap is
+        # what the augmentation updates from; lambda_nodal exists so that BOTH
+        # formulations expose the contact pressure the same way - in the penalty
+        # branch it is not a degree of freedom and could not be read off the
+        # solution vector otherwise.
+        self.current_g_weak = np.zeros(self.nNonMortarNodes)
+        self.lambda_nodal = np.zeros(self.nNonMortarNodes)
 
         # NOTE: self._warned is initialized at the very top of __init__, because the
         # input checks above already emit diagnostics through it. Every assumption
@@ -747,26 +884,16 @@ class Constraint(ConstraintBase):
                 f"wrong sign and the contact bonds the surfaces instead of separating them.",
             )
 
-    def _resolve_c_n(self):
-        """Set c_n to the smallest initial Young's modulus adjacent to the interface.
+    def _adjacent_youngs_moduli(self) -> dict:
+        """Young's moduli of the materials whose elements touch the contact surfaces.
 
-        Why the initial one: Hueber & Wohlmuth (2005), sec. 7, find a lower bound c0
-        for convergence of the active set that "depends linearly on E", with
-        negligible influence above it, while Gitterle et al. (2010), Table I, show
-        that far above it the active set starts to chatter. E therefore fixes the
-        order of magnitude, not the value. Taking E at the start of the computation is
-        well defined even for a damaging material (GCDP), because no damage has
-        accumulated yet - and since c_n is purely algorithmic, its later evolution
-        does not matter.
-
-        Why only the ADJACENT materials: the global minimum over the model would be
-        the wrong direction. A soft material somewhere far from the interface would
-        push c_n BELOW the c0 of the contacting pair, which is exactly the regime
-        Hueber & Wohlmuth report as non-convergent.
+        Returned as {section/material: E} so that a caller can report what it chose
+        from. Only the ADJACENT materials are considered - a soft material far from
+        the interface says nothing about the contacting pair.
 
         Marmot materials carry their parameters as a flat array whose first entry is
         the Young's modulus (LINEARELASTIC, GCDP, ...). That is a convention, not a
-        guarantee, which is why the resolved value is always reported.
+        guarantee, which is why every caller reports the resolved value.
         """
         contact_nodes = set(self._nodes)
         candidates = {}
@@ -801,6 +928,37 @@ class Constraint(ConstraintBase):
             if E is not None and E > 0.0:
                 candidates[f"{name}/{mat_name}"] = E
 
+        return candidates
+
+    def _smallest_adjacent_youngs_modulus(self):
+        """The smallest of :meth:`_adjacent_youngs_moduli`, or None if there is none."""
+
+        candidates = self._adjacent_youngs_moduli()
+        return min(candidates.values()) if candidates else None
+
+    def _resolve_c_n(self):
+        """Set c_n to the smallest initial Young's modulus adjacent to the interface.
+
+        Why the initial one: Hueber & Wohlmuth (2005), sec. 7, find a lower bound c0
+        for convergence of the active set that "depends linearly on E", with
+        negligible influence above it, while Gitterle et al. (2010), Table I, show
+        that far above it the active set starts to chatter. E therefore fixes the
+        order of magnitude, not the value. Taking E at the start of the computation is
+        well defined even for a damaging material (GCDP), because no damage has
+        accumulated yet - and since c_n is purely algorithmic, its later evolution
+        does not matter.
+
+        Why only the ADJACENT materials: the global minimum over the model would be
+        the wrong direction. A soft material somewhere far from the interface would
+        push c_n BELOW the c0 of the contacting pair, which is exactly the regime
+        Hueber & Wohlmuth report as non-convergent.
+
+        Marmot materials carry their parameters as a flat array whose first entry is
+        the Young's modulus (LINEARELASTIC, GCDP, ...). That is a convention, not a
+        guarantee, which is why the resolved value is always reported.
+        """
+        candidates = self._adjacent_youngs_moduli()
+
         if not candidates:
             self.c_n = 1.0e6
             self._warn_once(
@@ -825,6 +983,92 @@ class Constraint(ConstraintBase):
             f"safe direction (Hueber & Wohlmuth 2005, Sec. 7).",
         )
 
+    def _resolve_kappa(self):
+        """Derive the penalty parameter kappa of t_A = kappa*g_A.
+
+        THIS RULE IS NOT FROM THE LITERATURE. Puso & Laursen (2004) and Puso,
+        Laursen & Solberg (2008) state the penalty form but say only "a suitable
+        penalty parameter"; no selection rule is given in either paper. What follows
+        is the engineering rule of this implementation, reported once so it stays
+        checkable, and overridable with the `penaltyStiffness` keyword.
+
+        The rule. kappa multiplies the WEIGHTED gap, so it is not a contact
+        stiffness per unit area - that is eps_N = kappa * D_II (the classical
+        parameter of the continuous penalty form, Wriggers 2006, Eq. (30)/(31)).
+        Taking eps_N = E/h would give the interface the stiffness of one adjacent
+        element layer, which is the natural scale but too soft in practice: the
+        error reduction of the Uzawa loop per augmentation is governed by the
+        stiffness ratio, roughly k_structure/(k_structure + k_contact), so a
+        contact as stiff as the structure halves the violation per round. Measured
+        on the two-block reference (Control_Tests 03, hex8, E = 1000): eps_N = E/h
+        reduces it by a factor 0.51 per augmentation and needs about 25 rounds for
+        a relative 1e-6, while 100*E/h needs FOUR (penetration 4.4e-5 -> 3.5e-7 ->
+        3.4e-9 -> 3.5e-11). The factor is therefore set to
+
+            eps_N = C * E / h ,   C = 100      ->   kappa = C * E / (h * D_mean)
+
+        with E the smallest initial Young's modulus adjacent to the interface (same
+        argument as for c_n), D_mean the mean nodal mortar weight and h the
+        characteristic facet size. Both are taken from the mortar weights
+        themselves, which is exactly the quantity the penalty acts on:
+        sum_I D_II = |gamma| is the covered interface measure (row-sum identity),
+        so D_mean = |gamma|/nSlave and h = (|gamma|/nFacets)^(1/(dim-1)).
+
+        With the augmented Lagrangian enabled the converged solution does not depend
+        on kappa at all (Puso et al. 2008, Eq. (18) drives the constraint violation
+        to the augmentation tolerance whatever kappa is); it only sets how fast the
+        outer loop converges. The rule therefore has to be reasonable, not right.
+        """
+        self._derive_kappa = False
+
+        weights = self.current_D_rowsum
+        total = float(np.sum(weights))
+        nFacets = len(self.non_mortar_facets)
+        dim = self.model.domainSize
+
+        if total <= 0.0 or nFacets == 0 or self.nNonMortarNodes == 0:
+            self.kappa = 1.0e6
+            self._warn_once(
+                "kappa_not_derivable",
+                f"the interface measure needed to derive the penalty parameter is not "
+                f"available (covered measure {total:.3e} over {nFacets} facet(s)), so kappa "
+                f"falls back to {self.kappa:.3e}. That value carries a unit and is almost "
+                f"certainly wrong for this model - set 'penaltyStiffness' explicitly.",
+            )
+            return
+
+        d_mean = total / self.nNonMortarNodes
+        # dim-1 is the dimension of the interface: a length in 2D, an area in 3D.
+        h = (total / nFacets) ** (1.0 / (dim - 1))
+        # Stiffness ratio contact/structure, see the docstring. Not a literature
+        # value - it buys the convergence rate of the outer loop, and with the
+        # augmentation enabled it does not influence the converged result.
+        stiffness_ratio = 100.0
+
+        E = self._smallest_adjacent_youngs_modulus()
+        if E is None:
+            self.kappa = 1.0e6
+            self._warn_once(
+                "kappa_not_derivable_E",
+                f"no Young's modulus could be determined for the materials adjacent to the "
+                f"contact surfaces, so kappa falls back to {self.kappa:.3e}. That value "
+                f"carries a unit and is only meaningful for a model in MPa - set "
+                f"'penaltyStiffness' explicitly.",
+            )
+            return
+
+        self.kappa = stiffness_ratio * E / (h * d_mean)
+        self._warn_once(
+            "kappa_derived",
+            f"'penaltyStiffness' was not given and kappa has been derived as "
+            f"{self.kappa:.4g} = {stiffness_ratio:g}*E/(h*D_mean) with E = {E:.4g}, "
+            f"h = {h:.4g} and D_mean = {d_mean:.4g}, i.e. a contact stiffness per unit "
+            f"area of eps_N = {stiffness_ratio:g}*E/h = {stiffness_ratio * E / h:.4g}. This is an engineering rule of this "
+            f"implementation, NOT a literature value - Puso & Laursen (2004) and Puso et "
+            f"al. (2008) give none. With augmentedLagrange enabled the converged result "
+            f"does not depend on it.",
+        )
+
     def _check_converged_active_set(self, U_ref: np.ndarray):
         """Re-evaluate the NCP indicator on the CONVERGED state of the last increment.
 
@@ -842,6 +1086,13 @@ class Constraint(ConstraintBase):
         solution does not satisfy the Signorini conditions.
         """
         if not self.use_active_set:
+            return
+
+        # Only the Lagrange branch freezes its set. The penalty branch re-derives it
+        # from the pressure in every single iteration, so there is no decision taken
+        # at an intermediate iterate that could need re-checking - and no multiplier
+        # in U_ref to read, since it carries no multiplier degrees of freedom.
+        if self.formulation == "penalty":
             return
 
         dim = self.model.domainSize
@@ -1373,6 +1624,102 @@ class Constraint(ConstraintBase):
 
         return D, C
 
+    def requiresCorrectionBeforeConvergence(self) -> bool:
+        """True on the first assembly of an increment in the penalty branch.
+
+        There the contact pressure is a FUNCTION of the current state,
+        p = z + kappa*g_A, and not an unknown with an equation of its own. The
+        forces assembled on the extrapolated state that opens an increment have
+        therefore never been equilibrated - and with the augmented Lagrangian the
+        estimate z is warm-started from the previous increment on top of that, so
+        they are not even the forces that produced the incoming displacements. The
+        state has to be corrected before it can be tested, exactly as after an
+        augmentation.
+
+        Without this, an increment can be accepted at iteration 0 on the
+        extrapolated state: no correction exists yet, so the field-correction
+        criterion is satisfied by an ABSENT correction rather than a small one, and
+        the flux criterion carries an absolute floor that the nodal forces of a
+        small model fall below anyway. Measured on the scale-invariance case
+        (11_scale_invariance, k = 1e-3): a residual of 2.5e-03 against a flux
+        measure of 5.4e-04 was accepted, and the contact pressure stayed at half its
+        correct value with no warning at all. The saddle-point branch cannot reach
+        that state, because its multiplier rows are checked as scalar variables and
+        that criterion has no floor.
+        """
+
+        return self.active and self.formulation == "penalty" and self.current_iteration == 0
+
+    def augmentConstraint(self) -> bool:
+        """One augmented-Lagrangian (Uzawa) outer iteration on the converged state.
+
+        Implements Puso, Laursen & Solberg (2008), Eq. (18),
+
+            p^(k+1)_A = p^k_A + kappa * g_A ,
+
+        advanced - as they require - only "once convergence of the Newton-Raphson
+        loop is achieved", after which equilibrium is re-established with the
+        updated estimate. The projection onto p >= 0 is the release condition of
+        their algorithm step (3); a node whose augmented pressure would turn
+        tensile is simply inactive.
+
+        Termination follows the second of the two possibilities they name,
+        "monitoring changes of multipliers from iteration to iteration", as a
+        RELATIVE change. The alternative they mention first - checking
+        non-penetration directly - would have to bound the weighted gap, which
+        carries length x area and is therefore not scale-invariant; the same trap
+        the absolute solver tolerance on the multiplier row falls into (see the
+        documentation section on the limit of the length scale).
+
+        Returns
+        -------
+        bool
+            True if the estimate moved and the increment has to be re-equilibrated.
+
+        """
+
+        # Everything except an augmented penalty constraint is enforced inside the
+        # Newton loop and is done at this point.
+        if not self.active or self.formulation != "penalty" or not self.use_augmented_lagrange:
+            return False
+
+        # Nothing assembled yet (a constraint that never saw an increment).
+        if not hasattr(self, "current_D_rowsum"):
+            return False
+
+        sgn_D = np.sign(self.current_D_rowsum)
+        g_pen = -self.current_g_weak * sgn_D
+        z_new = np.maximum(0.0, self.z_aug + self.kappa * g_pen)
+
+        change = float(np.max(np.abs(z_new - self.z_aug))) if len(z_new) else 0.0
+        scale = float(np.max(np.abs(z_new))) if len(z_new) else 0.0
+        self.z_aug = z_new
+        self._augmentation_counter += 1
+
+        # scale == 0 means no node carries pressure - the interface is open and
+        # there is nothing to augment.
+        converged = change <= self.augmentation_tolerance * scale or scale == 0.0
+
+        if converged:
+            self.z_aug_converged[:] = self.z_aug
+            return False
+
+        if self._augmentation_counter >= self.max_augmentations:
+            self.z_aug_converged[:] = self.z_aug
+            self._warn_once(
+                "augmentation_cap",
+                f"the augmented Lagrangian hit its cap of {self.max_augmentations} outer "
+                f"iterations without reaching the tolerance "
+                f"{self.augmentation_tolerance:.1e} (last relative change "
+                f"{change / scale:.2e}). The increment therefore converged on a pressure "
+                f"estimate that had not settled, so the remaining penetration is larger "
+                f"than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it "
+                f"sets the rate of the outer loop), or reduce the increment size.",
+            )
+            return False
+
+        return True
+
     def applyConstraint(
         self,
         U_np: np.ndarray,
@@ -1511,6 +1858,19 @@ class Constraint(ConstraintBase):
             # applyConstraint runs once per Newton iteration.
             self.current_D_nz, self.current_D_row = _nonzero_rows(D_full, nSlave)
             self.current_C_nz, self.current_C_row = _nonzero_rows(C_full, nSlave)
+
+            # The penalty parameter needs the nodal weights, so it is derived here
+            # rather than at the top of the assembly like c_n.
+            if self.formulation == "penalty" and self._derive_kappa:
+                self._resolve_kappa()
+
+            # Restart the augmented Lagrangian for this increment ATTEMPT from the
+            # last CONVERGED pressure estimate. Warm starting is what makes the outer
+            # loop cheap after the first increment; resetting on a cutback re-attempt
+            # is required for the same reason the frozen geometry is reset - the
+            # estimate of a failed attempt belongs to a diverged iterate.
+            self._augmentation_counter = 0
+            self.z_aug[:] = self.z_aug_converged
         else:
             self.current_iteration += 1
 
@@ -1529,10 +1889,12 @@ class Constraint(ConstraintBase):
         # condensed (multiplier-free) variant was removed.
         # ----------------------------------------------------------------------
         idx_LM_0 = sf * nNodes
+        penalty = self.formulation == "penalty"
+        _dim_offsets = np.arange(dim)
 
         for I in range(nSlave):
             idx_LM_I = idx_LM_0 + I
-            lambda_I = U_np[idx_LM_I]
+            lambda_I = 0.0 if penalty else U_np[idx_LM_I]
             n_I = normals[I]
             nzD = self.current_D_nz[I]
             nzC = self.current_C_nz[I]
@@ -1577,6 +1939,94 @@ class Constraint(ConstraintBase):
             inv_D = 1.0 / D_II if abs(D_II) > self.current_D_tol else 0.0
             p_n = lambda_I * sgn_D    # physical normal pressure (>= 0 in contact)
             g_sep = g_I_weak * inv_D  # physical opening (>0 open, <0 penetrating)
+
+            if penalty:
+                # ==============================================================
+                # PENALTY / AUGMENTED LAGRANGIAN
+                #
+                # Puso & Laursen (2004), Eq. (24):  p_A = kappa * g_A . nu_A
+                # Puso, Laursen & Solberg (2008), Eq. (7):   t_A = kappa * g_A
+                #                                 Eq. (18):  p^(k+1) = p^k + kappa*g_A
+                #
+                # g_A of those papers is their Eq. (6) - the WEIGHTED gap, i.e.
+                # exactly our g_weak up to the sign convention: they write the
+                # non-penetration condition as g_A <= 0 with the gap measured from
+                # the slave towards the master, here it is g_sep > 0 for an open
+                # node. g_pen below is their g_A: positive under penetration, and
+                # weighted (length x area), NOT the physical opening.
+                #
+                # NO DIVISION BY D_II HAPPENS HERE, and that is the reason for
+                # following the weighted form of the papers rather than penalizing
+                # the physical opening g_sep: D_II is not guaranteed positive (a
+                # partially covered CONQUAD9, a CONQUAD8 corner at alpha = 1/3, or
+                # the sliver fallback all produce negative or near-zero weights, see
+                # the negative-weight diagnostic above). In a form p = eps*g_sep that
+                # weight sits in the DENOMINATOR of the contact pressure.
+                #
+                # The sign of the gap measure does depend on sgn(D_II) - translating
+                # the master by a*n changes g_weak by D_II*a - so g_pen carries it.
+                # The pressure is physical (>= 0), the assembled multiplier is
+                # lambda_I = p_n * sgn(D_II), the same convention the Lagrange branch
+                # uses, so that the force lambda_I * D_II * n is compressive for
+                # either sign of the weight.
+                #
+                # ACTIVE SET. p_trial > 0 IS the Signorini branch test here; no
+                # complementarity parameter and no primal-dual iteration are
+                # involved. With z_aug = 0 it reduces to "penetrating" and the law
+                # to the pure penalty form of Eq. (7)/(24); with the augmentation it
+                # is the release condition of their algorithm step (3). Note that
+                # this indicator has the same structure as the semi-smooth NCP
+                # indicator s_n = p_n - c_n*g_sep of the Lagrange branch, with the
+                # augmented multiplier in place of the multiplier unknown - the
+                # augmented Lagrangian and the semi-smooth reformulation are the
+                # same object seen from two sides (Hueber & Wohlmuth 2005).
+                # Consequently there is no active-set freezing and no anti-cycling
+                # bookkeeping in this branch: the set is not iterated, it follows
+                # the pressure.
+                # ==============================================================
+                self.current_g_weak[I] = g_I_weak
+                g_pen = -g_I_weak * sgn_D
+                p_trial = self.z_aug[I] + self.kappa * g_pen
+                # use_active_set = False pins the branch from outside - the same
+                # switch the Lagrange branch honours. It is what lets a consistency
+                # check perturb the state without the branch flipping underneath it,
+                # and what a deliberately tied (bilateral) contact would use.
+                if self.use_active_set:
+                    self.active_set[I] = bool(p_trial > 0.0)
+
+                if not self.active_set[I]:
+                    self.lambda_nodal[I] = 0.0
+                    continue
+
+                lambda_I = p_trial * sgn_D
+                self.lambda_nodal[I] = lambda_I
+
+                # The whole nodal contribution is rank one. With the weights
+                #   w_a = +D_IK on the slave nodes, w_a = -C_IJ on the master nodes,
+                # the weighted gap is g_weak = -sum_a w_a (x_a . n_I), so
+                #   dg_weak/dx_a = -w_a n_I,    dlambda_I/dx_a = +kappa w_a n_I
+                # (the sgn(D_II) cancels), and with v_a = w_a n_I:
+                #   PExt_a -= lambda_I * v_a,     K_ab += kappa * v_a v_b.
+                # K is therefore symmetric positive semi-definite - this is the
+                # first term of Puso & Laursen (2004), Eq. (25); their second and
+                # third terms are the linearizations of the nodal normal and of the
+                # mortar weights, which the frozen geometry of this implementation
+                # deliberately omits (see the note on the reference configuration
+                # above and the documentation chapter on consistent linearization).
+                # astype: both index arrays can be empty (a slave node that lost
+                # all coverage while still carrying an augmented pressure), and
+                # concatenating two empty arrays does not reliably keep an integer
+                # dtype - which np.ix_ below would reject.
+                node_ids = np.concatenate((nzD, nSlave + nzC)).astype(np.intp)
+                w = np.concatenate((dRow, -cRow))
+                idcs = (sf * node_ids[:, None] + _dim_offsets).ravel()
+                v = (w[:, None] * n_I[None, :]).ravel()
+                PExt[idcs] -= lambda_I * v
+                K[np.ix_(idcs, idcs)] += self.kappa * np.outer(v, v)
+                continue
+
+            self.lambda_nodal[I] = lambda_I
+            self.current_g_weak[I] = g_I_weak
 
             if self.use_active_set and not self.active_set_frozen:
                 # Semi-smooth normal complementarity (Gitterle et al. 2010 Eq. 55;
@@ -1652,7 +2102,7 @@ class Constraint(ConstraintBase):
         #      is a cycle). Freezing breaks it; the remaining Newton iterations
         #      are a linear solve on the fixed set.
         # A hard iteration cap remains as a final safeguard.
-        if self.use_active_set and not self.active_set_frozen:
+        if self.use_active_set and not self.active_set_frozen and not penalty:
             state = self.active_set.tobytes()
             changed = state != self._last_state
             if changed:
