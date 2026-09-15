@@ -1,0 +1,389 @@
+############################################################################################################
+# CONTROL TESTS - formulation = penalty_uzawa
+############################################################################################################
+  ... selfweight_hex8_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 1.8e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.1111, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... selfweight_hex8_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 1.8e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.1111, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... selfweight_hex20_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... selfweight_hex20_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 9.55e-01). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... selfweight_hex20R_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... selfweight_hex20R_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 1.68e+01). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... pressure_hex8_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 1.8e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.1111, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... pressure_hex8_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 1.8e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.1111, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... pressure_hex20_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... pressure_hex20_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 9.55e-01). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... pressure_hex20R_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... pressure_hex20R_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 1.68e+01). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... dispcontrol_hex8_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 1.8e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.1111, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... dispcontrol_hex8_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 1.8e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.1111, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 3.00e+00). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... dispcontrol_hex20_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... dispcontrol_hex20_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 1.52e+00). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... dispcontrol_hex20R_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... dispcontrol_hex20R_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 9.52e-01). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... separation_hex8_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 1.8e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.1111, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... separation_hex8_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 1.8e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.1111, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 3.00e+00). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... separation_hex20_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... separation_hex20_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 1.52e+00). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... separation_hex20R_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... separation_hex20R_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 9.52e-01). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... sliding_hex8_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 1.8e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.1111, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... sliding_hex8_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 1.8e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.1111, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 1.33e+00). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... sliding_hex20_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... sliding_hex20_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 1.69e+00). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... sliding_hex20R_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... sliding_hex20R_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 9.41e-01). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... inclined_hex8_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 1.8e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.1111, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... inclined_hex8_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 1.8e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.1111, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 1.20e+00). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... inclined_hex20_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... inclined_hex20_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 9.39e-01). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... inclined_hex20R_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... inclined_hex20R_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 1.09e+00). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... stiffness_hex8_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 1.8e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.1111, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... stiffness_hex8_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 1.8e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.1111, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... stiffness_hex20_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... stiffness_hex20_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 1.00e+00). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... stiffness_hex20R_matching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... stiffness_hex20R_nonmatching
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 4.2e+06 = 100*E/(h*D_mean) with E = 1000, h = 0.5 and D_mean = 0.04762, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2e+05. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:655: RuntimeWarning: MortarContact 'contact': the augmented Lagrangian hit its cap of 10 outer iterations without reaching the tolerance 1.0e-06 (last relative change 1.00e+00). The increment therefore converged on a pressure estimate that had not settled, so the remaining penetration is larger than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it sets the rate of the outer loop), or reduce the increment size.
+  if constraint.augmentConstraint():
+  ... hertz_hex8_medium
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 2.258e+09 = 100*E/(h*D_mean) with E = 1000, h = 0.04472 and D_mean = 0.0009901, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2.236e+06. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... hertz_hex8_fine
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 6.356e+09 = 100*E/(h*D_mean) with E = 1000, h = 0.03162 and D_mean = 0.0004975, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 3.162e+06. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+  ... hertz_hex20_medium
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 5.624e+09 = 100*E/(h*D_mean) with E = 1000, h = 0.04472 and D_mean = 0.0003976, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2.236e+06. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1803: RuntimeWarning: MortarContact 'contact': degenerate overlap on slave facet 2451: cond(M_t) = 1.49e+23 >= 1e12, falling back to reference-element dual coefficients. Biorthogonality then holds on the full element only, and the nodal weights D_II can take any sign and magnitude there - for CONQUAD8 as well.
+  D_full, C_full = self.compute_mortar_coupling_matrices(U_ref)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:701: RuntimeWarning: MortarContact 'contact': 2 slave node(s) with a negative nodal mortar weight D_II (worst: -4.745e-05 of the largest weight), first in increment 1. The active-set indicator handles the sign, but the weighted gap is no longer a mean opening at those nodes. Usual causes: a partially covered CONQUAD9, or a sliver overlap that triggered the reference-element fallback.
+  constraint.applyConstraint(U_np[constraint], dU[constraint], Pc, Kc, timeStep)
+  ... hertz_hex20_fine
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/utils/misc.py:420: RuntimeWarning: MortarContact 'contact': 'cn' was given but formulation=penalty ignores it: the complementarity parameter belongs to the semi-smooth NCP of the Lagrange-multiplier branch. The penalty branch takes its regularization from 'penaltyStiffness' instead.
+  return fun(*args, **kwargs)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1865: RuntimeWarning: MortarContact 'contact': 'penaltyStiffness' was not given and kappa has been derived as 1.136e+10 = 100*E/(h*D_mean) with E = 1000, h = 0.03536 and D_mean = 0.0002491, i.e. a contact stiffness per unit area of eps_N = 100*E/h = 2.828e+06. This is an engineering rule of this implementation, NOT a literature value - Puso & Laursen (2004) and Puso et al. (2008) give none. With augmentedLagrange enabled the converged result does not depend on it.
+  self._resolve_kappa()
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/constraints/mortarcontact.py:1803: RuntimeWarning: MortarContact 'contact': degenerate overlap on slave facet 4561: cond(M_t) = 2.81e+24 >= 1e12, falling back to reference-element dual coefficients. Biorthogonality then holds on the full element only, and the nodal weights D_II can take any sign and magnitude there - for CONQUAD8 as well.
+  D_full, C_full = self.compute_mortar_coupling_matrices(U_ref)
+/home/manuel/mh_projects/Edelweiss_Marmot_next_v26.11/EdelweissFE/edelweissfe/solvers/nonlinearimplicitstatic.py:701: RuntimeWarning: MortarContact 'contact': 2 slave node(s) with a negative nodal mortar weight D_II (worst: -2.851e-05 of the largest weight), first in increment 1. The active-set indicator handles the sign, but the weighted gap is no longer a mean opening at those nodes. Usual causes: a partially covered CONQUAD9, or a sliver overlap that triggered the reference-element fallback.
+  constraint.applyConstraint(U_np[constraint], dU[constraint], Pc, Kc, timeStep)
+
+############################################################################################################
+# (A) DRUCK-FAMILIE: L2-Fehler (Verschiebung), Spannungsfehler, STEIFIGKEIT, Kontakt-Urteil
+############################################################################################################
+
+=== selfweight ===
+Variante               konv  L2(anal)   L2(mono) max|err_an| max|err_mo|  F_react   k_eff  Kontakt
+--------------------------------------------------------------------------------------------------
+hex8_matching            ja  1.55e-07   1.81e-07    2.89e+00    1.80e-06        -       -       ok
+hex8_nonmatching         ja  2.80e-07   2.45e-07    2.89e+00         -          -       -       ok
+hex20_matching           ja  3.65e-07   4.12e-07    6.99e-06    4.28e-06        -       -       ok
+hex20_nonmatching        ja  6.98e-07   5.50e-07    1.30e-05         -          -       -       ok
+hex20R_matching          ja  3.66e-07   4.14e-07    5.95e-06    4.20e-06        -       -       ok
+hex20R_nonmatching       ja  7.00e-07   5.54e-07    1.17e-05         -          -       -       ok
+
+=== pressure ===
+Variante               konv  L2(anal)   L2(mono) max|err_an| max|err_mo|  F_react   k_eff  Kontakt
+--------------------------------------------------------------------------------------------------
+hex8_matching            ja  1.85e-07   2.02e-07    2.14e-06    1.80e-06   10.000   500.0       ok
+hex8_nonmatching         ja  3.26e-07   2.74e-07    3.88e-06         -     10.000   500.0       ok
+hex20_matching           ja  4.41e-07   4.76e-07    6.99e-06    4.28e-06   10.000   500.0       ok
+hex20_nonmatching        ja  8.23e-07   6.35e-07    1.30e-05         -     10.000   500.0       ok
+hex20R_matching          ja  4.43e-07   4.78e-07    5.95e-06    4.20e-06   10.000   500.0       ok
+hex20R_nonmatching       ja  8.25e-07   6.39e-07    1.17e-05         -     10.000   500.0       ok
+
+=== dispcontrol ===
+Variante               konv  L2(anal)   L2(mono) max|err_an| max|err_mo|  F_react   k_eff  Kontakt
+--------------------------------------------------------------------------------------------------
+hex8_matching            ja  6.68e-10   7.31e-10    1.04e-08    3.46e-09   10.000   500.0       ok
+hex8_nonmatching         ja  7.34e-10   1.02e-09    1.65e-08         -     10.000   500.0       ok
+hex20_matching           ja  1.02e-10   1.10e-10    5.95e-09    1.64e-09   10.000   500.0       ok
+hex20_nonmatching        ja  1.26e-10   1.20e-10    9.76e-09         -     10.000   500.0       ok
+hex20R_matching          ja  8.49e-11   9.16e-11    4.38e-09    1.68e-09   10.000   500.0       ok
+hex20R_nonmatching       ja  1.11e-10   1.07e-10    6.92e-09         -     10.000   500.0       ok
+
+=== stiffness ===
+Variante               konv  L2(anal)   L2(mono) max|err_an| max|err_mo|  F_react   k_eff  Kontakt
+--------------------------------------------------------------------------------------------------
+hex8_matching            ja  1.97e-10        -      6.08e-09         -     19.802   990.1       ok
+hex8_nonmatching         ja  1.61e-10        -      7.19e-09         -     19.802   990.1       ok
+hex20_matching           ja  2.12e-11        -      1.93e-09         -     19.802   990.1       ok
+hex20_nonmatching        ja  1.68e-11        -      2.85e-09         -     19.802   990.1       ok
+hex20R_matching          ja  1.79e-11        -      1.52e-09         -     19.802   990.1       ok
+hex20R_nonmatching       ja  1.41e-11        -      1.89e-09         -     19.802   990.1       ok
+
+Steifigkeit (nur Punktlast pressure/dispcontrol): F_react = Reaktionskraft unten (erwartet 10),
+k_eff = |F/u_oben| (erwartet 500). Gleiche k_eff fuer hex8/hex20/hex20R => alle GLEICH steif.
+Bei Eigengewicht ist die Last verteilt -> keine sinnvolle Einzel-Steifigkeit ('-').
+
+############################################################################################################
+# (B) VERHALTENS-TESTS
+############################################################################################################
+
+=== 04 Abheben unter Zug (unilateral): trennt sich der Kontakt? ===
+Variante               konv   max|lam|  max|sigma|    u_unten      Urteil
+hex8_matching            ja   0.00e+00    3.47e-15   0.00e+00    getrennt
+hex8_nonmatching         ja   0.00e+00    5.61e-15   0.00e+00    getrennt
+hex20_matching           ja   0.00e+00    3.39e-14   0.00e+00    getrennt
+hex20_nonmatching        ja   0.00e+00    4.16e-14   8.63e-31    getrennt
+hex20R_matching          ja   0.00e+00    1.56e-14   0.00e+00    getrennt
+hex20R_nonmatching       ja   0.00e+00    2.59e-14   4.93e-32    getrennt
+
+=== 05 Tangentiales Gleiten (reibungsfrei): Normaldruck bleibt, kein Schub, unten ruht ===
+Variante               konv   sigma_yy  max|Schub|   u_x unten  lam_mittel
+hex8_matching            ja  -1.00e+01    2.89e-02    0.00e+00    1.01e+01
+hex8_nonmatching         ja  -1.00e+01    4.18e-02    0.00e+00    1.01e+01
+hex20_matching           ja  -1.00e+01    3.46e-02    4.35e-05    1.01e+01
+hex20_nonmatching        ja  -1.00e+01    5.64e-02    4.47e-05    1.01e+01
+hex20R_matching          ja  -1.00e+01    2.34e-02    4.60e-05    1.01e+01
+hex20R_nonmatching       ja  -1.00e+01    3.51e-02    4.81e-05    1.01e+01
+
+=== 06 Schiefes Interface 30 Grad (Normalen-Test): reproduziert der Kontakt die exakte Loesung? ===
+Variante               konv     rel_L2   max|u-ex| max|s_aa+10|  lam aktiv  gl.Vz.
+hex8_matching            ja   1.30e-09    2.43e-11     1.09e-08        9/9      ja
+hex8_nonmatching         ja   1.34e-09    2.55e-11     1.11e-08        9/9      ja
+hex20_matching           ja   1.27e-09    2.43e-11     1.15e-08      21/21      ja
+hex20_nonmatching        ja   1.29e-09    2.43e-11     1.17e-08      21/21      ja
+hex20R_matching          ja   1.27e-09    2.43e-11     1.07e-08      21/21      ja
+hex20R_nonmatching       ja   1.29e-09    2.43e-11     1.10e-08      21/21      ja
+
+max|u-ex| = Verschiebungsfehler, max|s_aa+10| = Fehler der Axialspannung (soll -10).
+Nach Korrektur der Referenzgeometrie ist der schiefe Kontakt maschinengenau -> Normalen korrekt.
+
+############################################################################################################
+# (C) HERTZ'SCHER KONTAKT: gekruemmter Indenter, Vergleich der Druckverteilung gegen Hertz
+############################################################################################################
+Netz             konv   P_prime    a_num  a_Hertz  a_err%   p0_num  p0_Hertz  p0_err%   rms_p  zickzk%   zz_F%  akt.
+--------------------------------------------------------------------------------------------------------------------
+hex8_medium        ja     7.159   0.4094   0.4270     4.1   11.379    10.674      6.6   1.540      5.3     5.3    10
+hex8_fine          ja     7.099   0.4243   0.4252     0.2   11.082    10.629      4.3   1.344      3.0     3.0    20
+hex20_medium       ja     7.018   0.4434   0.4227     4.9   10.675    10.568      1.0   0.757     10.1    10.1    21
+hex20_fine         ja     7.016   0.4358   0.4227     3.1   10.673    10.567      1.0   0.667      7.8     7.8    34
+
+hex8 (linear): GLATTES Druckprofil (kleiner zickzk), aber Maximum systematisch zu hoch
+(p0_err), sinkt mit Verfeinerung. hex20 (quadratisch): Maximum sehr genau (~1%), aber
+KNOTEN-ZU-KNOTEN-OSZILLATION (zickzk ~8-10%). Die Eckknoten treffen Hertz ueber die
+ganze innere Kontaktzone konstant; der Zickzack sitzt ausschliesslich auf den MITTEL-
+knoten und waechst zum Rand der Kontaktzone hin - der volle quadratische Multiplikator-
+raum kann den dortigen sqrt-Abfall auf einen Rand ZWISCHEN zwei Knoten nicht darstellen
+und schwingt am Mittelknoten ueber. Sinkt nur langsam mit Verfeinerung. Die
+uebertragene Gesamtkraft ist bei beiden korrekt. Druckprofile in hertz_profile_*.csv.
+
+zickzk% liest den Multiplikator lambda direkt als Druck, zz_F% die Knotenkraft
+lambda*D_II geteilt durch die tributaere Flaeche der ganzen Facette. An teilweise
+ueberdeckten Randknoten skaliert lambda mit 1/D_II, die beiden Lesarten koennen dort
+also auseinanderlaufen. Dass sie es NICHT tun, belegt: die Oszillation ist eine
+Eigenschaft der Diskretisierung und kein Artefakt der Auswertung am Kontaktrand.
+
+############################################################################################################
+# PER-GAUSSPUNKT-TABELLE (6321 Zeilen) -> final_gp_table.txt (lesbar) + .csv (vollstaendig)
+# KONTAKTDRUECKE je Slave-Knoten -> final_contact_table.csv
+############################################################################################################

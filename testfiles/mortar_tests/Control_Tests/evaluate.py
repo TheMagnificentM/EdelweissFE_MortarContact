@@ -320,7 +320,7 @@ def stress_vs_monolith(foc_test, foc_mono):
 #  Kontaktbedingungen
 # =============================================================================
 def evaluate_contact(model, test=None):
-    lam = np.array([v.value for v in model.scalarVariables.values()]).flatten()
+    lam = _lambdas(model)
     if lam.size == 0:
         return None
     p = analytical_pressure(test)
@@ -362,7 +362,17 @@ def reaction_stiffness(model):
 #  Verhaltens-Tests (Punkte 2, 3, 5)
 # =============================================================================
 def _lambdas(model):
-    return np.array([v.value for v in model.scalarVariables.values()]).flatten()
+    """Kontaktmultiplikatoren, unabhaengig von der Formulierung.
+
+    Bei formulation=lagrange Skalarunbekannte des Gesamtsystems, bei
+    formulation=penalty keine Freiheitsgrade - dort gibt der Constraint die
+    assemblierten Werte ueber lambda_nodal heraus. Gleiche Groesse, gleiche
+    Vorzeichenkonvention."""
+    lam = np.array([v.value for v in model.scalarVariables.values()], dtype=float).flatten()
+    if lam.size:
+        return lam
+    c = model.constraints["contact"]
+    return np.array(getattr(c, "lambda_nodal", []), dtype=float).flatten()
 
 
 def write_lambda_vtk(model, path):

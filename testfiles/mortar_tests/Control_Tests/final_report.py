@@ -17,6 +17,8 @@ Führt alle Varianten aus (6 Tests x {hex8, hex20, hex20R} x {matching, nonmatch
 """
 
 import os
+import shutil
+import tempfile
 import sys
 
 import numpy as np
@@ -34,6 +36,69 @@ FOLDERS = [("01_selfweight", "selfweight"), ("02_pressure", "pressure"),
            ("07_stiffness", "stiffness")]
 WITH_MONOLITH = {"selfweight", "pressure", "dispcontrol"}
 IYY = 1
+
+
+#: Dateiendungen und Namen, die NICHT umbenannt werden: Eingaben und Skripte
+#: ohnehin nicht, und die EnSight-Ausgabe besteht aus einer .case-Datei plus
+#: gleichnamigem Ordner - benennt man nur die Datei um, zeigt sie ins Leere.
+_KEEP_EXT = {".inp", ".py", ".md", ".ods", ".jou", ".case", ".vtk", ".pdf"}
+
+
+def _snapshot(folder):
+    """Sichert den Bestand, den ein Lauf ueberschreiben koennte.
+
+    Die Ergebnisdateien dieses Ordners tragen die Namen aus den `export=`-Anweisungen
+    der .inp und sind damit fuer alle Formulierungen gleich. Wer sie nebeneinander
+    haben will, muss den vorhandenen Stand vorher wegsichern und hinterher
+    zuruecklegen - sonst schiebt die Umbenennung die Datei der vorigen Formulierung
+    weg, statt eine zweite danebenzulegen.
+    """
+    if not SUFFIX or not os.path.isdir(folder):
+        return None
+    tmp = tempfile.mkdtemp(prefix="ct_backup_")
+    kept = {}
+    for f in os.listdir(folder):
+        src = os.path.join(folder, f)
+        if not os.path.isfile(src):
+            continue
+        stem, ext = os.path.splitext(f)
+        if ext.lower() in _KEEP_EXT or stem.endswith(SUFFIX) or f.startswith("ensight"):
+            continue
+        shutil.copy2(src, os.path.join(tmp, f))
+        kept[f] = os.path.getmtime(src)
+    return tmp, kept
+
+
+def _suffix_written_files(folder, snap):
+    """Haengt die Formulierungsendung an alles, was dieser Lauf geschrieben hat, und
+    legt den vorgefundenen Bestand unveraendert zurueck.
+
+    Damit stehen die Ergebnisse jeder Formulierung nebeneinander und sind von Hand
+    vergleichbar: stress_gp.csv (Sattelpunkt) neben stress_gp_penalty.csv und
+    stress_gp_penalty_uzawa.csv. Fuer lagrange ist SUFFIX leer - dort passiert nichts.
+    """
+    if snap is None:
+        return []
+    tmp, kept = snap
+    moved = []
+    for f in sorted(os.listdir(folder)):
+        src = os.path.join(folder, f)
+        if not os.path.isfile(src):
+            continue
+        stem, ext = os.path.splitext(f)
+        if ext.lower() in _KEEP_EXT or stem.endswith(SUFFIX) or f.startswith("ensight"):
+            continue
+        if kept.get(f) == os.path.getmtime(src):
+            continue                                    # von diesem Lauf nicht angefasst
+        os.replace(src, os.path.join(folder, f"{stem}{SUFFIX}{ext}"))
+        moved.append(f)
+
+    for f in os.listdir(tmp):                           # Vorgefundenes zuruecklegen
+        dst = os.path.join(folder, f)
+        if not os.path.exists(dst):
+            shutil.move(os.path.join(tmp, f), dst)
+    shutil.rmtree(tmp, ignore_errors=True)
+    return moved
 
 
 def monolith_gp_lookup(mfoc):
@@ -87,7 +152,50 @@ def collect_contact_rows(model, test, elem, mesh):
 
 
 # ---------------------------------------------------------------------------
+#: Die drei Formulierungen derselben diskreten Zwangsbedingung. Umgestellt werden
+#: die Vorgabewerte des Constraint-Moduls, nicht die Eingabedateien - so laeuft
+#: dieselbe Reihe ueber denselben Aufbau, und ein Input, der die Formulierung
+#: selbst setzt, behaelt trotzdem Vorrang.
+FORMULATIONS = ("lagrange", "penalty", "penalty_uzawa")
+
+
+def set_formulation(formulation: str):
+    from edelweissfe.constraints import mortarcontact as _mc
+
+    if formulation not in FORMULATIONS:
+        raise SystemExit(f"unknown formulation '{formulation}', expected one of {FORMULATIONS}")
+    for arg in _mc.module.optionalArgs:
+        if arg.name == "formulation":
+            arg.default = "lagrange" if formulation == "lagrange" else "penalty"
+        elif arg.name == "augmentedLagrange":
+            arg.default = formulation == "penalty_uzawa"
+    return formulation
+
+
+#: Wird von main() gesetzt und haengt an jeden Ausgabedateinamen an, damit die drei
+#: Laeufe sich nicht gegenseitig ueberschreiben.
+SUFFIX = ""
+
+
+def _out(name: str, ext: str) -> str:
+    return os.path.join(THISDIR, f"{name}{SUFFIX}.{ext}")
+
+
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--formulation", default="lagrange", choices=list(FORMULATIONS),
+                        help="contact formulation to run the whole series in")
+    args = parser.parse_args()
+    formulation = set_formulation(args.formulation)
+
+    global SUFFIX
+    SUFFIX = "" if formulation == "lagrange" else f"_{formulation}"
+    print("#" * 108)
+    print(f"# CONTROL TESTS - formulation = {formulation}")
+    print("#" * 108)
+
     gp_rows, contact_rows = [], []
     comp_rows, sep_rows, sli_rows, inc_rows = [], [], [], []
 
@@ -98,10 +206,11 @@ def main():
                 variant = f"{test}_{elem}_{mesh}"
                 inp = os.path.join(THISDIR, folder, f"{variant}.inp")
                 print(f"  ... {variant}", flush=True)
+                _before = _snapshot(os.path.join(THISDIR, folder))
                 model, foc, conv = ev.run_job(inp)
                 contact_rows.extend(collect_contact_rows(model, test, elem, mesh) if conv else [])
                 if conv:
-                    ev.write_lambda_vtk(model, os.path.join(THISDIR, folder, f"lambda_{variant}.vtk"))
+                    ev.write_lambda_vtk(model, os.path.join(THISDIR, folder, f"lambda_{variant}{SUFFIX}.vtk"))
 
                 if test in ev.COMPRESSION_TESTS:
                     row = dict(test=test, elem=elem, mesh=mesh, converged=conv,
@@ -147,6 +256,8 @@ def main():
                         s = ev.evaluate_inclined(model, foc) if conv else {}
                         inc_rows.append(dict(elem=elem, mesh=mesh, converged=conv, **s))
 
+                _suffix_written_files(os.path.join(THISDIR, folder), _before)
+
     # --- Hertz'scher Kontakt (08_hertz) ---
     hertz_rows = []
     hfolder = os.path.join(THISDIR, "08_hertz")
@@ -155,20 +266,48 @@ def main():
         if not os.path.exists(inp):
             continue
         print(f"  ... hertz_{name}", flush=True)
+        _before = _snapshot(hfolder)
         model, foc, conv = ev.run_job(inp)
         row = dict(name=name, converged=conv)
         if conv:
             row.update(ev.evaluate_hertz(model))
-            ev.write_lambda_vtk(model, os.path.join(hfolder, f"lambda_hertz_{name}.vtk"))
-            ev.write_hertz_profile(model, os.path.join(hfolder, f"hertz_profile_hertz_{name}.csv"))
+            ev.write_lambda_vtk(model, os.path.join(hfolder, f"lambda_hertz_{name}{SUFFIX}.vtk"))
+            ev.write_hertz_profile(model, os.path.join(hfolder, f"hertz_profile_hertz_{name}{SUFFIX}.csv"))
+        _suffix_written_files(hfolder, _before)
         hertz_rows.append(row)
 
+    _write_summary_json(formulation, comp_rows, sep_rows, sli_rows, inc_rows, hertz_rows, contact_rows)
     _write_gp_files(gp_rows)
     _write_contact_files(contact_rows)
     _print_compression(comp_rows)
     _print_behaviour(sep_rows, sli_rows, inc_rows)
     _print_hertz(hertz_rows)
     _print_gp_note(gp_rows)
+
+
+def _write_summary_json(formulation, comp, sep, sli, inc, hertz, contact):
+    """Maschinenlesbare Fassung der Kennzahlen, damit die drei Formulierungen ohne
+    Ausparsen der gedruckten Tabellen gegeneinandergestellt werden koennen."""
+    import json
+
+    def clean(rows):
+        out = []
+        for r in rows:
+            out.append({k: (None if isinstance(v, float) and np.isnan(v) else v)
+                        for k, v in r.items()})
+        return out
+
+    payload = {
+        "formulation": formulation,
+        "compression": clean(comp),
+        "separation": clean(sep),
+        "sliding": clean(sli),
+        "inclined": clean(inc),
+        "hertz": clean(hertz),
+        "n_contact_nodes": len(contact),
+    }
+    with open(_out("final_summary", "json"), "w") as f:
+        json.dump(payload, f, indent=1, default=str)
 
 
 def _springt(ct):
@@ -186,7 +325,7 @@ GP_COLS = ["test", "elem", "mesh", "el", "gp", "x", "y", "z",
 
 def _write_gp_files(rows):
     import csv
-    with open(os.path.join(THISDIR, "final_gp_table.csv"), "w", newline="") as f:
+    with open(_out("final_gp_table", "csv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=GP_COLS)
         w.writeheader()
         for r in rows:
@@ -207,13 +346,13 @@ def _write_gp_files(rows):
         lines.append(f"{r['el']:>3} {r['gp']:>3} {r['x']:7.3f} {r['y']:7.3f} {r['z']:7.3f} "
                      f"{r['s11']:9.4f} {r['s22']:9.4f} {r['s33']:9.4f} {r['s12']:9.4f} "
                      f"{r['e22']:10.3e} {sa:>9} {ea:>10} {em:>10}")
-    with open(os.path.join(THISDIR, "final_gp_table.txt"), "w") as f:
+    with open(_out("final_gp_table", "txt"), "w") as f:
         f.write("\n".join(lines) + "\n")
 
 
 def _write_contact_files(rows):
     import csv
-    with open(os.path.join(THISDIR, "final_contact_table.csv"), "w", newline="") as f:
+    with open(_out("final_contact_table", "csv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["test", "elem", "mesh", "slave_node", "lam"])
         w.writeheader()
         for r in rows:

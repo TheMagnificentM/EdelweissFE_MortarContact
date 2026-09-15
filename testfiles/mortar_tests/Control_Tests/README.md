@@ -303,3 +303,36 @@ ohne Eingriff; bei den kraftgesteuerten Fällen (01, 02) steckt nur die dokument
 Stabilisierungsfeder (~10⁻⁶) drin. Kein Restfehler stammt aus einem Fehler des Kontakts, und
 sämtliche 22 Varianten konvergieren – einschließlich aller vier Hertz-Modelle (siehe den Kasten
 oben; die frühere Ausnahme `hertz_hex20_medium` besteht nicht mehr).
+
+## Mehrere Kontaktformulierungen
+
+`run_all_formulations.py` faehrt die gesamte Reihe in allen drei Formulierungen
+(`lagrange`, `penalty`, `penalty_uzawa`) und schreibt `CONTROL_TESTS_MATRIX.txt`.
+Einzeln geht es mit `python final_report.py --formulation <name>`.
+
+### Wo welche Ergebnisse landen
+
+Die Auswertedateien IN den Testordnern (`stress_gp.csv`, `gp_report_*.csv`,
+`nodal_U.csv`, `reaction.csv`, ...) stammen aus den `export=`-Anweisungen der
+jeweiligen `.inp` und heissen dort fuer jede Formulierung gleich. Damit sie sich
+nicht gegenseitig ueberschreiben, sichert `final_report.py` den vorgefundenen
+Stand, benennt hinterher alles um, was der Lauf geschrieben hat, und legt das
+Gesicherte zurueck. Nebeneinander liegen dann:
+
+```
+stress_gp.csv                 <- lagrange (unveraenderter Name)
+stress_gp_penalty.csv         <- reines Penalty
+stress_gp_penalty_uzawa.csv   <- mit augmentiertem Verfahren
+```
+
+`lagrange` behaelt bewusst den Namen ohne Endung: das ist der Stand, auf den sich
+die Dokumentation und die versionierten Referenzdateien beziehen.
+
+Nicht umbenannt werden Eingaben und Skripte sowie die EnSight-Ausgabe - dort
+gehoeren `.case`-Datei und gleichnamiger Ordner zusammen, und eine umbenannte
+`.case` zeigte ins Leere. Wer EnSight je Formulierung braucht, laesst die Laeufe
+einzeln laufen und sichert den Ordner selbst.
+
+Die Dateien im `Control_Tests`-Ordner selbst (`final_gp_table*`,
+`final_contact_table*`, `final_summary*`, `final_report_*`) tragen die Endung
+ohnehin und bleiben vollstaendig erhalten.
