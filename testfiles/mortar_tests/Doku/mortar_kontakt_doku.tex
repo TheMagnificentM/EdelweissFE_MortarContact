@@ -2344,6 +2344,222 @@ das für ein konvergiertes Modell und weist zugleich aus, ob das Set des letzten
 Obergrenze eingefroren wurde.
 
 % =====================================================================
+% =====================================================================
+\section{Penalty-Formulierung und augmentiertes Lagrange-Verfahren}
+\label{sec:penalty}
+
+Die bisherigen Abschnitte erzwingen die diskrete Zwangsbedingung $\tilde g_j=0$ über
+Multiplikatoren, die als eigene Unbekannte im Gleichungssystem stehen. Dieselbe Bedingung lässt
+sich auch ohne zusätzliche Unbekannte erzwingen, indem der Kontaktdruck unmittelbar aus der
+Zwangsverletzung folgt. Beide Wege teilen die \emph{gesamte} geometrische Verarbeitung dieser
+Arbeit -- Nachbarsuche, Projektion, Clipping, Segmentierung, Knotennormalen sowie $\bm D$ und
+$\bm C$ -- und unterscheiden sich allein im Zwangsgesetz. Umgeschaltet wird mit dem Schlüsselwort
+\code{formulation} (Anhang~\ref{sec:inputfile}).
+
+Der Anlass ist nicht Bequemlichkeit. Eine \emph{explizite} Zeitintegration invertiert eine
+Massenmatrix und braucht für jede Unbekannte eine Masse; ein Multiplikator hat keine. Ohne eine
+multiplikatorfreie Formulierung ist der Kontakt einem expliziten Löser damit grundsätzlich
+verschlossen.
+
+% ---------------------------------------------------------------------
+\subsection{Die Vorschrift}
+\label{sec:penaltylaw}
+
+\citet[Gl.~(24)]{puso2004} setzen den Knotendruck proportional zum gewichteten Spalt,
+\begin{equation}
+p_A \;=\; \kappa\,\bm g_A\cdot\bm\nu_A ,
+\label{eq:penaltylaw}
+\end{equation}
+mit dem Penalty-Parameter $\kappa$; \citet[Gl.~(7)]{puso2008} schreiben dieselbe Beziehung als
+$t_A=\kappa\,g_A$. Entscheidend ist, welche Größe dort $g_A$ heißt: nach
+\citet[Gl.~(6)]{puso2004} ist es
+$\bm g_A=\sum_{B,C}\int_\gamma[N^1_AN^1_B\bm x^1_B-N^1_AN^2_C\bm x^2_C]\,\mathrm d\gamma$, also
+genau der \emph{gewichtete} Spalt dieser Arbeit \eqref{eq:wgap_pos} -- eine Größe der Dimension
+Länge $\times$ Fläche, nicht die physikalische Knotenöffnung. Ebenso sind ihre Koppelgrößen
+$n^i_{AB}=\int_\gamma N^1_AN^i_B\,\mathrm d\gamma$ \citep[Gl.~(13)]{puso2004} unsere $\bm D$ und
+$\bm C$, und ihre Konsistenzbedingung $\sum_{B,C}(n^1_{AB}-n^2_{AC})=0$
+\citep[Gl.~(15)]{puso2004} ist die Zeilensummen-Identität \eqref{eq:rowsum}.
+
+Die Vorzeichenkonvention der Quelle ist die umgekehrte: dort steht die Nichtdurchdringung als
+$g_A\le0$, hier ist $\tilde g_j/\tilde D_{jj}>0$ die offene Lage. Im Code trägt deshalb ein
+eigenes Maß das Vorzeichen,
+\begin{equation}
+g_{\text{pen},j} \;=\; -\,\tilde g_j\,\operatorname{sgn}(\tilde D_{jj}),
+\qquad
+p_{n,j} \;=\; \max\bigl(0,\;z_j + \kappa\,g_{\text{pen},j}\bigr),
+\qquad
+\lambda_j \;=\; p_{n,j}\operatorname{sgn}(\tilde D_{jj}),
+\label{eq:penaltynodal}
+\end{equation}
+positiv bei Durchdringung. Der Summand $z_j$ ist der Schätzer des augmentierten Verfahrens
+(Abschnitt~\ref{sec:augmented}); für reines Penalty ist $z_j\equiv0$ und \eqref{eq:penaltynodal}
+reduziert sich auf \eqref{eq:penaltylaw}. Dass $\lambda_j$ das Vorzeichen von $\tilde D_{jj}$
+trägt, ist dieselbe Buchführung wie im Multiplikatorzweig (Abschnitt~\ref{sec:sgnd}) und sorgt
+dafür, dass die Knotenkraft $-\lambda_j\tilde D_{jj}$ \eqref{eq:nodalforce} für beide Vorzeichen
+des Gewichts drückt.
+
+\paragraph{Warum der gewichtete Spalt und nicht die Öffnung.}
+Die kontinuierliche Penalty-Regularisierung setzt am \emph{punktweisen} Spalt an:
+\citet[Gl.~(30)/(31)]{wriggers} schreibt
+$\Pi^P_c=\int(\varepsilon_N g_N\,\delta g_N+\varepsilon_T\bm g_T\!\cdot\!\delta\bm g_T)\,\mathrm dA$
+mit $\varepsilon_N>0$, hält fest, dass die Lagrange-Lösung für $\varepsilon_N\to\infty$
+wiedergewonnen wird, und warnt zugleich vor der schlechten Kondition bei großem
+$\varepsilon_N$. Diskretisiert man diese Form konsistent, erhielte man
+$p_j=\varepsilon_N\,\tilde g_j/\tilde D_{jj}$, also den Penalty-Parameter auf der physikalischen
+Öffnung. Beide Lesarten hängen über $\kappa=\varepsilon_N/\tilde D_{jj}$ zusammen und streben für
+$\kappa\to\infty$ gegen dieselbe Grenze, weil beide $\tilde g_j\to0$ erzwingen.
+
+Umgesetzt ist die Form der beiden Puso-Arbeiten, und zwar aus einem Grund, der in dieser
+Implementierung besonders schwer wiegt: \eqref{eq:penaltynodal} \textbf{dividiert nicht durch
+$\tilde D_{jj}$}. Das Knotengewicht ist hier nicht sicher von null weg -- ein teilweise
+überdecktes \code{CONQUAD9}, eine \code{CONQUAD8}-Ecke bei $\alpha=\tfrac13$ und der
+Sliver-Rückfall erzeugen kleine und sogar negative Gewichte (Abschnitte~\ref{sec:alphachoice}
+und~\ref{sec:sliver}). In der Form $p_j=\varepsilon_N\,\tilde g_j/\tilde D_{jj}$ stünde genau
+dieses Gewicht im \emph{Nenner des Kontaktdrucks}; der Multiplikatorzweig muss die Division
+deshalb eigens abfangen (Schwelle \code{current\_D\_tol}), und ein abgefangener Knoten wäre in der
+Penalty-Form ein Knoten ohne Kontaktkraft.
+
+\paragraph{Abgrenzung.} Nicht gemeint ist die in Abschnitt~\ref{sec:ausblick:kondensation}
+beschriebene Abkürzung $\lambda_j=-\tilde g_j/\tilde D_{jj}$. Deren Ersatzsteifigkeit
+$1/\tilde D_{jj}$ stammt aus der Facettengeometrie und hat mit der Steifigkeit der Körper nichts
+zu tun. In \eqref{eq:penaltylaw} ist $\kappa$ dagegen ein frei wählbarer Parameter, der genau
+diese Rolle übernimmt.
+
+% ---------------------------------------------------------------------
+\subsection{Linearisierung}
+\label{sec:penaltytangent}
+
+Mit den Gewichten $w_a=+D_{jk}$ auf den Slave-Knoten und $w_a=-C_{jl}$ auf den Master-Knoten ist
+der gewichtete Spalt $\tilde g_j=-\sum_a w_a(\bm x_a\!\cdot\!\bm n_j)$, also
+$\partial\tilde g_j/\partial\bm x_a=-w_a\bm n_j$. Mit $\bm v_a=w_a\bm n_j$ folgt aus
+\eqref{eq:penaltynodal} unmittelbar
+\begin{equation}
+\bm P_{\text{ext},a} \;\mathrel{-}=\; \lambda_j\,\bm v_a ,
+\qquad
+\bm K_{ab} \;\mathrel{+}=\; \kappa\,\bm v_a\otimes\bm v_b .
+\label{eq:penaltytangent}
+\end{equation}
+Der Knotenbeitrag ist damit vom Rang eins und symmetrisch positiv semidefinit -- das System bleibt
+positiv definit, es entsteht kein Sattelpunkt, und die Zahl der Unbekannten sinkt um einen
+Multiplikator je Slave-Knoten. Das $\operatorname{sgn}(\tilde D_{jj})$ aus
+\eqref{eq:penaltynodal} hebt sich in der Ableitung heraus.
+
+\eqref{eq:penaltytangent} ist der \emph{erste} Term der vollständigen Linearisierung
+\citep[Gl.~(25)]{puso2004}
+$\Delta\bm f^i_{AB}=\kappa n^i_{AB}(\bm\nu_A\otimes\bm\nu_A)\Delta\bm g_A
++n^i_{AB}(p_A\bm I+\bm\nu_A\otimes\bm g_A)\Delta\bm\nu_A+p_A\bm\nu_A\Delta n^i_{AB}$.
+Die beiden übrigen Terme -- die Linearisierungen der Knotennormale und der Koppelgewichte --
+entfallen hier, weil die Geometrie im Increment eingefroren ist
+(Abschnitt~\ref{sec:frozen}). Die assemblierte Tangente ist damit die \emph{exakte} Jacobi-Matrix
+des eingefrorenen Residuums, nicht die des vollen Problems; das ist dieselbe Einschränkung, unter
+der auch der Multiplikatorzweig steht, und derselbe offene Punkt im Ausblick.
+
+% ---------------------------------------------------------------------
+\subsection{Aktivmenge}
+\label{sec:penaltyactiveset}
+
+Der Penalty-Zweig braucht weder eine Komplementaritätsfunktion noch den Parameter $c_n$: die
+Regularisierung \emph{ist} das Gesetz. Aktiv ist ein Knoten, wenn $z_j+\kappa g_{\text{pen},j}>0$
+ist -- bei reinem Penalty also genau dann, wenn er durchdringt. Das ist die Freigabebedingung des
+Algorithmus von \citet[Schritt~(3)]{puso2008}.
+
+Bemerkenswert ist die strukturelle Verwandtschaft: der semismoothe Indikator
+$s_n=p_n-c_n\,g_{\text{sep}}$ des Multiplikatorzweigs \eqref{eq:ncp} und der augmentierte Druck
+$z_j+\kappa g_{\text{pen},j}$ sind dasselbe Objekt, von zwei Seiten betrachtet -- ein
+Multiplikatorschätzer plus ein Vielfaches der Zwangsverletzung. Genau diese Beobachtung liegt der
+Deutung der primal-dualen Aktivmengenstrategie als semismoothes Newton-Verfahren zugrunde
+\citep{hik2002,hueber2005}. Eine Konsequenz ist praktischer Natur: weil die Menge dem Druck folgt
+und nicht iteriert wird, entfallen im Penalty-Zweig das Einfrieren der Aktivmenge und die
+Anti-Cycling-Buchführung aus Abschnitt~\ref{sec:loesung}.
+
+% ---------------------------------------------------------------------
+\subsection{Augmentiertes Lagrange-Verfahren}
+\label{sec:augmented}
+
+Reines Penalty erfüllt die Zwangsbedingung nur bis auf $O(1/\kappa)$, und $\kappa$ steht damit im
+Ergebnis. Beide Puso-Arbeiten umgehen das mit einer äußeren Schleife: \citet[Gl.~(18)]{puso2008}
+ziehen den Druckschätzer nach
+\begin{equation}
+z^{(k+1)}_j \;=\; \max\bigl(0,\;z^{(k)}_j+\kappa\,g_{\text{pen},j}\bigr),
+\label{eq:uzawa}
+\end{equation}
+und zwar ausdrücklich erst, \emph{``once convergence of the Newton--Raphson loop is achieved''};
+danach wird das Gleichgewicht mit dem neuen Schätzer neu hergestellt. Im Grenzfall
+$g_{\text{pen},j}\to0$ ist $\lambda_j\to z_j$, und wo $z_j$ landet, entscheidet das Gleichgewicht
+-- nicht $\kappa$. Der Parameter steuert dann nur noch die Rate der äußeren Schleife.
+
+\paragraph{Abbruch.} \citet{puso2008} lassen die Toleranz offen und nennen zwei Möglichkeiten,
+entweder die Nichtdurchdringung direkt zu prüfen oder ``changes of multipliers from iteration to
+iteration'' zu verfolgen. Umgesetzt ist die zweite, als \emph{relative} Änderung
+$\max_j|z^{(k+1)}_j-z^{(k)}_j|\le\texttt{tol}\cdot\max_j|z^{(k+1)}_j|$. Der Grund ist derselbe wie
+in Abschnitt~\ref{sec:scalelimit}: eine Schranke am gewichteten Spalt trüge die Einheit
+Länge $\times$ Fläche und wäre nicht skaleninvariant, die Multiplikatorform ist dimensionslos.
+
+\paragraph{Einbettung.} Die Schleife ist echt geschachtelt und setzt eine Gleichgewichtsiteration
+voraus, in die sie sich einhängen kann. Für einen expliziten Löser steht sie damit nicht zur
+Verfügung -- dort bleibt nur reines Penalty. Zu Beginn jedes Increments wird $z_j$ aus dem letzten
+konvergierten Wert warm gestartet; ein Rückschritt nach Cutback setzt ihn aus demselben Grund
+zurück wie die eingefrorene Geometrie (Abschnitt~\ref{sec:frozen}). Dass die Kontaktkräfte damit
+zu Increment-Beginn nicht diejenigen sind, die den eingehenden Verschiebungszustand erzeugt haben,
+hat eine Folge für den Löser: der Zustand darf nicht ungeprüft als konvergiert angenommen werden,
+bevor eine Korrektur gerechnet wurde.
+
+% ---------------------------------------------------------------------
+\subsection{Wahl von $\kappa$}
+\label{sec:kappachoice}
+
+Für $\kappa$ gibt \textbf{keine} der beiden Quellen eine Regel an; \citet{puso2008} sprechen
+lediglich von ``a suitable penalty parameter''. Der Vorgabewert dieser Implementierung ist deshalb
+als eigene Ingenieurregel zu lesen und wird beim ersten Assemblieren einmal gemeldet:
+\begin{equation}
+\kappa \;=\; C\,\frac{E}{h\,\bar D},
+\qquad C=100,
+\qquad \bar D=\frac{|\gamma_c^{\text{ovl}}|}{n_{\text{slave}}},
+\qquad h=\Bigl(\frac{|\gamma_c^{\text{ovl}}|}{n_{\text{facets}}}\Bigr)^{1/(d-1)} .
+\label{eq:kappadefault}
+\end{equation}
+Dabei ist $E$ der kleinste Anfangs-Elastizitätsmodul der angrenzenden Materialien -- dieselbe
+Begründung wie bei $c_n$ (Abschnitt~\ref{sec:ncp}) --, und $\bar D$ sowie $h$ folgen aus den
+Mortar-Gewichten selbst, deren Zeilensumme nach \eqref{eq:rowsum} das überdeckte Interfacemaß
+ergibt. Der Sinn ist, dass $\varepsilon_N=\kappa\bar D=C\,E/h$ die Steifigkeit einer angrenzenden
+Elementlage trifft.
+
+Der Faktor $C$ kauft die Konvergenzrate der äußeren Schleife: sie fällt näherungsweise wie
+$k_{\text{Struktur}}/(k_{\text{Struktur}}+k_{\text{Kontakt}})$. Gemessen an der Zwei-Block-Reihe
+(\file{Control\_Tests} 03, hex8, $E=1000$) reduziert $C=1$ die Zwangsverletzung je Runde um den
+Faktor $0{,}51$ und braucht rund $25$ Augmentierungen für eine relative $10^{-6}$, während $C=100$
+mit \emph{vier} auskommt -- Restdurchdringung $4{,}4\cdot10^{-5}\to3{,}5\cdot10^{-7}\to
+3{,}4\cdot10^{-9}\to3{,}5\cdot10^{-11}$. Mit eingeschalteter Augmentierung hängt das konvergierte
+Ergebnis nicht von $\kappa$ ab; die Regel muss daher vernünftig sein, nicht richtig. Ohne
+Augmentierung steht $\kappa$ im Ergebnis und ist bewusst zu wählen.
+
+% ---------------------------------------------------------------------
+\subsection{Grenzen der Penalty-Formulierung}
+\label{sec:penaltylimits}
+
+\paragraph{Erzwungen wird der gewichtete Spalt.} \eqref{eq:penaltynodal} begrenzt $\tilde g_j$,
+nicht die physikalische Öffnung $\tilde g_j/\tilde D_{jj}$. Wo das Knotengewicht klein wird --
+also am Rand der Kontaktzone und bei Splitterüberdeckung -- verstärkt die Division die
+verbleibende Verletzung. Gemessen in \file{10\_signorini\_check} an Knoten mit
+$\tilde D_{jj}/\max_k|\tilde D_{kk}|=2{,}5\cdot10^{-5}\ldots1{,}4\cdot10^{-4}$: die Öffnung
+erreicht dort $1{,}5\cdot10^{-3}$, wo der Sattelpunkt $10^{-16}$ hält. Die \emph{Knotenkraft}
+bleibt mit $1{,}4\cdot10^{-5}$ ohne Belang für eine Lastaussage, die Signorini-Bedingungen werden
+aber punktweise geprüft und sind dort verletzt. Das ist die Kehrseite genau des Vorteils aus
+Abschnitt~\ref{sec:penaltylaw} und keine Ungenauigkeit der Umsetzung.
+
+\paragraph{Teilweise überdeckte Randknoten.} Dort verteilen die beiden Formulierungen den Druck
+messbar verschieden. In den Gleit-Testfällen der Zwei-Block-Reihe
+(\file{Control\_Tests} 05, alle sechs Varianten) gleitet der Master über die Slave-Kante hinaus;
+der Multiplikatorzweig hält $\lambda_j$ gleichförmig, der Penalty-Zweig hebt den Druck an den
+angeschnittenen Randknoten an. Die Folge ist ein Schub von $2{,}3\cdot10^{-2}\ldots7{,}0\cdot
+10^{-2}$ gegen $5\cdot10^{-15}\ldots10^{-11}$ im Multiplikatorzweig, obwohl der Kontakt
+reibungsfrei ist. Der Unterschied verschwindet \emph{nicht} mit der Schrittweite, ist also kein
+Staffelungsfehler, und die Assemblierung ist für gleiches $\lambda_j$ nachweislich identisch.
+Welche der beiden Verteilungen die richtige ist, ist ungeklärt; die Frage hängt mit der Deutung
+des Multiplikators bei Teilüberdeckung zusammen (Abschnitt~\ref{sec:lambdadeutung}) und ist hier
+als offener Punkt festgehalten.
+
+% =====================================================================
 \section{Implementierungsdetails und bekannte Einschränkungen}
 \label{sec:implnotes}
 
@@ -3167,6 +3383,67 @@ Eigenschaft & Prüfung \\
 \end{itemize}
 
 % ---------------------------------------------------------------------
+
+% ---------------------------------------------------------------------
+\subsection{Prüfung in allen drei Formulierungen}
+\label{sec:verifformulations}
+
+Seit der Penalty-Formulierung (Abschnitt~\ref{sec:penalty}) steht dieselbe diskrete
+Zwangsbedingung auf drei Wegen zur Verfügung. Die Suite läuft deshalb parametrisiert: jeder Test,
+der eine Formulierung überhaupt betrifft, wird dreimal ausgeführt --
+\code{lagrange}, \code{penalty} und \code{penalty\_uzawa}. Die Tests der reinen Geometrie und
+Algebra (\file{01} bis \file{05}) bleiben davon ausgenommen; sie prüfen Größen, die alle drei
+teilen, und dreifach ausgeführt prüften sie dreimal dasselbe.
+
+Maßstab ist dabei nicht eine feste Zahl, sondern was die jeweilige Formulierung leisten
+\emph{kann}: der Sattelpunkt erfüllt $\tilde g_j=0$ als Gleichung des Systems, das augmentierte
+Verfahren bis zu seiner Augmentierungstoleranz, reines Penalty bis auf $O(1/\kappa)$. Schranken an
+die Zwangs\emph{erfüllung} werden entsprechend skaliert; Schranken an eine Druckgröße --
+etwa $p_n\ge0$ -- bleiben unverändert, denn ein Zugdruck wäre in jeder Formulierung falsch.
+
+\paragraph{Was nicht in jeder Formulierung prüfbar ist.} Drei Prüfungen haben im Penalty-Zweig
+kein Gegenstück und melden das ausdrücklich, statt stillschweigend zu bestehen: die
+PDASS-Terminierung und die Anti-Cycling-Buchführung (dort wird keine Aktivmenge iteriert,
+Abschnitt~\ref{sec:penaltyactiveset}), der NCP-Indikator bei \emph{reinem} Penalty (er prüft
+gerade den Zweig, den eine reine Durchdringungsheuristik nicht darstellen kann) und der Boden des
+$\lambda$-Residuums (es gibt dort weder Multiplikatorzeile noch Skalarvariablen,
+Abschnitt~\ref{sec:scalelimit}).
+
+\paragraph{Ergebnis.} Von $53$ Prüfungen über $31$ Tests bestehen $47$, fünf sind aus den
+genannten Gründen ausgenommen, und einer bleibt offen: \file{10\_signorini\_check} unter
+\code{penalty\_uzawa} an Knoten mit Splitterüberdeckung
+(Abschnitt~\ref{sec:penaltylimits}). Besonders zu erwähnen sind zwei bestandene Prüfungen:
+
+\begin{itemize}\itemsep2pt
+  \item \textbf{Die konsistente Tangente} \eqref{eq:penaltytangent} hält der Prüfung gegen
+        zentrale Differenzen in allen drei Formulierungen stand, mit
+        $1{,}3\cdot10^{-12}$ bis $4{,}2\cdot10^{-11}$ relativ über flache, geneigte und gekrümmte
+        Interfaces sowie über beide Zweige der Aktivmenge -- dieselbe Güte wie im
+        Multiplikatorzweig. Dass beide Penalty-Varianten dabei \emph{dieselbe} Tangente liefern,
+        ist selbst eine Aussage: der augmentierte Schätzer $z_j$ ist während der
+        Gleichgewichtsiteration konstant und trägt nichts zur Ableitung bei.
+  \item \textbf{Der Kontakt-Patch-Test} wird von \code{penalty\_uzawa} in 2D wie in 3D bestanden,
+        von \code{penalty} allein dagegen nur im Rahmen seines $O(1/\kappa)$-Fehlers. Das ist
+        keine Schwäche der Umsetzung, sondern genau der Unterschied, dessentwegen
+        \citet{puso2008} die äußere Schleife einführen.
+\end{itemize}
+
+\paragraph{Zwei-Block-Reihe und Hertz-Kontakt.} Auch die Reihe aus
+Abschnitt~\ref{sec:controltests} läuft in allen drei Formulierungen, jede in einem eigenen
+Prozess. Alle $138$ Rechnungen ($46\times3$) konvergieren. Von den $46$ Fällen stimmt
+\code{penalty\_uzawa} in $40$ mit dem Sattelpunkt überein, und zwar bis auf Löserrauschen:
+Kompressionsfamilie $10^{-11}\ldots10^{-9}$, schiefes Interface $1{,}3\cdot10^{-9}$, Hertz
+identisch, Abheben in allen drei Formulierungen $\lambda_j=0$. Reines Penalty liegt überall bei
+seinem systematischen Fehler von rund $10^{-3}$.
+
+Die sechs verbleibenden Fälle sind die \emph{Gleit}-Varianten, und sie weichen in beiden
+Penalty-Formulierungen ab -- der Befund aus Abschnitt~\ref{sec:penaltylimits}. Die Kennzahl ist
+dort der Schub, der bei reibungsfreiem Kontakt verschwinden muss; er bleibt im Multiplikatorzweig
+bei $5\cdot10^{-15}\ldots10^{-11}$ und erreicht im Penalty-Zweig
+$2{,}3\cdot10^{-2}\ldots7{,}0\cdot10^{-2}$. Er ist dabei Folge und nicht Ursache: er entsteht aus
+dem ungleichmäßigen Normaldruck an den angeschnittenen Randknoten.
+
+% ---------------------------------------------------------------------
 \subsection{Zwei-Block-Referenzreihe und Hertz-Kontakt}
 \label{sec:controltests}
 
@@ -3887,9 +4164,14 @@ Bedeutung und Begründung stehen in Abschnitt~\ref{sec:ncp}.
 \code{mortarSurface=\path{<string>}} & Pflicht. Name der \textbf{Mortar-Fläche (Master)}, auf die der Spalt gemessen wird. \\
 \code{field=displacement} & Optional (Standard \code{displacement}). Verschiebungs-Vektorfeld, auf das der Kontakt wirkt. \\
 \code{cn=\path{<float>}} & Optional. Komplementaritätsparameter $c_n$ der Normal-NCP (Abschnitt~\ref{sec:ncp}); die Formulierung verlangt $c_n>0$. \textbf{Ohne Angabe} wird $c_n$ aus dem kleinsten Anfangs-Elastizitätsmodul der an die Kontaktflächen angrenzenden Materialien abgeleitet, und der verwendete Wert wird zur Laufzeit gemeldet. Eine explizite Angabe hat Vorrang und sollte in der Größenordnung $\mathcal O(E)$ des weicheren Kontaktpartners liegen. \\
+\code{formulation=\path{<str>}} & Optional, Vorgabe \code{lagrange}. Wie die Zwangsbedingung erzwungen wird (Abschnitt~\ref{sec:penalty}): \code{lagrange} über Multiplikatoren als Unbekannte des Gesamtsystems, \code{penalty} über $t_A=\kappa\,g_A$ nach \citet[Gl.~(24)]{puso2004} bzw.\ \citet[Gl.~(7)]{puso2008}. Beide teilen die gesamte geometrische Verarbeitung und sind damit unmittelbar vergleichbar. \\
+\code{penaltyStiffness=\path{<float>}} & Optional, nur bei \code{formulation=penalty}. Der Parameter $\kappa$ aus \eqref{eq:penaltylaw}. \textbf{Achtung auf die Einheit:} $\kappa$ multipliziert den \emph{gewichteten} Spalt und ist deshalb nicht der klassische Parameter $\varepsilon_N$ der kontinuierlichen Form \citep[Gl.~(30)/(31)]{wriggers}; es gilt $\kappa=\varepsilon_N/\tilde D_{jj}$. \textbf{Ohne Angabe} wird $\kappa$ nach \eqref{eq:kappadefault} abgeleitet und der Wert zur Laufzeit gemeldet -- eine Regel dieser Implementierung, kein Literaturwert. \\
+\code{augmentedLagrange=\path{<bool>}} & Optional, Vorgabe \code{no}. Schaltet die äußere Uzawa-Schleife nach \citet[Gl.~(18)]{puso2008} zu (Abschnitt~\ref{sec:augmented}). Damit erfüllt die Lösung die Zwangsbedingung bis zur Augmentierungstoleranz statt bis auf $O(1/\kappa)$ und hängt nicht mehr von $\kappa$ ab. Setzt eine Gleichgewichtsiteration voraus und steht einem expliziten Löser daher nicht zur Verfügung. Ohne Wirkung bei \code{formulation=lagrange}. \\
+\code{augmentationTolerance=\path{<float>}} & Optional, Vorgabe $10^{-6}$. Abbruchschranke der äußeren Schleife als \emph{relative} Änderung des Druckschätzers, $\max_j|z^{(k+1)}_j-z^{(k)}_j|\le\texttt{tol}\cdot\max_j|z^{(k+1)}_j|$ -- die zweite der beiden von \citet{puso2008} genannten Möglichkeiten, gewählt weil sie dimensionslos und damit skaleninvariant ist. \\
+\code{maxAugmentations=\path{<int>}} & Optional, Vorgabe $10$. Sicherung gegen eine nicht konvergierende äußere Schleife. Wird die Grenze erreicht, wird das gemeldet: das Increment konvergierte dann auf einem Schätzer, der sich noch bewegt hat. \\
 \bottomrule
 \end{tabularx}
-\caption{Parameter des \code{mortarcontact}-Constraints auf Branch \code{0\_mortarcontact}.}
+\caption{Parameter des \code{mortarcontact}-Constraints.}
 \end{table}
 
 \subsection{Vorbereitung der Oberflächen und Kontaktelemente}
