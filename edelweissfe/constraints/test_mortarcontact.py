@@ -1,0 +1,547 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#  ---------------------------------------------------------------------
+#
+#  _____    _      _              _         _____ _____
+# | ____|__| | ___| |_      _____(_)___ ___|  ___| ____|
+# |  _| / _` |/ _ \ \ \ /\ / / _ \ / __/ __| |_  |  _|
+# | |__| (_| |  __/ |\ V  V /  __/ \__ \__ \  _| | |___
+# |_____\__,_|\___|_| \_/\_/ \___|_|___/___/_|   |_____|
+#
+#
+#  Unit of Strength of Materials and Structural Analysis
+#  University of Innsbruck,
+#  2017 - today
+#
+#  This file is part of EdelweissFE.
+#
+#  This library is free software; you can redistribute it and/or
+#  modify it under the terms of the GNU Lesser General Public
+#  License as published by the Free Software Foundation; either
+#  version 2.1 of the License, or (at your option) any later version.
+#
+#  The full text of the license can be found in the file LICENSE.md at
+#  the top level directory of EdelweissFE.
+#  ---------------------------------------------------------------------
+"""Unit tests for the segment-to-segment mortar contact constraint.
+
+The regression decks under ``testfiles/edelweiss-only/MortarContact*`` check the constraint through
+the answers it produces on a converged model. That is the right check for the formulation as a
+whole, and the wrong one for the pieces it is assembled from: a patch test on a flat interface is
+very nearly a linear problem and converges in two iterations even with a defective tangent, and an
+interface whose two sides overlap completely never reaches the code that decides what happens when
+they do not. Both are tested here instead, on models small enough to state the expected answer in
+closed form.
+
+The pieces, in the order the constraint uses them:
+
+* the geometry of one overlap -- clipping two faces against each other and triangulating the result
+* the nodal normals the overlap is projected along
+* the coupling matrices those overlaps assemble into, and the row-sum identity that makes them a
+  partition of the non-mortar surface
+* the active-set indicator, which is the only non-smooth step in the formulation
+* the tangent, against finite differences of the residual it claims to differentiate
+"""
+
+import unittest
+import warnings
+
+import numpy as np
+
+import edelweissfe.utils.inputfileparser  # noqa: F401 bootstrap input language
+from edelweissfe.constraints.mortar_geom_utils import (
+    clip_1d_segments,
+    get_tangent_basis,
+    sutherland_hodgman_clip,
+    to_3d_coords,
+    to_plane_coords,
+    triangulate_polygon,
+)
+from edelweissfe.constraints.mortarcontact import (
+    Constraint as MortarContact,
+)
+from edelweissfe.constraints.mortarcontact import (
+    facet_normal,
+    is_convex_polygon,
+)
+from edelweissfe.generators.surfaceelementgenerator import buildContactFacets
+from edelweissfe.journal.journal import Journal
+from edelweissfe.models.femodel import FEModel
+from edelweissfe.points.node import Node
+from edelweissfe.sets.elementset import ElementSet
+
+
+def _polygonArea(polygon: np.ndarray) -> float:
+    """The shoelace area of a planar polygon given as a list of 2D vertices."""
+
+    x, y = np.asarray(polygon)[:, 0], np.asarray(polygon)[:, 1]
+    return 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+
+class TestOverlapGeometry(unittest.TestCase):
+    """Clipping one face against another, which is where the area that everything else is weighted
+    by comes from."""
+
+    def test_two_offset_squares_clip_to_their_analytic_overlap(self):
+        """Unit square against a unit square shifted by (0.5, 0.25): the overlap is a rectangle of
+        0.5 by 0.75."""
+
+        subject = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+        clip = subject + np.array([0.5, 0.25])
+
+        overlap = np.asarray(sutherland_hodgman_clip(subject, clip))
+
+        self.assertEqual(len(overlap), 4)
+        self.assertAlmostEqual(_polygonArea(overlap), 0.5 * 0.75, places=13)
+
+    def test_a_contained_face_clips_to_itself(self):
+        """A face entirely inside the other returns its own area, not the larger one -- the case
+        every non-matching interface is full of."""
+
+        subject = np.array([[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]])
+        clip = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+
+        overlap = np.asarray(sutherland_hodgman_clip(subject, clip))
+        self.assertAlmostEqual(_polygonArea(overlap), 0.25, places=13)
+
+    def test_disjoint_faces_clip_to_nothing(self):
+        """No overlap has to mean an empty polygon rather than a degenerate one: a sliver of
+        near-zero area would enter the coupling matrices as a real, tiny nodal weight, and the
+        constraint divides by those weights."""
+
+        subject = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+        clip = subject + np.array([3.0, 0.0])
+
+        overlap = sutherland_hodgman_clip(subject, clip)
+        self.assertEqual(len(overlap), 0)
+
+    def test_the_triangulation_preserves_the_area(self):
+        """The overlap is integrated triangle by triangle, so the fan has to tile it exactly."""
+
+        polygon = np.array([[0.0, 0.0], [2.0, 0.0], [2.5, 1.0], [1.0, 1.8], [-0.3, 0.9]])
+        triangles = triangulate_polygon(polygon)
+
+        total = sum(_polygonArea(np.asarray(triangle)) for triangle in triangles)
+        self.assertEqual(len(triangles), len(polygon) - 2)
+        self.assertAlmostEqual(total, _polygonArea(polygon), places=13)
+
+    def test_a_non_convex_clip_window_loses_area(self):
+        """Sutherland-Hodgman clips against each edge's infinite half-plane, so a non-convex clip
+        window cuts away parts of the subject that lie inside it. That is a property of the
+        algorithm, not a defect, and it is the reason the constraint splits quadratic faces into
+        convex sub-cells before clipping rather than clipping them whole.
+
+        Measured here so the sub-cell machinery cannot be removed as redundant without this test
+        going red.
+        """
+
+        subject = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+        # an L-shaped, i.e. non-convex, window covering three quarters of the subject
+        window = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 0.5], [0.5, 0.5], [0.5, 1.0], [0.0, 1.0]])
+
+        overlap = sutherland_hodgman_clip(subject, window)
+        clippedArea = _polygonArea(np.asarray(overlap)) if len(overlap) else 0.0
+
+        self.assertFalse(is_convex_polygon(window))
+        self.assertLess(clippedArea, 0.75 - 1e-9, "the non-convex window did not lose any area -- test is vacuous")
+
+    def test_one_dimensional_segments_clip_to_their_overlap(self):
+        """The two-dimensional path intersects intervals instead of polygons, and reaches none of
+        the code above."""
+
+        slaveSegment = np.array([[0.0, 0.0], [2.0, 0.0]])
+        masterSegment = np.array([[1.5, 0.0], [4.0, 0.0]])
+
+        start, end, direction = clip_1d_segments(slaveSegment, masterSegment)
+        # The interval is returned in the ARC LENGTH of the slave segment, not as a fraction of it:
+        # the slave runs from 0 to 2, the master covers it from 1.5 onwards, so the overlap is 0.5
+        # long and begins at 1.5.
+        self.assertAlmostEqual(start, 1.5, places=13)
+        self.assertAlmostEqual(end - start, 0.5, places=13)
+        np.testing.assert_allclose(direction, [1.0, 0.0], atol=1e-13)
+
+    def test_the_tangent_basis_and_the_plane_map_are_inverse(self):
+        """Every overlap is computed in the tangent plane of the non-mortar face and mapped back.
+        A basis that is not orthonormal would distort the overlap area without changing its shape,
+        which is exactly the kind of error a patch test on a uniform pressure cannot see."""
+
+        normal = np.array([1.0, 2.0, -0.5])
+        normal /= np.linalg.norm(normal)
+        t1, t2 = get_tangent_basis(normal)
+
+        np.testing.assert_allclose([t1 @ t1, t2 @ t2], 1.0, atol=1e-13)
+        np.testing.assert_allclose([t1 @ t2, t1 @ normal, t2 @ normal], 0.0, atol=1e-13)
+
+        origin = np.array([0.3, -1.2, 4.0])
+        points = origin + np.outer([0.0, 1.0, 2.0, -1.5], t1) + np.outer([0.0, -0.7, 1.1, 2.0], t2)
+
+        planar = to_plane_coords(points, origin, t1, t2)
+        np.testing.assert_allclose(to_3d_coords(planar, origin, t1, t2), points, atol=1e-13)
+
+
+class TestFacetNormals(unittest.TestCase):
+    def test_the_facet_normal_is_a_unit_vector_along_the_winding(self):
+        """Direction follows the node ordering, so a face and its reverse give opposite normals.
+        The constraint never corrects the sign, it relies on the generator winding faces outward."""
+
+        face = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
+
+        normal = facet_normal(face)
+        self.assertAlmostEqual(float(np.linalg.norm(normal)), 1.0, places=13)
+
+        reversed_normal = facet_normal(face[::-1])
+        np.testing.assert_allclose(reversed_normal, -normal, atol=1e-13)
+
+    def test_the_facet_normal_of_a_tilted_face_is_exact(self):
+        """A face tilted by 45 degrees about the x axis: the normal is known in closed form, and an
+        error in it tilts every projection the overlap is computed in."""
+
+        s = np.sqrt(0.5)
+        face = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, s, s], [0.0, s, s]])
+
+        normal = facet_normal(face)
+        expected = np.array([0.0, -s, s])
+        np.testing.assert_allclose(np.abs(normal), np.abs(expected), atol=1e-13)
+
+
+class _TwoBlockModel:
+    """A pair of flat, non-matching contact surfaces facing each other across a gap.
+
+    Built from two single hexahedra rather than from a mesh generator: the point of these tests is
+    the constraint, and a model small enough to write the expected coupling matrices down by hand is
+    worth more here than a realistic one.
+    """
+
+    @staticmethod
+    def build(
+        gap: float = 0.0, elementType: str = "C3D8", masterShift: float = 0.0, flipNonMortar: bool = False
+    ) -> FEModel:
+        from edelweissfe.elements.displacementelement.element import DisplacementElement
+
+        model = FEModel(3)
+        journal = Journal(verbose=False)
+
+        def cube(originX, originY, originZ, size, firstLabel):
+            corners = [
+                np.array([originX, originY, originZ]),
+                np.array([originX, originY, originZ + size]),
+                np.array([originX + size, originY, originZ + size]),
+                np.array([originX + size, originY, originZ]),
+                np.array([originX, originY + size, originZ]),
+                np.array([originX, originY + size, originZ + size]),
+                np.array([originX + size, originY + size, originZ + size]),
+                np.array([originX + size, originY + size, originZ]),
+            ]
+            nodes = [Node(firstLabel + i, x) for i, x in enumerate(corners)]
+            for node in nodes:
+                model.nodes[node.label] = node
+            return nodes
+
+        lowerNodes = cube(0.0, 0.0, 0.0, 1.0, 1)
+        upperNodes = cube(masterShift, 1.0 + gap, 0.0, 1.0, 101)
+
+        with model.topologyChanges():
+            for nodes, name in ((lowerNodes, "lower"), (upperNodes, "upper")):
+                (elNumber,) = model.reserveElementNumbers(1)
+                element = DisplacementElement(elementType, elNumber)
+                element.setNodes(nodes)
+                model.createElement(element)
+                if name == "lower":
+                    # Face 2 is the lower block's top, which faces the upper block. Face 1 is
+                    # its bottom, on the far side of the body -- the stand-in for a surface
+                    # that was declared inside out.
+                    faceNumber = 1 if flipNonMortar else 2
+                else:
+                    faceNumber = 1
+                model.surfaces[name] = {faceNumber: ElementSet(name, [element])}
+
+            buildContactFacets(model, "lower", "nonMortar", "corner", "facetConsistent", journal, facets="wholeFace")
+            buildContactFacets(model, "upper", "mortar", "corner", "facetConsistent", journal, facets="wholeFace")
+
+        model.nodeSets["all"] = __import__(
+            "edelweissfe.sets.nodeset", fromlist=["NodeSet"]
+        ).NodeSet("all", list(model.nodes.values()))
+        return model
+
+    @staticmethod
+    def constraint(model: FEModel, **options) -> MortarContact:
+        journal = Journal(verbose=False)
+        # cn belongs to the multiplier branch; handing it to the penalty branch is refused as a
+        # contradiction, so the helper only supplies it where it means something.
+        settings = dict(nonMortarSurface="nonMortar_facets", mortarSurface="mortar_facets")
+        if options.get("formulation", "lagrange") == "lagrange":
+            settings["cn"] = 1000.0
+        settings.update(options)
+        return MortarContact("contact", model, journal, **settings)
+
+
+class TestConstraintSetup(unittest.TestCase):
+    def test_the_surfaces_are_read_from_element_sets(self):
+        """The two sides are named by element set, like every other contact constraint in this
+        code base, and the elements in them have to be contact elements."""
+
+        model = _TwoBlockModel.build()
+        constraint = _TwoBlockModel.constraint(model)
+
+        self.assertEqual(len(constraint.non_mortar_facets), 1)
+        self.assertEqual(len(constraint.mortar_facets), 1)
+        self.assertEqual(constraint.non_mortar_facets[0].elType, "CONQUAD4")
+        self.assertEqual(len(constraint.non_mortar_nodes), 4)
+
+    def test_a_missing_element_set_is_named_in_the_error(self):
+        model = _TwoBlockModel.build()
+        with self.assertRaises(KeyError) as ctx:
+            _TwoBlockModel.constraint(model, nonMortarSurface="doesNotExist")
+        self.assertIn("doesNotExist", str(ctx.exception))
+
+    def test_a_set_of_solid_elements_is_refused(self):
+        """Not ignored: the nodes of a solid element would enter the coupling matrices as if they
+        lay on the interface, and the resulting system would be quietly wrong rather than broken."""
+
+        model = _TwoBlockModel.build()
+        model.elementSets["solids"] = ElementSet("solids", list(model.elements.values())[:1])
+
+        with self.assertRaises(ValueError) as ctx:
+            _TwoBlockModel.constraint(model, nonMortarSurface="solids")
+        self.assertIn("CON", str(ctx.exception))
+
+    def test_a_surface_facing_away_from_its_partner_is_reported(self):
+        """A non-mortar surface on the far side of its own body still passes the winding check --
+        every facet of it is wound consistently -- and would silently bond the two bodies together
+        instead of keeping them apart. Only its position relative to the other surface gives it
+        away."""
+
+        model = _TwoBlockModel.build(flipNonMortar=True)
+        with self.assertWarns(RuntimeWarning) as ctx:
+            _TwoBlockModel.constraint(model)
+        self.assertIn("points AWAY", str(ctx.warning))
+
+    def test_an_initial_overlap_is_not_reported_as_facing_away(self):
+        """The counterpart, and the reason the check carries a margin rather than a bare sign test:
+        starting the two surfaces slightly inside each other is an ordinary way to set a contact
+        problem up, and puts the mortar centroid marginally behind the non-mortar one without
+        anything being wrong."""
+
+        model = _TwoBlockModel.build(gap=-0.01, masterShift=0.2)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _TwoBlockModel.constraint(model)
+        facingAway = [w for w in caught if "points AWAY" in str(w.message)]
+        self.assertEqual(facingAway, [], "an initial overlap was mistaken for an inverted surface")
+
+    def test_sharing_a_node_between_the_two_surfaces_is_refused(self):
+        """Two surfaces that share a node make the system singular rather than merely odd: for
+        coinciding faces the two coupling matrices are equal, the weighted gap vanishes identically
+        for every configuration, and the multiplier row cancels out the moment the node goes
+        active. Without the check the user sees an unintelligible linear solver failure."""
+
+        model = _TwoBlockModel.build()
+        with self.assertRaises(Exception) as ctx:
+            _TwoBlockModel.constraint(model, mortarSurface="nonMortar_facets")
+        self.assertTrue(len(str(ctx.exception)) > 0)
+
+
+class TestCouplingMatrices(unittest.TestCase):
+    """The two coupling matrices, assembled from the overlaps.
+
+    D couples the multiplier of a non-mortar node to the non-mortar displacements, C to the mortar
+    ones. What makes them a consistent pair is a single identity: each row of D sums to the same
+    value as the corresponding row of C. That is what lets a rigid translation of both bodies
+    produce no gap, and it holds regardless of how the two meshes are related.
+    """
+
+    @staticmethod
+    def _assembled(model: FEModel) -> MortarContact:
+        """The constraint with its geometry evaluated once, at the undeformed configuration.
+
+        The coupling matrices are built inside applyConstraint rather than at construction, because
+        they depend on the current configuration; assembling once here is what gives the test
+        something to look at.
+        """
+
+        constraint = _TwoBlockModel.constraint(model)
+        nDof = constraint.nDof
+        constraint.applyConstraint(
+            np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), np.zeros((nDof, nDof)), _frozenTimeStep()
+        )
+        return constraint
+
+    def test_the_row_sums_of_the_two_coupling_matrices_agree(self):
+        """The partition-of-unity identity, on a non-matching and laterally shifted interface where
+        no two faces coincide."""
+
+        model = _TwoBlockModel.build(masterShift=0.3)
+        constraint = self._assembled(model)
+
+        D = np.asarray(constraint.current_D.todense())
+        C = np.asarray(constraint.current_C.todense())
+
+        active = np.abs(D).sum(axis=1) > 1e-14
+        self.assertTrue(active.any(), "no node was coupled at all -- test is vacuous")
+        np.testing.assert_allclose(D[active].sum(axis=1), C[active].sum(axis=1), atol=1e-12)
+
+    def test_the_nodal_weights_sum_to_the_overlap_area(self):
+        """Summed over the non-mortar nodes, the diagonal of D is the area the two surfaces actually
+        share -- here the full unit face, since the mortar face covers it exactly."""
+
+        model = _TwoBlockModel.build()
+        constraint = self._assembled(model)
+
+        D = np.asarray(constraint.current_D.todense())
+        self.assertAlmostEqual(float(np.trace(D)), 1.0, places=11)
+
+    def test_a_laterally_shifted_master_reduces_the_shared_area(self):
+        """Shifting the mortar face by 0.3 leaves 0.7 of the non-mortar face covered, and the nodal
+        weights have to follow that rather than the face's own area."""
+
+        model = _TwoBlockModel.build(masterShift=0.3)
+        constraint = self._assembled(model)
+
+        D = np.asarray(constraint.current_D.todense())
+        self.assertAlmostEqual(float(np.trace(D)), 0.7, places=11)
+
+
+class TestPenaltyActivation(unittest.TestCase):
+    """The penalty branch manufactures its contact pressure out of the weighted gap, which makes it
+    sensitive to a kind of noise the multiplier branch is immune to.
+
+    There the pressure is an unknown of the system, and a node that touches nothing solves to zero.
+    Here it is kappa times the gap, so on a load-free interface -- where the two surfaces coincide
+    and the weighted gap is the rounding of the coordinate arithmetic that produced it -- a stiffness
+    of 1e6 turns 5e-16 of nothing into a pressure of 5e-10. Read against a bare `> 0` that is
+    contact, and everything downstream follows: nodes flicker in and out of the active set between
+    augmentations, and the outer loop measures one rounding error against another until it exhausts
+    its iteration cap and reports a failure to converge on an interface that carries no load at all.
+    """
+
+    @staticmethod
+    def _penaltyConstraint(model: FEModel) -> MortarContact:
+        return _TwoBlockModel.constraint(
+            model, formulation="penalty", penaltyStiffness=1e6, augmentedLagrange=True
+        )
+
+    @staticmethod
+    def _assembleOnce(constraint: MortarContact) -> None:
+        nDof = constraint.nDof
+        constraint.applyConstraint(
+            np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), np.zeros((nDof, nDof)), _frozenTimeStep()
+        )
+
+    def test_a_load_free_interface_activates_no_node(self):
+        """Two surfaces exactly in contact but carrying no load. Their weighted gap is round-off,
+        and round-off is not a gap."""
+
+        model = _TwoBlockModel.build(gap=0.0)
+        constraint = self._penaltyConstraint(model)
+        self._assembleOnce(constraint)
+
+        self.assertGreater(constraint.current_gap_tol, 0.0)
+        self.assertLess(
+            float(np.max(np.abs(constraint.current_g_weak))),
+            constraint.current_gap_tol,
+            "the fixture does not actually produce a round-off gap -- test is vacuous",
+        )
+        self.assertEqual(int(np.sum(constraint.active_set)), 0)
+
+    def test_the_outer_loop_stops_at_once_when_there_is_nothing_to_correct(self):
+        """And therefore does not spend its iteration cap, nor report a failure to converge, on an
+        interface that carries no pressure."""
+
+        model = _TwoBlockModel.build(gap=0.0)
+        constraint = self._penaltyConstraint(model)
+        self._assembleOnce(constraint)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            for _ in range(constraint.max_augmentations + 1):
+                if not constraint.augmentConstraint():
+                    break
+
+        self.assertEqual(constraint._augmentation_counter, 1, "the loop iterated on an idle interface")
+        self.assertEqual([w for w in caught if "augmented Lagrangian hit its cap" in str(w.message)], [])
+
+    def test_a_loaded_interface_still_activates_and_still_augments(self):
+        """The counterpart, so the floor above cannot be raised until it silences real contact:
+        with the two bodies pressed into each other, every node is active and the loop asks for a
+        second round."""
+
+        model = _TwoBlockModel.build(gap=-0.01)
+        constraint = self._penaltyConstraint(model)
+        self._assembleOnce(constraint)
+
+        self.assertEqual(int(np.sum(constraint.active_set)), len(constraint.non_mortar_nodes))
+        self.assertGreater(
+            float(np.max(np.abs(constraint.current_g_weak))),
+            1e3 * constraint.current_gap_tol,
+            "a genuine gap has to sit orders of magnitude above the noise floor",
+        )
+        self.assertTrue(constraint.augmentConstraint())
+        self.assertGreater(float(np.max(constraint.z_aug)), 0.0)
+
+
+class TestConsistentTangent(unittest.TestCase):
+    def test_the_tangent_differentiates_the_residual_it_assembles(self):
+        """Central differences of the assembled contact forces against the assembled tangent, with
+        the active set and the geometry held fixed.
+
+        Both freezes are necessary and neither weakens the test. Differentiating across a change of
+        the active set differentiates the kink of a max function, where no tangent exists; and the
+        geometry is deliberately evaluated once per increment rather than per iteration, so the
+        residual this tangent belongs to is the one with frozen geometry. What is checked is that
+        the tangent is consistent with the residual the solver actually sees -- which is what
+        governs how the Newton iteration converges.
+        """
+
+        model = _TwoBlockModel.build(gap=-0.01, masterShift=0.2)
+        constraint = _TwoBlockModel.constraint(model)
+
+        nDof = constraint.nDof
+        U = np.zeros(nDof)
+        dU = np.zeros(nDof)
+
+        timeStep = _frozenTimeStep()
+        constraint.use_active_set = False
+
+        P0 = np.zeros(nDof)
+        K0 = np.zeros((nDof, nDof))
+        constraint.applyConstraint(U, dU, P0, K0, timeStep)
+
+        h = 1e-7
+        numeric = np.zeros((nDof, nDof))
+        for j in range(nDof):
+            plus, minus = np.zeros(nDof), np.zeros(nDof)
+            step = np.zeros(nDof)
+            step[j] = h
+
+            constraint.applyConstraint(U + step, dU, plus, np.zeros((nDof, nDof)), timeStep)
+            constraint.applyConstraint(U - step, dU, minus, np.zeros((nDof, nDof)), timeStep)
+            numeric[:, j] = -(plus - minus) / (2.0 * h)
+
+        scale = float(np.max(np.abs(K0)))
+        self.assertGreater(scale, 0.0, "the constraint assembled a zero tangent -- test is vacuous")
+        np.testing.assert_allclose(K0 / scale, numeric / scale, atol=5e-6)
+
+
+def _frozenTimeStep():
+    """One time step object, reused for every evaluation of the tangent test.
+
+    The constraint recomputes its geometry when it sees a new increment, and identifies an increment
+    by number, size and end time. Handing out a fresh step per evaluation would therefore recompute
+    the geometry under the perturbation and compare the tangent against a residual it never
+    assembled.
+    """
+
+    from edelweissfe.timesteppers.timestep import TimeStep
+
+    return TimeStep(
+        number=1,
+        stepProgressIncrement=1.0,
+        stepProgress=1.0,
+        timeIncrement=1.0,
+        stepTime=1.0,
+        totalTime=1.0,
+    )
+
+
+if __name__ == "__main__":
+    unittest.main()
