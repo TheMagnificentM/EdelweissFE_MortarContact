@@ -1,0 +1,87 @@
+** A flat-ended punch on a wider block: the contact surface ends while still under full pressure.
+**
+** This is the configuration in which the choice of sides stops being a matter of taste. A block
+** half as wide is pressed onto a wider one, so the contact surface has a geometric edge -- it stops
+** where the punch stops, with the pressure still at full value there rather than tapering to zero
+** as it would between curved bodies. Anchor heads, bolt heads and bearing plates all end this way.
+**
+** The SMALLER of the two surfaces is the non-mortar side here, and that is the whole point of the
+** deck. Every one of its facets is then fully covered, which the measurements confirm: coverage is
+** exactly 1.000 at all 16 of its nodes, all of them are in contact, and the multipliers run from
+** 9.33 in the interior to 23.01 at the rim -- the pressure concentration a flat punch has there, and
+** a genuine feature of the solution rather than an artefact.
+**
+** With the sides the other way round the large surface becomes the non-mortar one, and its facets
+** beyond the punch are not covered at all. Under load the surface kinks at the rim, those facets
+** tilt, and the projection of the punch leaks a sliver onto them: nodes with nothing above them
+** acquire a coverage of order 1e-05 and are constrained like any other, because coverage sets how
+** the contact force is distributed and never whether a node is tied. Measured on this same model,
+** that misplaces 7 % of the transmitted force onto nodes outside the punch, and the share GROWS
+** under refinement -- 14 % at twice the resolution, 21 % at eight times. The constraint itself is
+** satisfied exactly throughout; what is wrong is where the force ends up.
+**
+** So this deck records the rule by following it, and the theory documentation records what happens
+** when it cannot be followed. Both branches are reached only by the Lagrange formulation: under
+** penalty the pressure is proportional to the penetration, so a sliver carries a sliver's force,
+** and the same model misplaces 3e-09 instead of 7 %.
+**
+** The lateral constraint fixes the two symmetry planes x = 0 and z = 0 only, so the measured
+** lateral displacements are a result rather than a boundary condition read back.
+**
+** The reference solution covers both the nodal displacements and, since the multipliers of
+** formulation=lagrange are scalar variables of the global system, the nodal contact pressures.
+
+*material, name=LinearElastic, id=mat, provider=edelweiss
+1000.0, 0.0
+
+*modelGenerator, generator=boxGen, name=lower
+x0=0, y0=0, z0=0
+lX=1.0, lY=1.0, lZ=1.0
+nX=4, nY=1, nZ=2
+elType=C3D8
+elProvider=edelweiss
+
+*modelGenerator, generator=boxGen, name=upper
+x0=0, y0=1.0, z0=0
+lX=0.5, lY=1.0, lZ=1.0
+nX=3, nY=1, nZ=3
+elType=C3D8
+elProvider=edelweiss
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen1
+surface = lower_top
+name    = nonMortarSurf
+facets  = wholeFace
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen2
+surface = upper_bottom
+name    = mortarSurf
+facets  = wholeFace
+
+*section, name=secLower, material=mat, type=solid
+lower_all
+*section, name=secUpper, material=mat, type=solid
+upper_all
+
+*constraint, name=contact, type=mortarcontact
+nonMortarSurface=mortarSurf_facets
+mortarSurface=nonMortarSurf_facets
+field=displacement
+cn=1000.0
+
+*job, name=mortarPunchEdge, domain=3d
+*solver, name=theSolver, solver=NIST
+
+*fieldOutput
+>>perNode, elSet=lower_all, field=displacement, result=U, name=dispLower
+>>perNode, elSet=upper_all, field=displacement, result=U, name=dispUpper
+
+** step: press the punch onto the wider block
+*step, solver=theSolver
+maxInc=0.5, minInc=1e-4, maxNumInc=100, maxIter=25, stepLength=1
+>>dirichlet, name=fixBottom, nSet=lower_bottom, field=displacement, 2=0.0
+>>dirichlet, name=pushTop,   nSet=upper_top,    field=displacement, 2=-0.02
+>>dirichlet, name=symmX_l, nSet=lower_left, field=displacement, 1=0.0
+>>dirichlet, name=symmX_u, nSet=upper_left, field=displacement, 1=0.0
+>>dirichlet, name=symmZ_l, nSet=lower_back, field=displacement, 3=0.0
+>>dirichlet, name=symmZ_u, nSet=upper_back, field=displacement, 3=0.0

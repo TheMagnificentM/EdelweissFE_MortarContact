@@ -1,54 +1,41 @@
 ** Mortar contact across a partially covered non-mortar surface.
 **
 ** Every other deck in this suite has the two surfaces cover each other completely, so every
-** non-mortar node has material opposite it. Here the mortar block spans 0.625 of the width of the
-** non-mortar one, ending in the middle of a non-mortar face rather than at its edge, which splits
-** the non-mortar nodes into three populations the formulation has to keep apart:
+** non-mortar node has material opposite it over the whole of its own facets. Here the mortar block
+** spans 0.625 of the width of the non-mortar one, ending in the middle of a non-mortar face rather
+** than at its edge, which splits the non-mortar nodes into three populations the formulation has to
+** keep apart: covered and closed, partially covered, and not covered at all.
 **
-**   covered and closed    material opposite, pressed against it: the constraint enforces a
-**                         vanishing weighted gap and the pressure comes out positive
-**   covered and open      material opposite, but not touching: the constraint enforces a vanishing
-**                         multiplier instead, and the gap comes out positive
-**   uncovered             nothing opposite at all. The weighted gap and the nodal mortar weight
-**                         are both zero, so neither a pressure nor an opening is defined there.
-**                         Such a node must end up with a multiplier of exactly zero; anything else
-**                         is a division by a vanishing weight that has produced a number.
+** Measured at the end of step 2, by position across the interface:
 **
-** Measured nodal weights and multipliers at the end of step 1, by position across the interface:
+**     x     coverage   nodal weight   multiplier   their product
+**   0.00      1.000       0.0625         9.782         0.611
+**   0.25      1.000       0.1250        10.170         1.271
+**   0.50      0.875       0.1250         9.406         1.176
+**   0.75      0.250       0.0625         8.639         0.540
+**   1.00      0.000       0.0000         0.000         0.000
 **
-**     x      nodal weight        multiplier      their product
-**   0.00      3.1e-02 / 6.2e-02      9.80         0.31 / 0.61
-**   0.25      6.2e-02 / 1.2e-01     10.17         0.63 / 1.27
-**   0.50      5.5e-02 / 1.1e-01     10.68         0.59 / 1.17     fully covered up to here
-**   0.75      7.9e-03 / 1.6e-02     34.64         0.28 / 0.55     partially covered face
-**   1.00      0.0                    0.00         0.0             uncovered
+** Two things are worth reading off that table. The multipliers stay ordinary pressures -- 8.6 to
+** 10.2 -- across full, partial and vanishing coverage, which is what the weighting of the boundary
+** rows buys: without it the partially covered node reads 34.6, and the more thinly a node is
+** covered the further its multiplier departs from the pressure it is supposed to represent. And the
+** nodal weight is NOT the covered area; it is the area of the node's facets, covered or not. What
+** is covered is reported separately, as the coverage column.
 **
-** The x = 0.75 row is the instructive one. Its weight is a real fraction of a face rather than a
-** rounding remnant, so the node is well posed -- but the multiplier is no longer a pressure there,
-** because a pressure would be the force divided by the tributary area and that area is now a
-** fraction of what the node's faces suggest. Only the product, the nodal force, stays comparable
-** across the row. The uncovered node at x = 1.0 gets a weight of exactly zero and therefore a
-** multiplier of exactly zero.
+** The node at x = 1.00 has no material opposite it at any point of its facets. Its weight and its
+** multiplier are exactly zero, not merely small.
 **
-** The mortar block ends inside a face rather than on a face boundary on purpose. Ending it on a
-** boundary makes the neighbouring, entirely uncovered face touch the mortar surface along a line;
-** clipping then returns a sliver of near-zero area instead of nothing, and that node ends up with a
-** tiny weight and a multiplier of order 1e5 whose last digits differ between nodes that symmetry
-** says are identical -- a value no reference solution can pin down. That configuration is a known
-** open point of the formulation and is deliberately not what this deck measures.
-**
-** Step 1 presses the mortar block down and populates the closed, the partially covered and the
-** uncovered class. Step 2 lifts it clear again, so the covered nodes move into the open class while
-** still having material opposite them -- covered and open, which is not the same state as
-** uncovered and is reached by no other deck here.
+** This deck deliberately puts the LARGER surface on the non-mortar side. That is the unfavourable
+** choice -- with the smaller one there, every non-mortar facet would be fully covered and none of
+** the above would arise -- and it is made here precisely because partial coverage is what this deck
+** is for. See the theory documentation on the choice of sides.
 **
 ** Step values are INCREMENTS over the step, not absolute positions, and every boundary condition is
 ** restated in every step -- one left out would not hold its value, it would free that degree of
-** freedom for the rest of the run.
-**
-** Measured at the end of step 2 (mortar block lifted 0.01 clear of its initial position):
-**   every multiplier                      exactly 0
-**   max|u_y| in the non-mortar block      ~ 9e-19, i.e. it is left behind at rest
+** freedom for the rest of the run. Step 1 lifts the mortar block clear, so that every node passes
+** through the open state; step 2 presses it down, and that loaded state is the one the reference
+** solution holds. The order matters: with the lift last, the reference would consist of zeros and
+** would check nothing that this deck claims to measure.
 **
 ** The reference solution covers both the nodal displacements and, since the multipliers of
 ** formulation=lagrange are scalar variables of the global system, the nodal contact pressures.
@@ -98,21 +85,21 @@ cn=1000.0
 >>perNode, elSet=lower_all, field=displacement, result=U, name=dispLower
 >>perNode, elSet=upper_all, field=displacement, result=U, name=dispUpper
 
-** step 1: press the half-width mortar block onto the full-width non-mortar surface
+** step 1: lift the mortar block clear -- every node open, including the covered ones
 *step, solver=theSolver
 maxInc=0.5, minInc=1e-4, maxNumInc=100, maxIter=25, stepLength=1
 >>dirichlet, name=fixBottom, nSet=lower_bottom, field=displacement, 2=0.0
->>dirichlet, name=pushTop,   nSet=upper_top,    field=displacement, 2=-0.02
+>>dirichlet, name=pushTop,   nSet=upper_top,    field=displacement, 2=0.03
 >>dirichlet, name=symmX_l, nSet=lower_left, field=displacement, 1=0.0
 >>dirichlet, name=symmX_u, nSet=upper_left, field=displacement, 1=0.0
 >>dirichlet, name=symmZ_l, nSet=lower_back, field=displacement, 3=0.0
 >>dirichlet, name=symmZ_u, nSet=upper_back, field=displacement, 3=0.0
 
-** step 2: lift it clear -- the covered nodes become open while staying covered
+** step 2: press it down onto the wider surface -- the state the reference solution holds
 *step, solver=theSolver
 maxInc=0.5, minInc=1e-4, maxNumInc=100, maxIter=25, stepLength=1
 >>dirichlet, name=fixBottom, nSet=lower_bottom, field=displacement, 2=0.0
->>dirichlet, name=pushTop,   nSet=upper_top,    field=displacement, 2=0.03
+>>dirichlet, name=pushTop,   nSet=upper_top,    field=displacement, 2=-0.05
 >>dirichlet, name=symmX_l, nSet=lower_left, field=displacement, 1=0.0
 >>dirichlet, name=symmX_u, nSet=upper_left, field=displacement, 1=0.0
 >>dirichlet, name=symmZ_l, nSet=lower_back, field=displacement, 3=0.0
