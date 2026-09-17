@@ -37,10 +37,17 @@ The pieces, in the order the constraint uses them:
 
 * the geometry of one overlap -- clipping two faces against each other and triangulating the result
 * the nodal normals the overlap is projected along
-* the coupling matrices those overlaps assemble into, and the row-sum identity that makes them a
-  partition of the non-mortar surface
-* the active-set indicator, which is the only non-smooth step in the formulation
+* the coupling matrices those overlaps assemble into, the row-sum identity that makes them a
+  partition of the non-mortar surface, and the weighting that keeps a boundary row's multiplier a
+  pressure rather than a ratio of a force to a vanishing area
+* the noise floor below which the penalty branch must not read a gap as contact
 * the tangent, against finite differences of the residual it claims to differentiate
+
+NOT covered here, and worth naming so the list above is not read as a complete one: the semi-smooth
+active-set indicator of the multiplier branch -- its re-decision in every Newton iteration, the
+freeze once it has settled, and the anti-cycling that stops a state from recurring. Those are
+exercised end to end by the regression decks, which walk a model through closing, separating and
+closing again, but nothing tests them as a building block.
 """
 
 import unittest
@@ -375,25 +382,61 @@ class TestCouplingMatrices(unittest.TestCase):
         self.assertTrue(active.any(), "no node was coupled at all -- test is vacuous")
         np.testing.assert_allclose(D[active].sum(axis=1), C[active].sum(axis=1), atol=1e-12)
 
-    def test_the_nodal_weights_sum_to_the_overlap_area(self):
-        """Summed over the non-mortar nodes, the diagonal of D is the area the two surfaces actually
-        share -- here the full unit face, since the mortar face covers it exactly."""
+    def test_the_nodal_weights_are_the_area_of_the_facets_not_of_the_overlap(self):
+        """The weights are deliberately NOT the shared area.
+
+        Rows belonging to a partly covered facet are rescaled so that their weight is the integral
+        over the whole facet again, which is what keeps the multiplier a pressure of ordinary
+        magnitude there instead of the ratio of a finite force to a vanishing area. Shifting the
+        mortar face by 0.3 therefore leaves the trace at the full unit face rather than reducing it
+        to 0.7 -- while the coverage, which the next test looks at, does drop to 0.7.
+
+        This is the property to watch if the rescaling is ever removed: the constraint itself is
+        unchanged by it -- both coupling matrices carry the same factor, so the weighted gap and the
+        solution are the same -- but every reading of a nodal weight as an area depends on it.
+        """
+
+        for shift in (0.0, 0.3):
+            model = _TwoBlockModel.build(masterShift=shift)
+            constraint = self._assembled(model)
+
+            D = np.asarray(constraint.current_D.todense())
+            self.assertAlmostEqual(float(np.trace(D)), 1.0, places=11, msg=f"shift {shift}")
+
+    def test_the_coverage_reports_the_shared_area(self):
+        """What the weights no longer say, the coverage does: the fraction of a node's own facet
+        area that the other surface opposes. One where the two faces coincide, 0.7 where the mortar
+        face is shifted by 0.3 out of a unit face, and zero for a node with nothing opposite it."""
+
+        model = _TwoBlockModel.build()
+        constraint = self._assembled(model)
+        np.testing.assert_allclose(constraint.current_coverage, 1.0, atol=1e-11)
+
+        model = _TwoBlockModel.build(masterShift=0.3)
+        constraint = self._assembled(model)
+        coverage = constraint.current_coverage
+        weights = np.asarray(constraint.current_D_rowsum)
+
+        # Area-weighted mean over the nodes, which is the covered fraction of the whole face.
+        self.assertAlmostEqual(float(coverage @ weights / weights.sum()), 0.7, places=11)
+        self.assertTrue(np.all(coverage <= 1.0 + 1e-12))
+        self.assertLess(float(coverage.min()), 1.0, "nothing is partially covered -- test is vacuous")
+
+    def test_the_rescaling_is_the_identity_where_the_facet_is_fully_covered(self):
+        """The reason no case distinction is needed: on a fully covered facet the covered and the
+        whole integral coincide, so the factor is exactly one and an inner facet passes through the
+        same expression as a boundary facet, untouched."""
 
         model = _TwoBlockModel.build()
         constraint = self._assembled(model)
 
-        D = np.asarray(constraint.current_D.todense())
-        self.assertAlmostEqual(float(np.trace(D)), 1.0, places=11)
+        facet = constraint.non_mortar_facets[0]
+        coordinates = np.array([node.coordinates for node in facet.nodes])
+        fullFacetWeights = np.diag(facet.computeLocalMassMatrices(coordinates)[1])
+        weights = np.asarray(constraint.current_D_rowsum)
 
-    def test_a_laterally_shifted_master_reduces_the_shared_area(self):
-        """Shifting the mortar face by 0.3 leaves 0.7 of the non-mortar face covered, and the nodal
-        weights have to follow that rather than the face's own area."""
-
-        model = _TwoBlockModel.build(masterShift=0.3)
-        constraint = self._assembled(model)
-
-        D = np.asarray(constraint.current_D.todense())
-        self.assertAlmostEqual(float(np.trace(D)), 0.7, places=11)
+        indices = [constraint.slave_node_to_idx[node] for node in facet.nodes]
+        np.testing.assert_allclose(weights[indices], fullFacetWeights, rtol=1e-11)
 
 
 class TestPenaltyActivation(unittest.TestCase):
@@ -491,8 +534,17 @@ class TestConsistentTangent(unittest.TestCase):
         nDof = constraint.nDof
         U = np.zeros(nDof)
         dU = np.zeros(nDof)
-
         timeStep = _frozenTimeStep()
+
+        # One assembly WITH the active set live, so that the constraint decides which nodes are in
+        # contact on the penetrating configuration, and only then freeze it. Freezing straight away
+        # would leave the set empty: it starts empty, and the only thing assembled for an inactive
+        # node is the unit entry that keeps its multiplier row non-singular. Differentiating that
+        # reproduces it exactly, so the comparison would pass while testing nothing -- which is what
+        # this test did before, and why the check below counts active nodes rather than merely
+        # asking whether the tangent is non-zero.
+        constraint.applyConstraint(U, dU, np.zeros(nDof), np.zeros((nDof, nDof)), timeStep)
+        self.assertGreater(int(np.sum(constraint.active_set)), 0, "no node is in contact -- test is vacuous")
         constraint.use_active_set = False
 
         P0 = np.zeros(nDof)
@@ -511,7 +563,7 @@ class TestConsistentTangent(unittest.TestCase):
             numeric[:, j] = -(plus - minus) / (2.0 * h)
 
         scale = float(np.max(np.abs(K0)))
-        self.assertGreater(scale, 0.0, "the constraint assembled a zero tangent -- test is vacuous")
+        self.assertGreater(scale, 0.0)
         np.testing.assert_allclose(K0 / scale, numeric / scale, atol=5e-6)
 
 

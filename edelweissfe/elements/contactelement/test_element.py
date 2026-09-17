@@ -280,6 +280,27 @@ class TestDualBasis(unittest.TestCase):
             self.assertTrue(np.all(diagonal > 0.0), f"{elementType}: non-positive nodal weights {diagonal}")
             self.assertAlmostEqual(float(np.sum(diagonal)), float(np.trace(D_e)), places=12, msg=elementType)
 
+    def test_the_transformed_corner_weights_are_their_closed_form(self):
+        """The corner weight after the basis transformation, against its exact value.
+
+        Pinned as fractions rather than as "positive": the previous test establishes that the
+        transformation is what makes them positive at all, and this one that it moves them by the
+        right amount. The transformation is column-stochastic, so a corner gains exactly what the
+        two mid-side functions adjacent to it give up, and the totals per element are unchanged --
+        which is why a constant is still represented exactly afterwards.
+        """
+
+        expected = {"CONQUAD8": 5.0 / 36.0, "CONTRI6": 2.0 / 9.0, "CONLINE3": 7.0 / 18.0}
+
+        for elementType, fraction in expected.items():
+            element, coordinates = _element(elementType)
+            _M_e, D_e, _A_e = element.computeLocalMassMatrices(coordinates)
+
+            points, weights = element.getQuadraturePoints()
+            measure = sum(element.getJacobianAndAreaWeight(xi, coordinates) * w for xi, w in zip(points, weights))
+
+            self.assertAlmostEqual(float(np.diag(D_e)[0]) / measure, fraction, places=12, msg=elementType)
+
     def test_the_untransformed_serendipity_corner_weight_really_is_non_positive(self):
         """The reason the transformation exists, measured rather than asserted.
 

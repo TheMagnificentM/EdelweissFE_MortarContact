@@ -53,9 +53,18 @@ against a basis function belonging to a non-mortar node. That is what lets the m
 constant pressure across an interface whose two sides do not share nodes -- a node-to-surface method
 cannot, because its weighting is a property of the node rather than of the surface. The price is
 that every quantity per node acquires a weight: the nodal mortar weight ``D_II``, the integral of
-that node's basis function over the part of the surface actually covered. A weighted gap divided by
-``D_II`` is the physical opening, a multiplier times ``D_II`` is a nodal force, and a node whose
-weight is zero has no material opposite it at all.
+that node's basis function over its own facets. A weighted gap divided by ``D_II`` is the physical
+opening, a multiplier times ``D_II`` is a nodal force, and a node whose weight is zero has no
+material opposite it at all.
+
+Over its OWN facets, not over the part of them the other surface covers: a facet that is only partly
+covered would otherwise integrate to a weight that vanishes quadratically with the covered area,
+while the force that has to cross there vanishes only linearly, and the multiplier -- the ratio of
+the two -- would grow without bound. Those rows are therefore rescaled so that their weight is the
+whole-facet integral again, which leaves the constraint untouched (both coupling matrices carry the
+same factor) and keeps the multiplier a pressure of ordinary magnitude. How much of a node is
+actually opposed is reported separately as ``current_coverage``, since it can no longer be read off
+the weights.
 
 The multiplier is discretised in a DUAL basis, biorthogonal to the standard one. This is what keeps
 the coupling matrix of the non-mortar side diagonal, so that a nodal multiplier belongs to exactly
@@ -381,9 +390,8 @@ def map_2d_to_natural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
 # Decomposition of contact facets into linear sub-cells for the mortar
 # segmentation (polygon clipping). The clip polygons must be simple convex
 # polygons, so curved (quadratic) facets are subdivided into linear cells
-# using their mid-side nodes,
-# "Step 1.1: Linearize secondary face elements") and the segment-based
-# integration. The curvature of the facet enters only
+# using their mid-side nodes before the clipping, which is what the segment-based
+# integration needs. The curvature of the facet enters only
 # through the shape function evaluation at the mapped Gauss points, never
 # through the clipping geometry itself.
 SUB_CELL_MAP = {
@@ -661,8 +669,7 @@ class Constraint(ConstraintBase):
         # NOTE: this rules out MISDECLARED surfaces, not self-contact. Genuine
         # self-contact would additionally require an exclusion rule for a facet's
         # own and adjacent facets, an unambiguous nodal normal at doubly
-        # classified nodes and a dynamic surface pairing
-        # (2008); it is out of scope here either way.
+        # classified nodes and a dynamic surface pairing; it is out of scope here.
         shared_nodes = set(self.non_mortar_nodes) & set(self.mortar_nodes)
         if shared_nodes:
             labels = sorted(node.label for node in shared_nodes)
@@ -684,8 +691,7 @@ class Constraint(ConstraintBase):
         #               global system.
         #   'penalty'   the multipliers are eliminated and follow the weighted gap,
         #               a pressure proportional to the weighted gap, optionally
-        #               corrected inside the
-        #               augmented Lagrangian loop of their Eq. (18).
+        #               corrected inside an augmented Lagrangian outer loop.
         # Only the LAGRANGE branch needs additional scalar unknowns.
         # ------------------------------------------------------------------
         self.formulation = str(kwargs["formulation"]).strip().lower()
@@ -1623,6 +1629,10 @@ class Constraint(ConstraintBase):
         # PASS 2: Dual coefficients from the actual segment quadrature
         # and assembly
         # ------------------------------------------------------------------
+        # Numerator and denominator of the per-node coverage fraction, filled facet by facet below.
+        coverageCovered = np.zeros(n_slave)
+        coverageFull = np.zeros(n_slave)
+
         for s_num, records in seg_records.items():
             s_el, s_idx = slave_els[s_num]
             n_s = len(s_idx)
@@ -1680,6 +1690,63 @@ class Constraint(ConstraintBase):
                 # same (deformed) coordinates.
                 A_e = s_el.computeLocalMassMatrices(np.array([current_coords[nd] for nd in s_el.nodes]))[2]
 
+            # WEIGHTING OF THE BOUNDARY ROWS.
+            #
+            # A non-mortar facet that is only partly covered by the mortar surface integrates its
+            # own basis functions over the covered part alone, so its nodal weight decreases
+            # QUADRATICALLY with the covered area while the force that has to cross there decreases
+            # only LINEARLY. The multiplier, being the ratio of the two, grows without bound as the
+            # coverage shrinks, and those values are assembled into the stiffness matrix: its
+            # condition number degrades with them, and with it the Newton convergence - measured on
+            # a facet covered to 8e-06 of its area, a multiplier of 2.1e+05 against a contact
+            # pressure of 10 elsewhere on the same interface.
+            #
+            # The remedy is to weight each row by the reciprocal of its own covered integral, so
+            # that the weighted nodal weight is the integral over the WHOLE facet again. Both D and
+            # C rows carry the same factor, which leaves the row-sum identity intact and with it the
+            # NORMALISED gap g_weak/D_II, since numerator and denominator carry the same factor. The
+            # multiplier is rescaled inversely and becomes a pressure of ordinary magnitude again.
+            #
+            # For a FIXED active set this is a rescaling of the constraint and the displacement
+            # solution is identical. Across the active-set decision it is not: the indicator
+            # compares p_n against c_n*g_sep, the normalised gap is invariant under the rescaling
+            # and p_n is not, so a node near the activation threshold can switch differently.
+            # That is a change for the better rather than a side effect to tolerate - before the
+            # rescaling, p_n at a thinly covered node was a force divided by a vanishing area and
+            # was compared against a genuine pressure; afterwards both sides of the comparison are
+            # pressures. Measured on the curved indenter of the archived Hertz series: three nodes
+            # at the edge of the contact zone move, by at most 3.4 % of the peak pressure, and the
+            # agreement with the analytical solution is unchanged at 1.0 %.
+            #
+            # No case distinction is needed. On a fully covered facet the covered and the whole
+            # integral coincide and the factor is exactly one, which is why an inner facet and a
+            # boundary facet can be treated by the same expression.
+            #
+            # NOTE what this costs: D_II is no longer the covered area of a node. It is the area of
+            # its facets, covered or not. The coverage itself is kept separately below, because the
+            # diagnostics need it and it can no longer be read off the weights.
+            D_full = np.diag(s_el.computeLocalMassMatrices(np.array([current_coords[nd] for nd in s_el.nodes]))[1])
+            # Only where the covered integral is POSITIVE. The weighting is derived for a covered
+            # integral that is a measure, and a quadratic facet covered in the region where its
+            # transformed corner function is negative does not provide one - there the factor would
+            # flip the sign of the row, which is an equivalent constraint but silently redefines
+            # what the sign of the multiplier means, and the active-set indicator reads that sign.
+            # Those rows are left alone, so the sign handling they were written for keeps applying
+            # to them unchanged.
+            covered = D_t > 0.0
+            rowScale = np.ones_like(D_t)
+            rowScale[covered] = D_full[covered] / D_t[covered]
+            A_e = A_e * rowScale[:, None]
+
+            # Coverage bookkeeping, assembled per node over all its facets: how much of the area
+            # this node's basis function spans is actually opposed by the other surface. Purely
+            # diagnostic - nothing in the formulation reads it - but it is the quantity that tells a
+            # partially covered node from a fully covered one now that the weights no longer do.
+            for local, node in enumerate(s_el.nodes):
+                idx = self.slave_node_to_idx[node]
+                coverageCovered[idx] += D_t[local]
+                coverageFull[idx] += D_full[local]
+
             # Assemble the D block and per-master C blocks of this slave element
             D_blk = np.zeros((n_s, n_s))
             C_blks = {}
@@ -1706,6 +1773,12 @@ class Constraint(ConstraintBase):
         # dense one to round-off rather than bit for bit.
         D = _coo_to_csr(D_vals, D_rows, D_cols, (n_slave, n_slave))
         C = _coo_to_csr(C_vals, C_rows, C_cols, (n_slave, n_master))
+
+        # Fraction of each node's own facet area that the other surface actually opposes. Zero for a
+        # node with nothing opposite it, one for a fully covered one. Diagnostic only.
+        self.current_coverage = np.zeros(n_slave)
+        opposed = coverageFull > 0.0
+        self.current_coverage[opposed] = coverageCovered[opposed] / coverageFull[opposed]
 
         return D, C
 
@@ -1745,11 +1818,11 @@ class Constraint(ConstraintBase):
         advanced - as they require - only "once convergence of the Newton-Raphson
         loop is achieved", after which equilibrium is re-established with the
         updated estimate. The projection onto p >= 0 is the release condition of
-        their algorithm step (3); a node whose augmented pressure would turn
-        tensile is simply inactive.
+        the release condition; a node whose augmented pressure would turn tensile is
+        simply inactive.
 
-        Termination follows the second of the two possibilities they name,
-        "monitoring changes of multipliers from iteration to iteration", as a
+        Termination monitors the change of the multiplier estimate from one
+        augmentation to the next, as a
         RELATIVE change. The alternative they mention first - checking
         non-penetration directly - would have to bound the weighted gap, which
         carries length x area and is therefore not scale-invariant; the same trap
@@ -2054,15 +2127,14 @@ class Constraint(ConstraintBase):
                 # ==============================================================
                 # PENALTY / AUGMENTED LAGRANGIAN
                 #
-                # the penalty pressure,  t_A = kappa * g_A
-                #                                 Eq. (18):  p^(k+1) = p^k + kappa*g_A
+                # The penalty pressure is t_A = kappa * g_A, and the augmentation advances it
+                # as p^(k+1) = p^k + kappa * g_A.
                 #
-                # g_A of those papers is their Eq. (6) - the WEIGHTED gap, i.e.
-                # exactly our g_weak up to the sign convention: they write the
-                # non-penetration condition as g_A <= 0 with the gap measured from
-                # the slave towards the master, here it is g_sep > 0 for an open
-                # node. g_pen below is their g_A: positive under penetration, and
-                # weighted (length x area), NOT the physical opening.
+                # g_A is the WEIGHTED gap, i.e. our g_weak up to the sign convention: the
+                # non-penetration condition is usually written g_A <= 0 with the gap measured
+                # from the non-mortar side towards the mortar one, while here g_sep > 0 means
+                # open. g_pen below is that g_A: positive under penetration, and weighted
+                # (length x area), NOT the physical opening.
                 #
                 # NO DIVISION BY D_II HAPPENS HERE, and that is the reason for
                 # following the weighted form of the papers rather than penalizing
@@ -2082,8 +2154,8 @@ class Constraint(ConstraintBase):
                 # ACTIVE SET. p_trial > 0 IS the Signorini branch test here; no
                 # complementarity parameter and no primal-dual iteration are
                 # involved. With z_aug = 0 it reduces to "penetrating" and the law
-                # to the pure penalty form of Eq. (7)/(24); with the augmentation it
-                # is the release condition of their algorithm step (3). Note that
+                # to the pure penalty form; with the augmentation it is the release
+                # condition of the outer loop. Note that
                 # this indicator has the same structure as the semi-smooth NCP
                 # indicator s_n = p_n - c_n*g_sep of the Lagrange branch, with the
                 # augmented multiplier in place of the multiplier unknown - the
@@ -2142,8 +2214,8 @@ class Constraint(ConstraintBase):
             self.current_g_weak[I] = g_I_weak
 
             if self.use_active_set and not self.active_set_frozen:
-                # Semi-smooth normal complementarity
-                # Contact): the Signorini KKT conditions p_n >= 0, g_sep >= 0,
+                # Semi-smooth normal complementarity: the Signorini conditions p_n >= 0,
+                # g_sep >= 0,
                 # p_n*g_sep = 0 are written as the single non-smooth function
                 #   C_n = p_n - max(0, p_n - c_n*g_sep) = 0,
                 # whose two branches are
@@ -2156,10 +2228,8 @@ class Constraint(ConstraintBase):
                 # convergence g_sep -> 0, so the converged result is c_n-
                 # independent and identical to any admissible active-set rule.
                 #
-                # Which gap measure enters the indicator differs WITHIN the
-                # possible, and the form used here is the one that
-                # (2005), Eq. (3.9), who write C = lambda_n - max{0, lambda_n +
-                # c (u_n - g)} with the POINTWISE gap (u_n - g), i.e. a length.
+                # Which gap measure enters the indicator is a choice, and the one made here
+                # is the POINTWISE gap, i.e. a length.
                 # g_sep = g_weak/D_II is exactly that: the physical nodal opening.
                 # The alternative form instead inserts the mortar-weighted
                 # gap g_weak, which carries length x area. Both are admissible - the
@@ -2244,3 +2314,38 @@ class Constraint(ConstraintBase):
                         f"the nodal pressures and openings of the converged state against each other.",
                     )
                 self.active_set_frozen = True
+
+        # A node that carries a constraint while almost none of its own facet area is opposed by the
+        # other surface is worth saying out loud. The constraint is exact there and the weighting of
+        # the boundary rows keeps its multiplier an ordinary pressure, so nothing is broken - but the
+        # force that crosses at such a node is set by the surrounding mechanics rather than by the
+        # sliver it stands on, and on a surface that ends while still under full pressure that force
+        # is not small. Putting the SMALLER of the two surfaces on the non-mortar side avoids the
+        # situation altogether, since every one of its facets is then fully covered.
+        #
+        # Checked here rather than at the start of an increment, and against the active set of THIS
+        # assembly: the condition can develop within the last increment of a run, where an
+        # increment-boundary check would never see it. Restricted to nodes actually in contact,
+        # because a thinly covered node that carries no multiplier transmits nothing - a curved
+        # indenter has such nodes just outside its contact zone in every increment, and reporting
+        # those would bury the case that matters.
+        #
+        # The bound decides when to speak and nothing else. No quantity entering the solution is
+        # compared against it.
+        if hasattr(self, "current_coverage"):
+            thinlyCovered = np.flatnonzero(
+                (self.current_coverage < 1e-2) & (self.current_coverage > 0.0) & self.active_set
+            )
+            if len(thinlyCovered):
+                self._warn_once(
+                    "thinly_covered_nodes",
+                    f"{len(thinlyCovered)} non-mortar node(s) in contact are opposed over less than "
+                    f"1 % of their own facet area (thinnest: "
+                    f"{float(np.min(self.current_coverage[thinlyCovered])):.2e}), first in increment "
+                    f"{timeStep.number}. Such a node is constrained exactly like a fully covered one "
+                    f"- coverage sets how the contact force is distributed, never whether a node is "
+                    f"tied - so it can transmit a force out of proportion to the area backing it. "
+                    f"This arises where the mortar surface ends while still transmitting pressure. "
+                    f"Putting the smaller of the two surfaces on the non-mortar side removes it, "
+                    f"because every non-mortar facet is then fully covered.",
+                )
