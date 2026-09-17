@@ -1,0 +1,112 @@
+** Mortar contact: closing, separating and closing again.
+**
+** The patch decks in this suite all keep every non-mortar node in contact for the whole run, so
+** they never exercise the part of the formulation that decides WHICH nodes are in contact. This
+** deck does, by walking the same pair of blocks through all three states in one run:
+**
+**   step 1  top face moved by -0.02      compression; every non-mortar node closed
+**   step 2  top face moved by +0.07       total +0.05: tension, every node has to let go
+**   step 3  top face moved by -0.07       back to -0.02: closed again, from an empty active set
+**
+** Step values are INCREMENTS over the step, not absolute positions, and every boundary condition
+** is restated in every step -- one left out would not hold its value, it would free that degree of
+** freedom for the rest of the run.
+**
+** Step 2 is the one that fails loudly if the unilateral condition is only enforced one way: a
+** formulation that ties the two surfaces together instead of merely preventing penetration would
+** drag the lower block up with the tension and report a NEGATIVE contact pressure. Step 3 then
+** checks that the set can grow again after it has emptied -- a node that is frozen out of the
+** active set once, to stop the set from oscillating, must still be able to return in a later
+** increment.
+**
+** The exact solution of the separated state (step 2) is two independent blocks: the lower one
+** unloaded and therefore exactly at rest, the upper one translating rigidly with its prescribed
+** top face and carrying no stress at all, since nothing holds its underside. Measured there:
+** every multiplier exactly 0, and max|u_y| in the lower block 1.3e-18. The exact solution of the
+** closed states is the uniaxial one of the patch decks, u_y(y) = -0.01 * y with a constant contact
+** pressure of 10.
+**
+** Only the final state enters the reference solution, so what step 2 leaves behind is checked
+** through its effect on step 3 rather than directly. Measured at the end of step 3:
+**   max|u_x|, max|u_z|        ~ 2e-16
+**   max|u_y - u_y(y)|         ~ 8e-16  of a prescribed 0.02
+**   contact pressure           10.000000000 at every non-mortar node
+**
+** The reference solution covers both: the nodal displacements, and -- because the contact
+** multipliers of formulation=lagrange are scalar variables of the global system -- the nodal
+** contact pressures as well.
+
+*material, name=LinearElastic, id=mat, provider=edelweiss
+1000.0, 0.0
+
+*modelGenerator, generator=boxGen, name=lower
+x0=0, y0=0, z0=0
+lX=1.0, lY=1.0, lZ=1.0
+nX=2, nY=1, nZ=2
+elType=C3D8
+elProvider=edelweiss
+
+*modelGenerator, generator=boxGen, name=upper
+x0=0, y0=1.0, z0=0
+lX=1.0, lY=1.0, lZ=1.0
+nX=3, nY=1, nZ=3
+elType=C3D8
+elProvider=edelweiss
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen1
+surface = lower_top
+name    = nonMortarSurf
+facets  = wholeFace
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen2
+surface = upper_bottom
+name    = mortarSurf
+facets  = wholeFace
+
+*section, name=secLower, material=mat, type=solid
+lower_all
+*section, name=secUpper, material=mat, type=solid
+upper_all
+
+*constraint, name=contact, type=mortarcontact
+nonMortarSurface=nonMortarSurf_facets
+mortarSurface=mortarSurf_facets
+field=displacement
+cn=1000.0
+
+*job, name=mortarSeparation, domain=3d
+*solver, name=theSolver, solver=NIST
+
+*fieldOutput
+>>perNode, elSet=lower_all, field=displacement, result=U, name=dispLower
+>>perNode, elSet=upper_all, field=displacement, result=U, name=dispUpper
+
+** step 1: press the blocks together
+*step, solver=theSolver
+maxInc=0.5, minInc=1e-4, maxNumInc=100, maxIter=25, stepLength=1
+>>dirichlet, name=fixBottom, nSet=lower_bottom, field=displacement, 2=0.0
+>>dirichlet, name=pushTop,   nSet=upper_top,    field=displacement, 2=-0.02
+>>dirichlet, name=symmX_l, nSet=lower_left, field=displacement, 1=0.0
+>>dirichlet, name=symmX_u, nSet=upper_left, field=displacement, 1=0.0
+>>dirichlet, name=symmZ_l, nSet=lower_back, field=displacement, 3=0.0
+>>dirichlet, name=symmZ_u, nSet=upper_back, field=displacement, 3=0.0
+
+** step 2: pull the upper block away -- the whole active set has to empty
+*step, solver=theSolver
+maxInc=0.5, minInc=1e-4, maxNumInc=100, maxIter=25, stepLength=1
+>>dirichlet, name=fixBottom, nSet=lower_bottom, field=displacement, 2=0.0
+>>dirichlet, name=pushTop,   nSet=upper_top,    field=displacement, 2=0.07
+>>dirichlet, name=symmX_l, nSet=lower_left, field=displacement, 1=0.0
+>>dirichlet, name=symmX_u, nSet=upper_left, field=displacement, 1=0.0
+>>dirichlet, name=symmZ_l, nSet=lower_back, field=displacement, 3=0.0
+>>dirichlet, name=symmZ_u, nSet=upper_back, field=displacement, 3=0.0
+
+** step 3: press them together again, starting from an empty active set
+*step, solver=theSolver
+maxInc=0.5, minInc=1e-4, maxNumInc=100, maxIter=25, stepLength=1
+>>dirichlet, name=fixBottom, nSet=lower_bottom, field=displacement, 2=0.0
+>>dirichlet, name=pushTop,   nSet=upper_top,    field=displacement, 2=-0.07
+>>dirichlet, name=symmX_l, nSet=lower_left, field=displacement, 1=0.0
+>>dirichlet, name=symmX_u, nSet=upper_left, field=displacement, 1=0.0
+>>dirichlet, name=symmZ_l, nSet=lower_back, field=displacement, 3=0.0
+>>dirichlet, name=symmZ_u, nSet=upper_back, field=displacement, 3=0.0

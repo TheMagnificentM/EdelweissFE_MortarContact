@@ -1,0 +1,91 @@
+** Mortar contact patch test, linear hexahedra, non-matching interface.
+**
+** Two linear elastic blocks stacked along y, tied by segment-to-segment mortar contact across an
+** interface whose two sides do NOT share nodes: the lower block is discretised 2x2 in plane, the
+** upper one 3x3. A contact formulation that transfers a constant pressure exactly across such an
+** interface reproduces the one-dimensional compression of the undivided block; one that does not
+** shows up here as a lateral displacement or as a pressure that varies from node to node.
+**
+** With nu = 0 and u_y = -2 prescribed on the top face of a stack of total height 200, the exact
+** solution is uniaxial:
+**   eps_yy   = -0.01              u_y(y) = -0.01 * y              u_x = u_z = 0
+**   sigma_yy = -E * 0.01 = -10    contact pressure = 10, constant over the interface
+**
+** Measured against that solution:
+**   max|u_x|, max|u_z|        ~ 2e-14
+**   max|u_y - u_y(y)|         ~ 7e-14  of a prescribed 2
+**   contact pressure           10.000000000 at every non-mortar node
+**
+** The block is a hundred units across while the companion quadratic deck works in ones. That is
+** deliberate: several tolerances inside the constraint compare a length or an area against an
+** absolute bound, and a purely geometric rescaling -- lengths and prescribed displacement times k,
+** E unchanged -- leaves strains, stresses and contact pressures untouched, so the two decks have to
+** agree on all three. The rescaling cannot be pushed arbitrarily far, though: the residual of a
+** multiplier row is the weighted gap, whose dimension is length times area, while its convergence
+** bound is the ABSOLUTE 1e-8 of phenomena.py rather than a relative one. Another two decades up,
+** that bound drops below the rounding noise of the gap itself and becomes unreachable no matter how
+** exact the solution is; the run then exhausts its cutbacks and fails rather than losing accuracy
+** quietly.
+**
+** The reference solution covers both: the nodal displacements, and -- because the contact
+** multipliers of formulation=lagrange are scalar variables of the global system -- the nodal
+** contact pressures as well.
+**
+** The lateral constraint is deliberately NOT a global u_x = u_z = 0. It fixes the two symmetry
+** planes x = 0 and z = 0 only, which is exactly enough to remove the rigid-body modes the loading
+** leaves open. Every other node is free to move laterally, so the measured max|u_x| and max|u_z|
+** are a real result of the contact formulation rather than a boundary condition read back.
+
+*material, name=LinearElastic, id=mat, provider=edelweiss
+1000.0, 0.0
+
+*modelGenerator, generator=boxGen, name=lower
+x0=0, y0=0, z0=0
+lX=100.0, lY=100.0, lZ=100.0
+nX=2, nY=1, nZ=2
+elType=C3D8
+elProvider=edelweiss
+
+*modelGenerator, generator=boxGen, name=upper
+x0=0, y0=100.0, z0=0
+lX=100.0, lY=100.0, lZ=100.0
+nX=3, nY=1, nZ=3
+elType=C3D8
+elProvider=edelweiss
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen1
+surface = lower_top
+name    = nonMortarSurf
+facets  = wholeFace
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen2
+surface = upper_bottom
+name    = mortarSurf
+facets  = wholeFace
+
+*section, name=secLower, material=mat, type=solid
+lower_all
+*section, name=secUpper, material=mat, type=solid
+upper_all
+
+*constraint, name=contact, type=mortarcontact
+nonMortarSurface=nonMortarSurf_facets
+mortarSurface=mortarSurf_facets
+field=displacement
+cn=1000.0
+
+*job, name=mortarPatchHexa8, domain=3d
+*solver, name=theSolver, solver=NIST
+
+*fieldOutput
+>>perNode, elSet=lower_all, field=displacement, result=U, name=dispLower
+>>perNode, elSet=upper_all, field=displacement, result=U, name=dispUpper
+
+*step, solver=theSolver
+maxInc=0.5, minInc=1e-4, maxNumInc=100, maxIter=25, stepLength=1
+>>dirichlet, name=fixBottom, nSet=lower_bottom, field=displacement, 2=0.0
+>>dirichlet, name=pushTop,   nSet=upper_top,    field=displacement, 2=-2.0
+>>dirichlet, name=symmX_l, nSet=lower_left, field=displacement, 1=0.0
+>>dirichlet, name=symmX_u, nSet=upper_left, field=displacement, 1=0.0
+>>dirichlet, name=symmZ_l, nSet=lower_back, field=displacement, 3=0.0
+>>dirichlet, name=symmZ_u, nSet=upper_back, field=displacement, 3=0.0

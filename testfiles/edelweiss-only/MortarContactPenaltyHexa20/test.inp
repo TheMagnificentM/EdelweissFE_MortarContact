@@ -1,0 +1,109 @@
+** Mortar contact patch test, quadratic hexahedra, penalty form with the augmented outer loop.
+**
+** The same model as MortarContactPatchHexa20, enforced differently. There the non-penetration
+** condition is carried by multipliers that are unknowns of the global system, which makes it a
+** saddle-point problem; here the multipliers are eliminated and replaced by a pressure proportional
+** to the weighted gap, and the proportionality is corrected in an outer loop that runs after each
+** converged equilibrium rather than inside it. Everything geometric -- search, projection, clipping,
+** sub-cell segmentation, nodal normals, the coupling matrices -- is shared between the two, so what
+** this deck adds over its saddle-point twin is exactly the constraint law and the outer loop, and a
+** defect in either shows up as a difference against the same exact solution.
+**
+** The outer loop is the part that no other deck in this suite reaches. It needs two things from the
+** solver that the inner iteration does not: an increment must not be declared converged on a state
+** that has not been corrected since the pressure estimate was last advanced, and the loop has to be
+** able to run at all after equilibrium is reached. Both are hooks on the constraint interface, and
+** without them this deck would converge to the penalty solution -- close to, but not equal to, the
+** exact one.
+**
+** With nu = 0 and u_y = -0.02 prescribed on the top face of a stack of total height 2, the exact
+** solution is uniaxial:
+**   eps_yy   = -0.01              u_y(y) = -0.01 * y              u_x = u_z = 0
+**   sigma_yy = -E * 0.01 = -10    contact pressure = 10, constant over the interface
+**
+** Measured against that solution:
+**   max|u_x|, max|u_z|        ~ 8e-12
+**   max|u_y - u_y(y)|         ~ 3e-11  of a prescribed 0.02
+**   nodal contact pressure     10.000000 at every non-mortar node
+**
+** For comparison, the same model with the outer loop switched off and the same penalty stiffness
+** reaches only 1.5e-04, and improves by exactly one decade per decade of stiffness (1.5e-05 at 1e7,
+** 1.5e-06 at 1e8) while the pressure spreads across the interface instead of staying constant.
+** That is the textbook penalty behaviour, and the four orders of magnitude between it and the run
+** above are what the outer loop buys.
+**
+** The remaining 3e-11 is the price of eliminating the multipliers rather than a discretisation
+** error: the outer loop drives the gap to a bound instead of enforcing it exactly, which the
+** saddle-point deck does, reaching 1e-14 on the same model. The pressure survives it unharmed.
+**
+** The deck runs without a single warning, which is worth stating because it did not always. The
+** penalty branch makes its contact pressure out of the weighted gap, so on the load-free increment
+** that precedes the first load step -- where the two surfaces coincide and their weighted gap is the
+** rounding of the arithmetic that produced it -- a stiffness of 1e6 turned 5e-16 of nothing into a
+** pressure of 5e-10, which a bare sign test read as contact. Nodes flickered in and out of the
+** active set and the outer loop compared one rounding error against another until it exhausted its
+** iteration cap. The gap is now measured against a noise floor derived from the interface geometry,
+** the load-free increment activates no node at all, and the loop stops on its first call there.
+** The converged result is unchanged to the last digit.
+**
+**
+** The lateral constraint is deliberately NOT a global u_x = u_z = 0. It fixes the two symmetry
+** planes x = 0 and z = 0 only, which is exactly enough to remove the rigid-body modes the loading
+** leaves open. Every other node is free to move laterally, so the measured max|u_x| and max|u_z|
+** are a real result of the contact formulation rather than a boundary condition read back.
+
+*material, name=LinearElastic, id=mat, provider=edelweiss
+1000.0, 0.0
+
+*modelGenerator, generator=boxGen, name=lower
+x0=0, y0=0, z0=0
+lX=1.0, lY=1.0, lZ=1.0
+nX=2, nY=1, nZ=2
+elType=C3D20
+elProvider=edelweiss
+
+*modelGenerator, generator=boxGen, name=upper
+x0=0, y0=1.0, z0=0
+lX=1.0, lY=1.0, lZ=1.0
+nX=3, nY=1, nZ=3
+elType=C3D20
+elProvider=edelweiss
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen1
+surface = lower_top
+name    = nonMortarSurf
+facets  = wholeFace
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen2
+surface = upper_bottom
+name    = mortarSurf
+facets  = wholeFace
+
+*section, name=secLower, material=mat, type=solid
+lower_all
+*section, name=secUpper, material=mat, type=solid
+upper_all
+
+*constraint, name=contact, type=mortarcontact
+nonMortarSurface=nonMortarSurf_facets
+mortarSurface=mortarSurf_facets
+field=displacement
+formulation=penalty
+penaltyStiffness=1e6
+augmentedLagrange=True
+
+*job, name=mortarPenaltyHexa20, domain=3d
+*solver, name=theSolver, solver=NIST
+
+*fieldOutput
+>>perNode, elSet=lower_all, field=displacement, result=U, name=dispLower
+>>perNode, elSet=upper_all, field=displacement, result=U, name=dispUpper
+
+*step, solver=theSolver
+maxInc=0.5, minInc=1e-4, maxNumInc=100, maxIter=25, stepLength=1
+>>dirichlet, name=fixBottom, nSet=lower_bottom, field=displacement, 2=0.0
+>>dirichlet, name=pushTop,   nSet=upper_top,    field=displacement, 2=-0.02
+>>dirichlet, name=symmX_l, nSet=lower_left, field=displacement, 1=0.0
+>>dirichlet, name=symmX_u, nSet=upper_left, field=displacement, 1=0.0
+>>dirichlet, name=symmZ_l, nSet=lower_back, field=displacement, 3=0.0
+>>dirichlet, name=symmZ_u, nSet=upper_back, field=displacement, 3=0.0

@@ -1,0 +1,81 @@
+** Mortar contact patch test, quadratic hexahedra, non-matching interface.
+**
+** The companion of MortarContactPatchHexa8 on quadratic elements, and the harder of the two: a
+** quadratic interface is where a segment-to-segment method has to do real work. The overlap of two
+** curved faces is no longer a polygon of the faces themselves, so each face is split into sub-cells
+** whose overlaps are clipped and integrated separately, and the multiplier is interpolated in a
+** dual basis built per face rather than taken from a table. Both steps are exercised here and by
+** nothing else in this suite; a linear interface would pass with either of them broken.
+**
+** Two linear elastic blocks stacked along y, lower discretised 2x2 in plane, upper 3x3, so no two
+** nodes meet across the interface. With nu = 0 and u_y = -0.02 prescribed on the top face of a
+** stack of total height 2, the exact solution is uniaxial:
+**   eps_yy   = -0.01              u_y(y) = -0.01 * y              u_x = u_z = 0
+**   sigma_yy = -E * 0.01 = -10    contact pressure = 10, constant over the interface
+**
+** Measured against that solution, in metres here (the linear deck works in millimetres):
+**   max|u_x|, max|u_z|        ~ 3e-15
+**   max|u_y - u_y(y)|         ~ 1e-14  of a prescribed 0.02
+**   contact pressure           10.000000000 at every non-mortar node
+**
+** The reference solution covers both: the nodal displacements, and -- because the contact
+** multipliers of formulation=lagrange are scalar variables of the global system -- the nodal
+** contact pressures as well.**
+** The lateral constraint is deliberately NOT a global u_x = u_z = 0. It fixes the two symmetry
+** planes x = 0 and z = 0 only, which is exactly enough to remove the rigid-body modes the loading
+** leaves open. Every other node is free to move laterally, so the measured max|u_x| and max|u_z|
+** are a real result of the contact formulation rather than a boundary condition read back.
+
+*material, name=LinearElastic, id=mat, provider=edelweiss
+1000.0, 0.0
+
+*modelGenerator, generator=boxGen, name=lower
+x0=0, y0=0, z0=0
+lX=1.0, lY=1.0, lZ=1.0
+nX=2, nY=1, nZ=2
+elType=C3D20
+elProvider=edelweiss
+
+*modelGenerator, generator=boxGen, name=upper
+x0=0, y0=1.0, z0=0
+lX=1.0, lY=1.0, lZ=1.0
+nX=3, nY=1, nZ=3
+elType=C3D20
+elProvider=edelweiss
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen1
+surface = lower_top
+name    = nonMortarSurf
+facets  = wholeFace
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen2
+surface = upper_bottom
+name    = mortarSurf
+facets  = wholeFace
+
+*section, name=secLower, material=mat, type=solid
+lower_all
+*section, name=secUpper, material=mat, type=solid
+upper_all
+
+*constraint, name=contact, type=mortarcontact
+nonMortarSurface=nonMortarSurf_facets
+mortarSurface=mortarSurf_facets
+field=displacement
+cn=1000.0
+
+*job, name=mortarPatchHexa20, domain=3d
+*solver, name=theSolver, solver=NIST
+
+*fieldOutput
+>>perNode, elSet=lower_all, field=displacement, result=U, name=dispLower
+>>perNode, elSet=upper_all, field=displacement, result=U, name=dispUpper
+
+*step, solver=theSolver
+maxInc=0.5, minInc=1e-4, maxNumInc=100, maxIter=25, stepLength=1
+>>dirichlet, name=fixBottom, nSet=lower_bottom, field=displacement, 2=0.0
+>>dirichlet, name=pushTop,   nSet=upper_top,    field=displacement, 2=-0.02
+>>dirichlet, name=symmX_l, nSet=lower_left, field=displacement, 1=0.0
+>>dirichlet, name=symmX_u, nSet=upper_left, field=displacement, 1=0.0
+>>dirichlet, name=symmZ_l, nSet=lower_back, field=displacement, 3=0.0
+>>dirichlet, name=symmZ_u, nSet=upper_back, field=displacement, 3=0.0
