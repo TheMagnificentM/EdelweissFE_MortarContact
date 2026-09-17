@@ -445,5 +445,168 @@ class TestParentFaceIntegration(unittest.TestCase):
         np.testing.assert_allclose(loads[4], 2.0 * 2.0 / 3.0, atol=1e-13)
 
 
+class TestWholeFaceFacets(unittest.TestCase):
+    """The ``facets='wholeFace'`` mode, which emits one curved contact element per source face
+    instead of tiling the face into flat ones.
+
+    What has to hold is narrow but easy to get wrong in a way no simulation would notice quickly:
+    the emitted element must be the type that matches the face, its nodes must arrive in the
+    ordering that element's own shape functions assume, and the resulting normal must point out of
+    the source solid. A permuted ordering still yields a plausible-looking element of the right
+    type, and an inward normal still integrates to the right area -- both would simply transfer the
+    contact pressure in the wrong direction.
+    """
+
+    def setUp(self):
+        self.journal = Journal()
+
+    def _build(self, model, prefix="mortar"):
+        with model.topologyChanges():
+            facetsSetName, nodesSetName = buildContactFacets(
+                model, "theSurface", prefix, "corner", "facetConsistent", self.journal, facets="wholeFace"
+            )
+        return facetsSetName, nodesSetName
+
+    def _modelWithOneHexa8(self) -> FEModel:
+        """A single straight-edged hexa8 cube of side ``_SIDE``, Ymin face registered as
+        ``theSurface`` -- the same corner ring order as the hexa20 fixture."""
+
+        coordinates = [
+            np.array([0.0, 0.0, 0.0]),
+            np.array([0.0, 0.0, _SIDE]),
+            np.array([_SIDE, 0.0, _SIDE]),
+            np.array([_SIDE, 0.0, 0.0]),
+            np.array([0.0, _SIDE, 0.0]),
+            np.array([0.0, _SIDE, _SIDE]),
+            np.array([_SIDE, _SIDE, _SIDE]),
+            np.array([_SIDE, _SIDE, 0.0]),
+        ]
+
+        model = FEModel(3)
+        nodes = [Node(i + 1, x) for i, x in enumerate(coordinates)]
+        for node in nodes:
+            model.nodes[node.label] = node
+
+        with model.topologyChanges():
+            (elNumber,) = model.reserveElementNumbers(1)
+            element = DisplacementElement("C3D8", elNumber)
+            element.setNodes(nodes)
+            model.createElement(element)
+        model.surfaces["theSurface"] = {1: ElementSet("theFace", [element])}
+        return model
+
+    def test_the_emitted_type_follows_the_parent_face(self):
+        """A linear hexa face is a quad4 and becomes a CONQUAD4, a quadratic one a quad8 and becomes
+        a CONQUAD8, and the two-dimensional edges become CONLINE2/CONLINE3 the same way. The type is
+        taken from the FACE rather than from the solid, because the face is what the contact element
+        has to reproduce."""
+
+        for model, expected in (
+            (self._modelWithOneHexa8(), "CONQUAD4"),
+            (TestContactFacetNodalWeights._modelWithOneHexa20(self), "CONQUAD8"),
+            (TestContactFacetNodalWeights._modelWithOneQuad8(self), "CONLINE3"),
+        ):
+            facetsSetName, _ = self._build(model)
+            (contactElement,) = model.elementSets[facetsSetName]
+            self.assertEqual(contactElement.elType, expected)
+
+    def test_one_element_per_face_rather_than_a_tiling(self):
+        """The whole point of the mode: a quadratic face that the triangulated path would split into
+        six Tria3 facets stays a single element with all eight of its nodes."""
+
+        model = TestContactFacetNodalWeights._modelWithOneHexa20(self)
+        facetsSetName, nodesSetName = self._build(model)
+
+        self.assertEqual(len(model.elementSets[facetsSetName]), 1)
+        (contactElement,) = model.elementSets[facetsSetName]
+        self.assertEqual(len(contactElement.nodes), 8)
+        self.assertEqual(len(model.nodeSets[nodesSetName]), 8)
+
+    def test_the_node_ordering_is_the_canonical_parent_face_ordering(self):
+        """Not merely the right SET of nodes: the contact element's shape functions are written for
+        the canonical ordering -- corner cycle first, then the midside of each corner-to-corner edge
+        in the same cycle order -- so any permutation of it silently evaluates the wrong function at
+        every quadrature point."""
+
+        model = TestContactFacetNodalWeights._modelWithOneHexa20(self)
+        (sourceElement,) = model.surfaces["theSurface"][1]
+        _faceType, canonicalIndices = canonicalParentFace("hexa20", 1)
+
+        facetsSetName, _ = self._build(model)
+        (contactElement,) = model.elementSets[facetsSetName]
+
+        expected = [sourceElement.nodes[i] for i in canonicalIndices]
+        self.assertEqual(list(contactElement.nodes), expected)
+
+    def test_generated_normals_point_out_of_the_source_solid(self):
+        """The ordering the face tables produce already winds the face outward, so no orientation
+        correction is applied anywhere in this path. That is only safe as long as it is true: an
+        inward-wound face would reverse the contact pressure while leaving its area intact, which no
+        area-based or node-count-based check could catch."""
+
+        for model, outward in (
+            (self._modelWithOneHexa8(), np.array([0.0, -1.0, 0.0])),
+            (TestContactFacetNodalWeights._modelWithOneHexa20(self), np.array([0.0, -1.0, 0.0])),
+        ):
+            facetsSetName, _ = self._build(model)
+            (contactElement,) = model.elementSets[facetsSetName]
+
+            corners = np.array([node.coordinates for node in contactElement.nodes[:4]])
+            normal = np.cross(corners[2] - corners[0], corners[3] - corners[1])
+            self.assertGreater(float(np.dot(normal, outward)), 0.0)
+
+    def test_rebuilding_replaces_rather_than_accumulates(self):
+        """Re-running under the same prefix has to be idempotent: the surface facet modifier calls
+        this again after an adaptive refinement, and a second set of contact elements on the same
+        face would double every coupling term rather than fail."""
+
+        model = TestContactFacetNodalWeights._modelWithOneHexa20(self)
+        facetsSetName, _ = self._build(model)
+        firstNumbers = {element.elNumber for element in model.elementSets[facetsSetName]}
+
+        self._build(model)
+        secondNumbers = {element.elNumber for element in model.elementSets[facetsSetName]}
+
+        self.assertEqual(len(secondNumbers), 1)
+        self.assertTrue(firstNumbers.isdisjoint(secondNumbers), "stale element numbers were handed back out")
+        self.assertEqual(len(model.elements), 2, "the source solid and exactly one contact element")
+
+    def test_the_recipe_records_the_mode(self):
+        """The recipe is what a rebuild after a mesh change replays. Losing the mode from it would
+        retile the surface into flat facets the constraint cannot use."""
+
+        model = TestContactFacetNodalWeights._modelWithOneHexa20(self)
+        facetsSetName, _ = self._build(model)
+        self.assertEqual(model.contactFacetRecipes[facetsSetName][-1], "wholeFace")
+
+    def test_tiling_options_are_rejected_rather_than_ignored(self):
+        """Both options describe how a face is cut up and how the pieces share its area. Neither
+        question arises for a face kept whole, and accepting them would leave the user believing a
+        setting took effect that cannot."""
+
+        for option in ("triangulation", "nodalWeights"):
+            model = TestContactFacetNodalWeights._modelWithOneHexa20(self)
+            kwargs = {"triangulation": "corner", "nodalWeights": "facetConsistent"}
+            kwargs[option] = "midside" if option == "triangulation" else "serendipityOptimal"
+            with self.assertRaises(ValueError) as ctx, model.topologyChanges():
+                buildContactFacets(
+                    model,
+                    "theSurface",
+                    "pfx",
+                    kwargs["triangulation"],
+                    kwargs["nodalWeights"],
+                    self.journal,
+                    facets="wholeFace",
+                )
+            self.assertIn(option, str(ctx.exception))
+            self.assertIn("wholeFace", str(ctx.exception))
+
+    def test_unknown_facets_mode_is_rejected(self):
+        model = TestContactFacetNodalWeights._modelWithOneHexa20(self)
+        with self.assertRaises(ValueError) as ctx, model.topologyChanges():
+            buildContactFacets(model, "theSurface", "pfx", "corner", "facetConsistent", self.journal, facets="nonsense")
+        self.assertIn("nonsense", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

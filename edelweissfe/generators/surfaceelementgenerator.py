@@ -39,6 +39,18 @@ face-consistent per-node tributary area shares for the pressure-weighted contact
 weighting that best approximates a *serendipity* face's consistent nodal loads. See the
 :doc:`contact theory documentation </documentation/contacttheory>` for the full background.
 
+``facets=wholeFace`` selects the other consumer of these surfaces: instead of tiling each source
+face into flat triangles, it emits the face itself as a single curved, geometry-only contact
+element (:class:`~edelweissfe.elements.contactelement.element.ContactElement`, ``CONQUAD4`` /
+``CONQUAD8`` / ``CONLINE2`` / ``CONLINE3``), for use as the non-mortar or mortar side of
+segment-to-segment mortar contact. A segment-to-segment method integrates the contact condition
+over the overlap of two curved faces using each face's own shape functions, so splitting a face
+into flat pieces beforehand would discard exactly the geometry it integrates over, and the
+tributary-area weighting the triangulated path assigns would be unused: the mortar weights follow
+from that integration instead. Faces are emitted in the canonical parent-face node ordering, whose
+winding is the source element's own outward one, so the resulting element normals need no
+orientation correction.
+
 The underlying :func:`buildContactFacets` is idempotent and re-runnable, so a
 :class:`~edelweissfe.models.meshdependent.MeshDependent` consumer of these facets (e.g.
 :mod:`~edelweissfe.constraints.nodetodeformablesurfacepenalty`) can regenerate them from the
@@ -57,6 +69,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from edelweissfe.config.elementlibrary import getElementClass
 from edelweissfe.elements.contactsurfaceelement import (
     Line2ContactFacet,
     Tria3ContactFacet,
@@ -160,6 +173,21 @@ _MIDSIDE_FACE_TABLES = {
         5: ((19, 7, 14), (14, 6, 18), (18, 2, 10), (10, 3, 19), (14, 18, 10), (14, 10, 19)),  # Xmax
         6: ((16, 4, 15), (15, 7, 19), (19, 3, 11), (11, 0, 16), (15, 19, 11), (15, 11, 16)),  # Zmin
     },
+}
+
+
+# Contact element type emitted per canonical parent face under facets='wholeFace'. Keyed by the
+# parent face type rather than by the source element's ensight type, because that is the property
+# the emitted element actually has to match: a face's node count and shape functions are a property
+# of the face, and two different solid types can present the same one. The ordering canonicalParentFace
+# returns -- corner cycle first, then the midside node of each corner-to-corner edge in the same
+# cycle order -- is the node ordering these element types themselves use, so the indices can be
+# applied directly with no permutation.
+_WHOLE_FACE_ELEMENT_TYPES = {
+    "line2": "CONLINE2",
+    "line3": "CONLINE3",
+    "quad4": "CONQUAD4",
+    "quad8": "CONQUAD8",
 }
 
 
@@ -332,9 +360,16 @@ def _applyModifiedSerendipityShares(cornerTriangles: list):
 
 
 def buildContactFacets(
-    model: FEModel, surfaceName: str, prefix: str, triangulation: str, nodalWeights: str, journal
+    model: FEModel,
+    surfaceName: str,
+    prefix: str,
+    triangulation: str,
+    nodalWeights: str,
+    journal,
+    *,
+    facets: str = "triangulated",
 ) -> tuple[str, str]:
-    """(Re)generate the flat contact facet elements tiling ``surfaceName`` under ``prefix``.
+    """(Re)generate the contact facet elements tiling ``surfaceName`` under ``prefix``.
 
     Idempotent: any facets a previous call under the same ``prefix`` created are removed first, so
     this can be re-run after ``surfaceName`` changes underneath it (e.g. an AMR refinement of the
@@ -357,15 +392,44 @@ def buildContactFacets(
     triangulation
         The facet triangulation of higher-order element faces: 'corner' or 'midside'.
     nodalWeights
-        The per-node contact weighting: 'facetConsistent' or 'serendipityOptimal'.
+        The per-node contact weighting: 'facetConsistent' or 'serendipityOptimal'. Only meaningful
+        for 'triangulated' facets.
     journal
         The journal instance.
+    facets
+        What to emit per source face: 'triangulated' (flat Tria3/Line2 facets tiling the face) or
+        'wholeFace' (the face itself as one curved CON* contact element).
 
     Returns
     -------
     tuple[str, str]
         The generated ``(facetsSetName, nodesSetName)``.
     """
+
+    if facets not in ("triangulated", "wholeFace"):
+        raise ValueError(
+            f"surfaceElementGenerator: facets '{facets}' is not supported. Use 'triangulated' or 'wholeFace'."
+        )
+
+    if facets == "wholeFace":
+        # Both remaining options describe how a face is cut up and how the resulting pieces share
+        # the face's area between their nodes. Neither question arises when the face is kept whole,
+        # and its weights come from the contact integration rather than from a tiling. Accepting
+        # them silently would leave the user believing a setting took effect that cannot.
+        inapplicable = [
+            name
+            for name, value, default in (
+                ("triangulation", triangulation, "corner"),
+                ("nodalWeights", nodalWeights, "facetConsistent"),
+            )
+            if value != default
+        ]
+        if inapplicable:
+            raise ValueError(
+                f"surfaceElementGenerator: {' and '.join(inapplicable)} cannot be combined with "
+                "facets='wholeFace' -- a face that is kept whole is neither triangulated nor given "
+                "tiling-derived nodal weights."
+            )
 
     triangulation = triangulation.lower()
     if triangulation not in ("corner", "midside"):
@@ -447,6 +511,26 @@ def buildContactFacets(
 
     for faceNumber, elementSet in surfaceDef.items():
         for sourceElement in elementSet:
+            if facets == "wholeFace":
+                # canonicalParentFace already raises for an unknown element type or face number,
+                # and already returns the face in the node ordering the contact element expects,
+                # so there is nothing left to do but instantiate it.
+                parentFaceType, parentFaceIndices = canonicalParentFace(sourceElement.ensightType, faceNumber)
+                contactElementType = _WHOLE_FACE_ELEMENT_TYPES.get(parentFaceType)
+                if contactElementType is None:
+                    raise ValueError(
+                        f"surfaceElementGenerator: no whole-face contact element available for a "
+                        f"'{parentFaceType}' face (element type '{sourceElement.ensightType}', "
+                        f"element {sourceElement.elNumber})."
+                    )
+
+                (elNumber,) = model.reserveElementNumbers(1)
+                contactElement = getElementClass(contactElementType, "edelweiss")(contactElementType, elNumber)
+                contactElement.setNodes([sourceElement.nodes[i] for i in parentFaceIndices])
+                contactElement.initializeElement()
+                newElements[elNumber] = contactElement
+                continue
+
             faceTable = None
             if triangulation == "midside":
                 faceTable = _MIDSIDE_FACE_TABLES.get(sourceElement.ensightType)
@@ -548,7 +632,7 @@ def buildContactFacets(
         model.nodeSets[nodesSetName].replaceMembers(facetNodesInOrder)
     else:
         model.nodeSets[nodesSetName] = NodeSet(nodesSetName, facetNodesInOrder)
-    model.contactFacetRecipes[facetsSetName] = (surfaceName, prefix, triangulation, nodalWeights)
+    model.contactFacetRecipes[facetsSetName] = (surfaceName, prefix, triangulation, nodalWeights, facets)
 
     journal.message(
         f"generated {len(newElements)} contact facet element(s) from surface '{surfaceName}' "
@@ -599,6 +683,17 @@ class SurfaceElementGeneratorSchema:
         dtype=str,
         default="facetConsistent",
     )
+    facets: str = schemaField(
+        description="What to emit per source face: 'triangulated' (flat Tria3/Line2 facets tiling "
+        "the face, for node-to-surface penalty contact) or 'wholeFace' (the face itself as one "
+        "curved CONQUAD4/CONQUAD8/CONLINE2/CONLINE3 contact element, for segment-to-segment mortar "
+        "contact, which integrates over the overlap of two curved faces using their own shape "
+        "functions and would lose that geometry to a flat tiling). 'wholeFace' accepts neither "
+        "triangulation nor nodalWeights: a face kept whole is not tiled, and its contact weights "
+        "follow from the integration rather than from a tiling.",
+        dtype=str,
+        default="triangulated",
+    )
 
 
 class Generator(GeneratorBase):
@@ -643,4 +738,5 @@ class Generator(GeneratorBase):
             configuration.triangulation,
             configuration.nodalWeights,
             journal,
+            facets=configuration.facets,
         )
