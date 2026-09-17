@@ -526,7 +526,13 @@ elLibrary.update(
             ensightType="bar2",
             nSpatialDimensions=2,
             nInt=0,
-            xi=None, eta=None, zeta=None, w=None, matSize=0, index=np.array([]), plStrain=None
+            xi=None,
+            eta=None,
+            zeta=None,
+            w=None,
+            matSize=0,
+            index=np.array([]),
+            plStrain=None,
         ),
         "CONLINE3": dict(
             elClass="ContactElement",
@@ -536,7 +542,13 @@ elLibrary.update(
             ensightType="bar3",
             nSpatialDimensions=2,
             nInt=0,
-            xi=None, eta=None, zeta=None, w=None, matSize=0, index=np.array([]), plStrain=None
+            xi=None,
+            eta=None,
+            zeta=None,
+            w=None,
+            matSize=0,
+            index=np.array([]),
+            plStrain=None,
         ),
         "CONQUAD4": dict(
             elClass="ContactElement",
@@ -546,7 +558,13 @@ elLibrary.update(
             ensightType="quad4",
             nSpatialDimensions=3,
             nInt=0,
-            xi=None, eta=None, zeta=None, w=None, matSize=0, index=np.array([]), plStrain=None
+            xi=None,
+            eta=None,
+            zeta=None,
+            w=None,
+            matSize=0,
+            index=np.array([]),
+            plStrain=None,
         ),
         "CONQUAD8": dict(
             elClass="ContactElement",
@@ -556,7 +574,13 @@ elLibrary.update(
             ensightType="quad8",
             nSpatialDimensions=3,
             nInt=0,
-            xi=None, eta=None, zeta=None, w=None, matSize=0, index=np.array([]), plStrain=None
+            xi=None,
+            eta=None,
+            zeta=None,
+            w=None,
+            matSize=0,
+            index=np.array([]),
+            plStrain=None,
         ),
         "CONQUAD9": dict(
             elClass="ContactElement",
@@ -566,7 +590,13 @@ elLibrary.update(
             ensightType="quad9",
             nSpatialDimensions=3,
             nInt=0,
-            xi=None, eta=None, zeta=None, w=None, matSize=0, index=np.array([]), plStrain=None
+            xi=None,
+            eta=None,
+            zeta=None,
+            w=None,
+            matSize=0,
+            index=np.array([]),
+            plStrain=None,
         ),
         "CONTRI3": dict(
             elClass="ContactElement",
@@ -576,7 +606,13 @@ elLibrary.update(
             ensightType="tria3",
             nSpatialDimensions=3,
             nInt=0,
-            xi=None, eta=None, zeta=None, w=None, matSize=0, index=np.array([]), plStrain=None
+            xi=None,
+            eta=None,
+            zeta=None,
+            w=None,
+            matSize=0,
+            index=np.array([]),
+            plStrain=None,
         ),
         "CONTRI6": dict(
             elClass="ContactElement",
@@ -586,7 +622,13 @@ elLibrary.update(
             ensightType="tria6",
             nSpatialDimensions=3,
             nInt=0,
-            xi=None, eta=None, zeta=None, w=None, matSize=0, index=np.array([]), plStrain=None
+            xi=None,
+            eta=None,
+            zeta=None,
+            w=None,
+            matSize=0,
+            index=np.array([]),
+            plStrain=None,
         ),
     }
 )

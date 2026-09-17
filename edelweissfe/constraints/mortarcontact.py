@@ -26,7 +26,6 @@
 
 import math
 import warnings
-
 from dataclasses import dataclass
 
 import numpy as np
@@ -38,9 +37,6 @@ from edelweissfe.models.femodel import FEModel
 from edelweissfe.timesteppers.timestep import TimeStep
 from edelweissfe.utils.caseinsensitivedict import CaseInsensitiveDict
 from edelweissfe.utils.schema import buildSchemaFromOptions, schemaField
-from edelweissfe.utils.misc import (
-    caseInsensitiveKwargsChecker,
-)
 
 """
 A unilateral contact constraint between two deformable surfaces, enforced segment by segment rather
@@ -121,6 +117,7 @@ matching forces. A correct condensation would need the constraint interface to r
 than only add to them.
 """
 
+
 @dataclass(frozen=True)
 class MortarContactSchema:
     """The options this constraint accepts, owned by this module and never mutated from outside
@@ -155,11 +152,9 @@ class MortarContactSchema:
     )
 
     field: str = schemaField(
-        description=(
-            "The field this constraint acts on (e.g. displacement)."
-        ),
+        description=("The field this constraint acts on (e.g. displacement)."),
         dtype=str,
-        default='displacement',
+        default="displacement",
     )
 
     cn: float = schemaField(
@@ -194,7 +189,7 @@ class MortarContactSchema:
             "law alone, so their results are directly comparable."
         ),
         dtype=str,
-        default='lagrange',
+        default="lagrange",
     )
 
     penaltyStiffness: float = schemaField(
@@ -439,7 +434,7 @@ def _nonzero_rows(A: csr_matrix, n_rows: int, rtol: float = 1e-12) -> tuple[list
     indptr, indices, data = A.indptr, A.indices, A.data
     # An empty matrix has no scale; the loop below then keeps nothing, which is right.
     tol = rtol * np.max(np.abs(data)) if data.size else 0.0
-    for I in range(n_rows):
+    for I in range(n_rows):  # noqa: E741 - I is the non-mortar node index of the formulation
         lo, hi = indptr[I], indptr[I + 1]
         cols, vals = indices[lo:hi], data[lo:hi]
         keep = np.abs(vals) > tol
@@ -491,9 +486,7 @@ def get_sub_cells(el) -> list[list[int]]:
     """Return the linear sub-cell decomposition (local node indices) of a contact facet."""
     el_type = el.elType.upper()
     if el_type not in SUB_CELL_MAP:
-        raise NotImplementedError(
-            f"No linear sub-cell decomposition defined for element type '{el_type}'."
-        )
+        raise NotImplementedError(f"No linear sub-cell decomposition defined for element type '{el_type}'.")
     return SUB_CELL_MAP[el_type]
 
 
@@ -516,11 +509,13 @@ def facet_normal(coords: np.ndarray) -> np.ndarray:
 
 
 # 3-point Gauss-Legendre rule (degree 5) on [-1, 1] for 1D line segments
-LINE_GAUSS_PTS = np.array([
-    [-np.sqrt(0.6)],
-    [0.0],
-    [np.sqrt(0.6)],
-])
+LINE_GAUSS_PTS = np.array(
+    [
+        [-np.sqrt(0.6)],
+        [0.0],
+        [np.sqrt(0.6)],
+    ]
+)
 LINE_GAUSS_W = np.array([5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0])
 
 
@@ -530,28 +525,33 @@ LINE_GAUSS_W = np.array([5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0])
 # element surfaces raises the polynomial degree of the integrand.
 _TRI_A = (6.0 - np.sqrt(15.0)) / 21.0
 _TRI_B = (6.0 + np.sqrt(15.0)) / 21.0
-TRI_GAUSS_PTS = np.array([
-    [1.0 / 3.0, 1.0 / 3.0],
-    [_TRI_A, _TRI_A],
-    [_TRI_A, 1.0 - 2.0 * _TRI_A],
-    [1.0 - 2.0 * _TRI_A, _TRI_A],
-    [_TRI_B, _TRI_B],
-    [_TRI_B, 1.0 - 2.0 * _TRI_B],
-    [1.0 - 2.0 * _TRI_B, _TRI_B],
-])
-TRI_GAUSS_W = np.array([
-    9.0 / 80.0,
-    (155.0 - np.sqrt(15.0)) / 2400.0,
-    (155.0 - np.sqrt(15.0)) / 2400.0,
-    (155.0 - np.sqrt(15.0)) / 2400.0,
-    (155.0 + np.sqrt(15.0)) / 2400.0,
-    (155.0 + np.sqrt(15.0)) / 2400.0,
-    (155.0 + np.sqrt(15.0)) / 2400.0,
-])
+TRI_GAUSS_PTS = np.array(
+    [
+        [1.0 / 3.0, 1.0 / 3.0],
+        [_TRI_A, _TRI_A],
+        [_TRI_A, 1.0 - 2.0 * _TRI_A],
+        [1.0 - 2.0 * _TRI_A, _TRI_A],
+        [_TRI_B, _TRI_B],
+        [_TRI_B, 1.0 - 2.0 * _TRI_B],
+        [1.0 - 2.0 * _TRI_B, _TRI_B],
+    ]
+)
+TRI_GAUSS_W = np.array(
+    [
+        9.0 / 80.0,
+        (155.0 - np.sqrt(15.0)) / 2400.0,
+        (155.0 - np.sqrt(15.0)) / 2400.0,
+        (155.0 - np.sqrt(15.0)) / 2400.0,
+        (155.0 + np.sqrt(15.0)) / 2400.0,
+        (155.0 + np.sqrt(15.0)) / 2400.0,
+        (155.0 + np.sqrt(15.0)) / 2400.0,
+    ]
+)
 
 
 class BVHNode:
     """A node in the Bounding Volume Hierarchy (BVH) tree for contact detection."""
+
     def __init__(self, aabb_min, aabb_max, left=None, right=None, facets=None):
         self.aabb_min = aabb_min
         self.aabb_max = aabb_max
@@ -753,9 +753,7 @@ class Constraint(ConstraintBase):
         # a tolerance that moved with the solution would make a state's admissibility depend on how
         # it was reached.
         slaveCoordinates = self._X[: self.nNonMortarNodes]
-        self._interfaceDiameter = (
-            float(np.max(np.ptp(slaveCoordinates, axis=0))) if len(slaveCoordinates) else 0.0
-        )
+        self._interfaceDiameter = float(np.max(np.ptp(slaveCoordinates, axis=0))) if len(slaveCoordinates) else 0.0
 
         # Precompute undeformed normals
         self.undeformed_normals = self.compute_normals()
@@ -1196,7 +1194,7 @@ class Constraint(ConstraintBase):
         idx_LM_0 = sf * nNodes
 
         would_be = np.zeros(nSlave, dtype=bool)
-        for I in range(nSlave):
+        for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
             n_I = self.current_normals[I]
             nzD, nzC = self.current_D_nz[I], self.current_C_nz[I]
             g_weak = 0.0
@@ -1299,7 +1297,7 @@ class Constraint(ConstraintBase):
                     coords.append(X + u)
                 else:
                     coords.append(X)
-            
+
             coords = np.array(coords)
 
             # Element normal evaluated AT each node's own natural coordinate,
@@ -1357,9 +1355,11 @@ class Constraint(ConstraintBase):
 
         return normals
 
-    def compute_local_dual_matrices(self, U_np: np.ndarray = None) -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    def compute_local_dual_matrices(
+        self, U_np: np.ndarray = None
+    ) -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """Compute the local standard mass matrices M_e, diagonal matrices D_e, and transformation matrices A_e for all non-mortar facets.
-        
+
         If U_np is provided, coordinates are evaluated in the deformed configuration.
         Otherwise, they are evaluated in the undeformed configuration.
         """
@@ -1377,11 +1377,11 @@ class Constraint(ConstraintBase):
                 else:
                     coords.append(X)
             coords = np.array(coords)
-            
+
             # Compute M_e, D_e, A_e
             M_e, D_e, A_e = el.computeLocalMassMatrices(coords)
             dual_matrices[el.elNumber] = (M_e, D_e, A_e)
-            
+
         return dual_matrices
 
     def compute_mortar_coupling_matrices(self, U_np: np.ndarray = None) -> tuple[np.ndarray, np.ndarray]:
@@ -1535,9 +1535,7 @@ class Constraint(ConstraintBase):
 
                             for tri in triangulate_polygon(overlap_2d):
                                 v0, v1, v2 = tri[0], tri[1], tri[2]
-                                area_jac = abs(
-                                    (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v2[0] - v0[0]) * (v1[1] - v0[1])
-                                )
+                                area_jac = abs((v1[0] - v0[0]) * (v2[1] - v0[1]) - (v2[0] - v0[0]) * (v1[1] - v0[1]))
                                 if area_jac < 1e-14:
                                     continue
 
@@ -1680,9 +1678,7 @@ class Constraint(ConstraintBase):
                 # evaluations over the test suite. Same quantity as
                 # compute_local_dual_matrices returns, for this one element and the
                 # same (deformed) coordinates.
-                A_e = s_el.computeLocalMassMatrices(
-                    np.array([current_coords[nd] for nd in s_el.nodes])
-                )[2]
+                A_e = s_el.computeLocalMassMatrices(np.array([current_coords[nd] for nd in s_el.nodes]))[2]
 
             # Assemble the D block and per-master C blocks of this slave element
             D_blk = np.zeros((n_s, n_s))
@@ -2007,7 +2003,7 @@ class Constraint(ConstraintBase):
         penalty = self.formulation == "penalty"
         _dim_offsets = np.arange(dim)
 
-        for I in range(nSlave):
+        for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
             idx_LM_I = idx_LM_0 + I
             lambda_I = 0.0 if penalty else U_np[idx_LM_I]
             n_I = normals[I]
@@ -2051,14 +2047,14 @@ class Constraint(ConstraintBase):
             D_II = self.current_D_rowsum[I]
             sgn_D = np.sign(D_II)
             inv_D = 1.0 / D_II if abs(D_II) > self.current_D_tol else 0.0
-            p_n = lambda_I * sgn_D    # physical normal pressure (>= 0 in contact)
+            p_n = lambda_I * sgn_D  # physical normal pressure (>= 0 in contact)
             g_sep = g_I_weak * inv_D  # physical opening (>0 open, <0 penetrating)
 
             if penalty:
                 # ==============================================================
                 # PENALTY / AUGMENTED LAGRANGIAN
                 #
-                                # the penalty pressure,  t_A = kappa * g_A
+                # the penalty pressure,  t_A = kappa * g_A
                 #                                 Eq. (18):  p^(k+1) = p^k + kappa*g_A
                 #
                 # g_A of those papers is their Eq. (6) - the WEIGHTED gap, i.e.
@@ -2147,7 +2143,7 @@ class Constraint(ConstraintBase):
 
             if self.use_active_set and not self.active_set_frozen:
                 # Semi-smooth normal complementarity
-                        # Contact): the Signorini KKT conditions p_n >= 0, g_sep >= 0,
+                # Contact): the Signorini KKT conditions p_n >= 0, g_sep >= 0,
                 # p_n*g_sep = 0 are written as the single non-smooth function
                 #   C_n = p_n - max(0, p_n - c_n*g_sep) = 0,
                 # whose two branches are

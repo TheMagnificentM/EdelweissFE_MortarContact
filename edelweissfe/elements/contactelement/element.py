@@ -30,7 +30,6 @@ from edelweissfe.elements.base.baseelement import BaseElement
 from edelweissfe.elements.library import elLibrary
 from edelweissfe.points.node import Node
 
-
 # Shape function derivatives at the element's own nodes, per element TYPE. They do
 # not depend on the geometry, so one table per type serves every facet in the model;
 # see getShapeFunctionDerivativesAtNodes.
@@ -45,19 +44,19 @@ class ContactElement(BaseElement):
         self._elNumber = elNumber
         self._nodes = []
         self._properties = np.array([])
-        
+
         properties = elLibrary[elementType]
         self._nNodes = properties["nNodes"]
         self._nDof = properties["nDof"]
         self._dofIndices = properties["dofIndices"]
         self._ensightType = properties["ensightType"]
         self.nSpatialDimensions = properties["nSpatialDimensions"]
-        
+
         if self._elType.upper() in ("CONLINE2", "CONLINE3"):
             self.nLocalDim = 1
         else:
             self.nLocalDim = 2
-        
+
         self._fields = [["displacement"] for _ in range(self._nNodes)]
 
     @property
@@ -180,12 +179,7 @@ class ContactElement(BaseElement):
             weights = [5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0]
         elif el_type == "CONQUAD4":
             gp = 1.0 / np.sqrt(3.0)
-            points = [
-                np.array([-gp, -gp]),
-                np.array([gp, -gp]),
-                np.array([gp, gp]),
-                np.array([-gp, gp])
-            ]
+            points = [np.array([-gp, -gp]), np.array([gp, -gp]), np.array([gp, gp]), np.array([-gp, gp])]
             weights = [1.0, 1.0, 1.0, 1.0]
         elif el_type in ("CONQUAD8", "CONQUAD9"):
             g_pts = [-np.sqrt(0.6), 0.0, np.sqrt(0.6)]
@@ -200,7 +194,7 @@ class ContactElement(BaseElement):
             points = [
                 np.array([1.0 / 6.0, 1.0 / 6.0]),
                 np.array([2.0 / 3.0, 1.0 / 6.0]),
-                np.array([1.0 / 6.0, 2.0 / 3.0])
+                np.array([1.0 / 6.0, 2.0 / 3.0]),
             ]
             weights = [1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0]
         elif el_type == "CONTRI6":
@@ -215,13 +209,9 @@ class ContactElement(BaseElement):
                 np.array([1.0 - 2.0 * a, a]),
                 np.array([b, b]),
                 np.array([b, 1.0 - 2.0 * b]),
-                np.array([1.0 - 2.0 * b, b])
+                np.array([1.0 - 2.0 * b, b]),
             ]
-            weights = [
-                9.0 / 80.0,
-                w_a, w_a, w_a,
-                w_b, w_b, w_b
-            ]
+            weights = [9.0 / 80.0, w_a, w_a, w_a, w_b, w_b, w_b]
         else:
             raise NotImplementedError(f"Quadrature points not defined for element type '{el_type}'")
         return points, weights
@@ -289,9 +279,7 @@ class ContactElement(BaseElement):
         if el_type == "CONTRI3":
             return np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
         if el_type == "CONTRI6":
-            return np.array(
-                [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]]
-            )
+            return np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]])
         raise NotImplementedError(f"Nodal natural coordinates not defined for element type '{el_type}'")
 
     def getShapeFunctions(self, local_coords: np.ndarray) -> np.ndarray:
@@ -305,53 +293,61 @@ class ContactElement(BaseElement):
             return np.array([0.5 * xi * (xi - 1.0), 0.5 * xi * (xi + 1.0), 1.0 - xi * xi])
         elif el_type == "CONQUAD4":
             xi, eta = local_coords[0], local_coords[1]
-            return np.array([
-                0.25 * (1.0 - xi) * (1.0 - eta),
-                0.25 * (1.0 + xi) * (1.0 - eta),
-                0.25 * (1.0 + xi) * (1.0 + eta),
-                0.25 * (1.0 - xi) * (1.0 + eta)
-            ])
+            return np.array(
+                [
+                    0.25 * (1.0 - xi) * (1.0 - eta),
+                    0.25 * (1.0 + xi) * (1.0 - eta),
+                    0.25 * (1.0 + xi) * (1.0 + eta),
+                    0.25 * (1.0 - xi) * (1.0 + eta),
+                ]
+            )
         elif el_type == "CONQUAD8":
             xi, eta = local_coords[0], local_coords[1]
-            return np.array([
-                0.25 * (1.0 - xi) * (1.0 - eta) * (-xi - eta - 1.0),
-                0.25 * (1.0 + xi) * (1.0 - eta) * (xi - eta - 1.0),
-                0.25 * (1.0 + xi) * (1.0 + eta) * (xi + eta - 1.0),
-                0.25 * (1.0 - xi) * (1.0 + eta) * (-xi + eta - 1.0),
-                0.5 * (1.0 - xi * xi) * (1.0 - eta),
-                0.5 * (1.0 + xi) * (1.0 - eta * eta),
-                0.5 * (1.0 - xi * xi) * (1.0 + eta),
-                0.5 * (1.0 - xi) * (1.0 - eta * eta)
-            ])
+            return np.array(
+                [
+                    0.25 * (1.0 - xi) * (1.0 - eta) * (-xi - eta - 1.0),
+                    0.25 * (1.0 + xi) * (1.0 - eta) * (xi - eta - 1.0),
+                    0.25 * (1.0 + xi) * (1.0 + eta) * (xi + eta - 1.0),
+                    0.25 * (1.0 - xi) * (1.0 + eta) * (-xi + eta - 1.0),
+                    0.5 * (1.0 - xi * xi) * (1.0 - eta),
+                    0.5 * (1.0 + xi) * (1.0 - eta * eta),
+                    0.5 * (1.0 - xi * xi) * (1.0 + eta),
+                    0.5 * (1.0 - xi) * (1.0 - eta * eta),
+                ]
+            )
         elif el_type == "CONQUAD9":
             xi, eta = local_coords[0], local_coords[1]
             l0_xi, l1_xi, l2_xi = 0.5 * xi * (xi - 1.0), 1.0 - xi * xi, 0.5 * xi * (xi + 1.0)
             l0_eta, l1_eta, l2_eta = 0.5 * eta * (eta - 1.0), 1.0 - eta * eta, 0.5 * eta * (eta + 1.0)
-            return np.array([
-                l0_xi * l0_eta,
-                l2_xi * l0_eta,
-                l2_xi * l2_eta,
-                l0_xi * l2_eta,
-                l1_xi * l0_eta,
-                l2_xi * l1_eta,
-                l1_xi * l2_eta,
-                l0_xi * l1_eta,
-                l1_xi * l1_eta
-            ])
+            return np.array(
+                [
+                    l0_xi * l0_eta,
+                    l2_xi * l0_eta,
+                    l2_xi * l2_eta,
+                    l0_xi * l2_eta,
+                    l1_xi * l0_eta,
+                    l2_xi * l1_eta,
+                    l1_xi * l2_eta,
+                    l0_xi * l1_eta,
+                    l1_xi * l1_eta,
+                ]
+            )
         elif el_type == "CONTRI3":
             r, s = local_coords[0], local_coords[1]
             return np.array([1.0 - r - s, r, s])
         elif el_type == "CONTRI6":
             r, s = local_coords[0], local_coords[1]
             L1 = 1.0 - r - s
-            return np.array([
-                L1 * (2.0 * L1 - 1.0),
-                r * (2.0 * r - 1.0),
-                s * (2.0 * s - 1.0),
-                4.0 * r * L1,
-                4.0 * r * s,
-                4.0 * s * L1
-            ])
+            return np.array(
+                [
+                    L1 * (2.0 * L1 - 1.0),
+                    r * (2.0 * r - 1.0),
+                    s * (2.0 * s - 1.0),
+                    4.0 * r * L1,
+                    4.0 * r * s,
+                    4.0 * s * L1,
+                ]
+            )
         else:
             raise NotImplementedError(f"Shape functions not defined for element type '{el_type}'")
 
@@ -365,110 +361,91 @@ class ContactElement(BaseElement):
             return np.array([[xi - 0.5, xi + 0.5, -2.0 * xi]])
         elif el_type == "CONQUAD4":
             xi, eta = local_coords[0], local_coords[1]
-            return np.array([
+            return np.array(
                 [
-                    -0.25 * (1.0 - eta),
-                     0.25 * (1.0 - eta),
-                     0.25 * (1.0 + eta),
-                    -0.25 * (1.0 + eta)
-                ],
-                [
-                    -0.25 * (1.0 - xi),
-                    -0.25 * (1.0 + xi),
-                     0.25 * (1.0 + xi),
-                     0.25 * (1.0 - xi)
+                    [-0.25 * (1.0 - eta), 0.25 * (1.0 - eta), 0.25 * (1.0 + eta), -0.25 * (1.0 + eta)],
+                    [-0.25 * (1.0 - xi), -0.25 * (1.0 + xi), 0.25 * (1.0 + xi), 0.25 * (1.0 - xi)],
                 ]
-            ])
+            )
         elif el_type == "CONQUAD8":
             xi, eta = local_coords[0], local_coords[1]
-            return np.array([
+            return np.array(
                 [
-                    0.25 * (1.0 - eta) * (2.0 * xi + eta),
-                    0.25 * (1.0 - eta) * (2.0 * xi - eta),
-                    0.25 * (1.0 + eta) * (2.0 * xi + eta),
-                    0.25 * (1.0 + eta) * (2.0 * xi - eta),
-                    -xi * (1.0 - eta),
-                    0.5 * (1.0 - eta * eta),
-                    -xi * (1.0 + eta),
-                    -0.5 * (1.0 - eta * eta)
-                ],
-                [
-                    0.25 * (1.0 - xi) * (xi + 2.0 * eta),
-                    0.25 * (1.0 + xi) * (-xi + 2.0 * eta),
-                    0.25 * (1.0 + xi) * (xi + 2.0 * eta),
-                    0.25 * (1.0 - xi) * (-xi + 2.0 * eta),
-                    -0.5 * (1.0 - xi * xi),
-                    -eta * (1.0 + xi),
-                    0.5 * (1.0 - xi * xi),
-                    -eta * (1.0 - xi)
+                    [
+                        0.25 * (1.0 - eta) * (2.0 * xi + eta),
+                        0.25 * (1.0 - eta) * (2.0 * xi - eta),
+                        0.25 * (1.0 + eta) * (2.0 * xi + eta),
+                        0.25 * (1.0 + eta) * (2.0 * xi - eta),
+                        -xi * (1.0 - eta),
+                        0.5 * (1.0 - eta * eta),
+                        -xi * (1.0 + eta),
+                        -0.5 * (1.0 - eta * eta),
+                    ],
+                    [
+                        0.25 * (1.0 - xi) * (xi + 2.0 * eta),
+                        0.25 * (1.0 + xi) * (-xi + 2.0 * eta),
+                        0.25 * (1.0 + xi) * (xi + 2.0 * eta),
+                        0.25 * (1.0 - xi) * (-xi + 2.0 * eta),
+                        -0.5 * (1.0 - xi * xi),
+                        -eta * (1.0 + xi),
+                        0.5 * (1.0 - xi * xi),
+                        -eta * (1.0 - xi),
+                    ],
                 ]
-            ])
+            )
         elif el_type == "CONQUAD9":
             xi, eta = local_coords[0], local_coords[1]
             l0_xi, l1_xi, l2_xi = 0.5 * xi * (xi - 1.0), 1.0 - xi * xi, 0.5 * xi * (xi + 1.0)
             l0_eta, l1_eta, l2_eta = 0.5 * eta * (eta - 1.0), 1.0 - eta * eta, 0.5 * eta * (eta + 1.0)
             dl0_xi, dl1_xi, dl2_xi = xi - 0.5, -2.0 * xi, xi + 0.5
             dl0_eta, dl1_eta, dl2_eta = eta - 0.5, -2.0 * eta, eta + 0.5
-            return np.array([
+            return np.array(
                 [
-                    dl0_xi * l0_eta,
-                    dl2_xi * l0_eta,
-                    dl2_xi * l2_eta,
-                    dl0_xi * l2_eta,
-                    dl1_xi * l0_eta,
-                    dl2_xi * l1_eta,
-                    dl1_xi * l2_eta,
-                    dl0_xi * l1_eta,
-                    dl1_xi * l1_eta
-                ],
-                [
-                    l0_xi * dl0_eta,
-                    l2_xi * dl0_eta,
-                    l2_xi * dl2_eta,
-                    l0_xi * dl2_eta,
-                    l1_xi * dl0_eta,
-                    l2_xi * dl1_eta,
-                    l1_xi * dl2_eta,
-                    l0_xi * dl1_eta,
-                    l1_xi * dl1_eta
+                    [
+                        dl0_xi * l0_eta,
+                        dl2_xi * l0_eta,
+                        dl2_xi * l2_eta,
+                        dl0_xi * l2_eta,
+                        dl1_xi * l0_eta,
+                        dl2_xi * l1_eta,
+                        dl1_xi * l2_eta,
+                        dl0_xi * l1_eta,
+                        dl1_xi * l1_eta,
+                    ],
+                    [
+                        l0_xi * dl0_eta,
+                        l2_xi * dl0_eta,
+                        l2_xi * dl2_eta,
+                        l0_xi * dl2_eta,
+                        l1_xi * dl0_eta,
+                        l2_xi * dl1_eta,
+                        l1_xi * dl2_eta,
+                        l0_xi * dl1_eta,
+                        l1_xi * dl1_eta,
+                    ],
                 ]
-            ])
+            )
         elif el_type == "CONTRI3":
-            return np.array([
-                [-1.0, 1.0, 0.0],
-                [-1.0, 0.0, 1.0]
-            ])
+            return np.array([[-1.0, 1.0, 0.0], [-1.0, 0.0, 1.0]])
         elif el_type == "CONTRI6":
             r, s = local_coords[0], local_coords[1]
-            return np.array([
+            return np.array(
                 [
-                    4.0 * (r + s) - 3.0,
-                    4.0 * r - 1.0,
-                    0.0,
-                    4.0 * (1.0 - 2.0 * r - s),
-                    4.0 * s,
-                    -4.0 * s
-                ],
-                [
-                    4.0 * (r + s) - 3.0,
-                    0.0,
-                    4.0 * s - 1.0,
-                    -4.0 * r,
-                    4.0 * r,
-                    4.0 * (1.0 - r - 2.0 * s)
+                    [4.0 * (r + s) - 3.0, 4.0 * r - 1.0, 0.0, 4.0 * (1.0 - 2.0 * r - s), 4.0 * s, -4.0 * s],
+                    [4.0 * (r + s) - 3.0, 0.0, 4.0 * s - 1.0, -4.0 * r, 4.0 * r, 4.0 * (1.0 - r - 2.0 * s)],
                 ]
-            ])
+            )
         else:
             raise NotImplementedError(f"Shape function derivatives not defined for element type '{el_type}'")
 
     def getJacobianAndAreaWeight(self, local_coords: np.ndarray, coords: np.ndarray) -> float:
         """Compute the Jacobian determinant for the area mapping at a given local coordinate.
-        
+
         coords: numpy array of shape (nNodes, dim) containing the current coordinates of the element's nodes.
         """
         dN = self.getShapeFunctionDerivatives(local_coords)
         t = dN @ coords  # shape: (nLocalDim, dim)
-        
+
         if self.nLocalDim == 1:
             # 1D line in 2D space
             return float(np.linalg.norm(t[0]))

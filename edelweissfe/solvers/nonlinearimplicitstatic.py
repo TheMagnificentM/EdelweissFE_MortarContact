@@ -723,9 +723,7 @@ class NIST(NonlinearSolverBase):
                     # tested is stale: re-assemble before taking any Newton step,
                     # and restart the divergence bookkeeping and the iteration
                     # budget for the new round.
-                    incrementResidualHistory = dict.fromkeys(
-                        self.theDofManager.idcsOfFieldsInDofVector, (0.0, 0)
-                    )
+                    incrementResidualHistory = dict.fromkeys(self.theDofManager.idcsOfFieldsInDofVector, (0.0, 0))
                     iterationsAtAugmentationStart = iterationCounter
                     justAugmented = True
                     continue

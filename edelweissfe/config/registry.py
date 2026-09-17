@@ -358,9 +358,7 @@ for _elementTypeName in [
     "CONTRI3",
     "CONTRI6",
 ]:
-    _BUILTINS[("element", _elementTypeName.casefold())] = (
-        "edelweissfe.elements.contactelement.element:ContactElement"
-    )
+    _BUILTINS[("element", _elementTypeName.casefold())] = "edelweissfe.elements.contactelement.element:ContactElement"
 
 # The material category covers the `provider=edelweiss` materials, one module and one class name per
 # material -- so neither `_addBuiltins` variant fits and each entry names its own target. Originally

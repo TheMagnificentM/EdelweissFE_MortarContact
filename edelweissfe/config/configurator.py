@@ -31,6 +31,7 @@ Created on Mon Apr 10 20:26:22 2017
 @author: Matthias Neuner
 """
 from copy import deepcopy
+
 from edelweissfe.config.phenomena import (
     fieldCorrectionTolerance,
     fluxResidualTolerance,

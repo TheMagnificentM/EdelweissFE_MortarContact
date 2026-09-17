@@ -191,9 +191,7 @@ class TestQuadrature(unittest.TestCase):
         for elementType, _dim, _nNodes in _TYPES:
             element, coordinates = _element(elementType)
             points, weights = element.getQuadraturePoints()
-            measure = sum(
-                element.getJacobianAndAreaWeight(xi, coordinates) * w for xi, w in zip(points, weights)
-            )
+            measure = sum(element.getJacobianAndAreaWeight(xi, coordinates) * w for xi, w in zip(points, weights))
             self.assertAlmostEqual(measure, expected[elementType], places=12, msg=elementType)
 
     def test_the_rule_integrates_the_shape_functions_to_the_element_measure(self):

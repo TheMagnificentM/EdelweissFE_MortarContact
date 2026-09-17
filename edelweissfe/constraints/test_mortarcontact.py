@@ -57,13 +57,8 @@ from edelweissfe.constraints.mortar_geom_utils import (
     to_plane_coords,
     triangulate_polygon,
 )
-from edelweissfe.constraints.mortarcontact import (
-    Constraint as MortarContact,
-)
-from edelweissfe.constraints.mortarcontact import (
-    facet_normal,
-    is_convex_polygon,
-)
+from edelweissfe.constraints.mortarcontact import Constraint as MortarContact
+from edelweissfe.constraints.mortarcontact import facet_normal, is_convex_polygon
 from edelweissfe.generators.surfaceelementgenerator import buildContactFacets
 from edelweissfe.journal.journal import Journal
 from edelweissfe.models.femodel import FEModel
@@ -258,9 +253,9 @@ class _TwoBlockModel:
             buildContactFacets(model, "lower", "nonMortar", "corner", "facetConsistent", journal, facets="wholeFace")
             buildContactFacets(model, "upper", "mortar", "corner", "facetConsistent", journal, facets="wholeFace")
 
-        model.nodeSets["all"] = __import__(
-            "edelweissfe.sets.nodeset", fromlist=["NodeSet"]
-        ).NodeSet("all", list(model.nodes.values()))
+        model.nodeSets["all"] = __import__("edelweissfe.sets.nodeset", fromlist=["NodeSet"]).NodeSet(
+            "all", list(model.nodes.values())
+        )
         return model
 
     @staticmethod
@@ -416,9 +411,7 @@ class TestPenaltyActivation(unittest.TestCase):
 
     @staticmethod
     def _penaltyConstraint(model: FEModel) -> MortarContact:
-        return _TwoBlockModel.constraint(
-            model, formulation="penalty", penaltyStiffness=1e6, augmentedLagrange=True
-        )
+        return _TwoBlockModel.constraint(model, formulation="penalty", penaltyStiffness=1e6, augmentedLagrange=True)
 
     @staticmethod
     def _assembleOnce(constraint: MortarContact) -> None:
