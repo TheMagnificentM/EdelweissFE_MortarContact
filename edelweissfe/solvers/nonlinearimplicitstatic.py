@@ -691,13 +691,12 @@ class NIST(NonlinearSolverBase):
                 # its predecessors.
                 roundIterations = iterationCounter - iterationsAtAugmentationStart
 
-                # Ein Constraint kann melden, dass sein eigener Zustand sich seit
-                # der letzten Korrektur geaendert hat - der warm gestartete
-                # Multiplikatorschaetzer eines geschachtelten Verfahrens zu
-                # Increment-Beginn. Dann ist das Gleichgewicht, das hier akzeptiert
-                # wuerde, nicht das der assemblierten Kraefte, und es muss erst
-                # korrigiert werden. Ohne augmentierenden Constraint ist die
-                # Abfrage immer False und die Schleife bitgleich zu vorher.
+                # A constraint may report that its own state has changed since the last
+                # correction - the warm-started multiplier estimate of a nested scheme at the
+                # beginning of an increment is the typical case. The equilibrium that would be
+                # accepted here is then not the one the assembled forces belong to, and a correction
+                # has to be taken first. With no augmenting constraint present the query is always
+                # False and this loop behaves bit for bit as it did before.
                 stateChanged = justAugmented or any(
                     c.requiresCorrectionBeforeConvergence() for c in constraints.values()
                 )
@@ -711,11 +710,10 @@ class NIST(NonlinearSolverBase):
 
                 if converged:
                     # Outer (augmentation) loop. A constraint enforced by a nested
-                    # scheme - the augmented Lagrangian of Puso, Laursen & Solberg
-                    # (2008), Eq. (18) - advances its multiplier estimate only NOW,
-                    # "once convergence of the Newton-Raphson loop is achieved",
-                    # and equilibrium then has to be re-established with the updated
-                    # multipliers. Every other constraint inherits the no-op default
+                    # scheme, such as an augmented Lagrangian, advances its multiplier
+                    # estimate only NOW, once the Newton-Raphson loop has converged and
+                    # not inside it, and equilibrium then has to be re-established with
+                    # the updated multipliers. Every other constraint inherits the no-op default
                     # of ConstraintBase.augmentConstraint and breaks out here as
                     # before.
                     if not self.augmentConstraints(constraints):

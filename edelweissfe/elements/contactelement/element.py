@@ -264,12 +264,13 @@ class ContactElement(BaseElement):
 
         Shape (nNodes, nLocalDim). Needed wherever a quantity has to be evaluated AT
         a node rather than averaged over the facet - specifically the surface normal
-        of Popp et al. (2010) / Farah (2018), Sec. 4.1, which is the element normal
-        x,xi cross x,eta evaluated at the node's own coordinate.
+        at a node, which is the element normal x,xi cross x,eta evaluated at the
+        node's own coordinate.
 
         The order follows getShapeFunctions of the same element: N_a evaluated at the
-        coordinate of node b must be delta_ab. That is checked for all seven types by
-        run_nodal_natural_coordinates in testfiles/mortar_tests/01_node_normals.
+        coordinate of node b must be delta_ab. That is checked for all seven types in
+        test_element.py, and it is the only property that ties the shape functions to
+        the node ORDER rather than merely to the node set.
         """
         el_type = self._elType.upper()
         if el_type == "CONLINE2":
@@ -492,17 +493,16 @@ class ContactElement(BaseElement):
             CONQUAD9   +1/9 (reference square)     -> integral positivity holds
 
         For CONQUAD8 and CONTRI6 the transformation is what makes the dual weights
-        D_II positive area weights at all (Popp, Wohlmuth, Gee & Wall 2012,
-        Eq. (4.2)-(4.4)). For CONLINE3 the full-element integral is already
+        D_II positive area weights at all. For CONLINE3 the full-element integral is
+        already
         positive; there the transformation buys the STRONGER property that matters
         in a segment-based formulation, namely pointwise non-negativity of the
         transformed basis - without it, N_corner = 1/2*xi*(xi-1) changes sign inside
         the element and a partially covered facet can still produce a negative
         nodal weight.
 
-        Following Popp et al. (2012) and Farah (2018), Sec. 6.2.3.2, shape function
-        contributions of the mid-side nodes are shifted to their adjacent corner
-        nodes with the factor alpha = 1/3:
+        Shape function contributions of the mid-side nodes are shifted to their
+        adjacent corner nodes with the factor alpha = 1/3:
 
             N_tilde_corner = N_corner + alpha * (N_adjacent mid-side nodes)
             N_tilde_mid    = (1 - 2*alpha) * N_mid
@@ -513,8 +513,7 @@ class ContactElement(BaseElement):
 
         CONQUAD9 (full-Lagrangian, from hex27) is deliberately excluded: its
         corner-node integrals are already strictly positive (1/9 on the reference
-        square), so Popp et al. (2012), p. B431, state explicitly that "no basis
-        transformation is needed in the case of quad9 surfaces", and the
+        square), so no basis transformation is needed for it at all, and the
         serendipity mid-to-corner recipe does not even address its central node.
         The identity is returned for it, as for all linear element types. The
         price is that CONQUAD9 keeps no pointwise non-negativity either, so its
@@ -554,7 +553,7 @@ class ContactElement(BaseElement):
         with M_e[a,b] = int(N_tilde_a * N_tilde_b) dGamma and
         D_e[a,a] = int(N_tilde_a) dGamma > 0, so that
         A_e = D_e * inv(M_e) * T_e maps STANDARD shape function values N to the
-        dual shape function values Phi (Popp et al. 2012; Farah 2018, Sec. 6.2.3).
+        dual shape function values Phi.
 
         coords: numpy array of shape (nNodes, dim) containing the current coordinates of the element's nodes.
         """

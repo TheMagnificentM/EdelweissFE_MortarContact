@@ -346,9 +346,9 @@ for _elementTypeName in [
         "edelweissfe.elements.displacementtlelement.element:DisplacementTLElement"
     )
 
-# Kontaktfacetten des Mortar-Kontakts. Sie tragen keine Freiheitsgrade und keine
-# Steifigkeit, sondern beschreiben allein die Topologie der Kontaktflaechen; die
-# Formulierung sitzt im Constraint `mortarcontact`.
+# Contact facets of the mortar contact. They carry neither degrees of freedom nor stiffness of
+# their own and describe only the topology of the contact surfaces; the formulation itself lives in
+# the `mortarcontact` constraint.
 for _elementTypeName in [
     "CONLINE2",
     "CONLINE3",

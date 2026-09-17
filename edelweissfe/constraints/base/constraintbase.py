@@ -314,9 +314,9 @@ class ConstraintBase(OptionSchemaProvider, ABC, VIJEntityBase):
         enforced by an OUTER loop around the equilibrium iteration - most notably
         the augmented Lagrangian (Uzawa) scheme, where the multiplier estimate is
         updated from the converged constraint violation and equilibrium is then
-        re-established (Puso, Laursen & Solberg 2008, Eq. (18): the augmented
-        Lagrangian counter is advanced only "once convergence of the Newton-Raphson
-        loop is achieved").
+        re-established. The order matters: the estimate is advanced only once the
+        Newton-Raphson loop has converged, never inside it, because it is the
+        converged violation it is meant to correct.
 
         Constraints that are fully enforced within the Newton loop - every
         constraint using Lagrange multipliers as unknowns, and pure penalty - do
