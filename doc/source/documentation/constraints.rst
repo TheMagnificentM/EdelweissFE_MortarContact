@@ -226,6 +226,36 @@ comments of the ``applyConstraint`` method in the module source.
     :language: edelweiss
     :caption: Example: ``testfiles/edelweiss-only/NodeToDiscreteRigidBodyContact/test.inp``
 
+``mortarcontact`` - Segment-to-segment (mortar) contact
+-------------------------------------------------------------------------
+
+A unilateral contact constraint between two deformable surfaces that integrates the
+non-penetration condition over the overlap of their faces instead of sampling it at nodes, so that a
+constant pressure crosses a non-matching interface exactly. The complete theory -- segmentation and
+clipping of the overlap, the dual basis and its transformation for quadratic faces, nodal normals,
+the semi-smooth active set, the three formulations and the known limitations -- is documented in
+:doc:`mortartheory`.
+
+The two surfaces are element sets of contact elements
+(:mod:`~edelweissfe.elements.contactelement.element`), most conveniently produced by
+:mod:`~edelweissfe.generators.surfaceelementgenerator` with ``facets=wholeFace``.
+
+Module ``edelweissfe.constraints.mortarcontact``
+
+.. automodule:: edelweissfe.constraints.mortarcontact
+    :members: __doc__
+
+.. pprint:: constraint:mortarcontact
+    :caption: Options:
+
+.. literalinclude:: ../../../testfiles/edelweiss-only/MortarContactPatchHexa20/test.inp
+    :language: edelweiss
+    :caption: Example: ``testfiles/edelweiss-only/MortarContactPatchHexa20/test.inp``
+
+.. literalinclude:: ../../../testfiles/edelweiss-only/MortarContactSeparation/test.inp
+    :language: edelweiss
+    :caption: Example with separation and re-contact: ``testfiles/edelweiss-only/MortarContactSeparation/test.inp``
+
 ``nodetodeformablesurfacepenalty`` - Node-to-deformable-surface contact
 -------------------------------------------------------------------------
 

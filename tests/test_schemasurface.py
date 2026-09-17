@@ -569,12 +569,19 @@ _U3C_MODULES = frozenset({"edelweissfe.modelmodifiers.adaptivity.hadaptivity"})
 #: manager writing restart checkpoints.
 _RESTART_MODULES = frozenset({"edelweissfe.outputmanagers.restart"})
 
+#: The segment-to-segment mortar contact constraint. Declared in its own set rather than added to
+#: `_U3A_CONSTRAINT_MODULES`, which records which constraints were migrated by one particular
+#: refactor and whose size that refactor's own assertion pins -- this one was schema-declared from
+#: the start and never took part in it.
+_MORTAR_CONTACT_MODULES = frozenset({"edelweissfe.constraints.mortarcontact"})
+
 _EXPECTED_BYTE_IDENTICAL_MODULES = (
     _PREVIOUSLY_BYTE_IDENTICAL_MODULES
     | _NEWLY_BYTE_IDENTICAL_MODULES
     | _U3A_CONSTRAINT_MODULES
     | _U3C_MODULES
     | _RESTART_MODULES
+    | _MORTAR_CONTACT_MODULES
 )
 
 #: Every module documentation section that HAS a ``[name] ...``-headed golden body (i.e. is a member

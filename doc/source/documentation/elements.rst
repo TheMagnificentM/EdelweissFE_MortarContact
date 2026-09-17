@@ -135,6 +135,27 @@ ordinary displacement DOFs of a deformable body's boundary nodes, used as the ma
 .. autoclass:: edelweissfe.elements.contactsurfaceelement.Line2ContactFacet
    :members:
 
+Mortar contact elements
+-----------------------
+
+Relevant module: ``edelweissfe.elements.contactelement.element``
+
+Geometry-only elements (``CONLINE2``, ``CONLINE3``, ``CONQUAD4``, ``CONQUAD8``, ``CONQUAD9``,
+``CONTRI3``, ``CONTRI6``) sharing the ordinary displacement degrees of freedom of a deformable
+body's boundary nodes, used as either side of :doc:`segment-to-segment mortar contact
+<mortartheory>`. Unlike the flat contact facets above they keep a whole source face, including its
+mid-side nodes and hence its curvature, because a segment-to-segment method integrates over the
+overlap of two curved faces using their own shape functions. They carry no stiffness, no material
+and no quadrature contribution of their own; what the constraint asks of them is the interpolation
+they provide -- shape functions, a surface Jacobian, and the dual basis built from both. Not
+user-constructed directly -- see the :doc:`surfaceElementGenerator <generators>` generator with
+``facets = wholeFace``.
+
+.. autoclass:: edelweissfe.elements.contactelement.element.ContactElement
+   :members: getShapeFunctions, getShapeFunctionDerivatives, getNodalNaturalCoordinates,
+             getQuadraturePoints, getJacobianAndAreaWeight, getBasisTransformation,
+             computeLocalMassMatrices
+
 Implementing your own elements
 ------------------------------
 

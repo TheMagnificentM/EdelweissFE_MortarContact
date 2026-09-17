@@ -239,6 +239,15 @@ _BRACKET_MODULE_SPECS = [
         "A rigid body constraint tying nodes to a reference point.",
     ),
     _BracketModuleSpec(
+        "edelweissfe.constraints.mortarcontact",
+        "constraint",
+        "mortarcontact",
+        "mortarContact",
+        "A unilateral contact constraint between two deformable surfaces, enforced over the overlap "
+        "of their faces rather than node by node, so that a constant pressure crosses a "
+        "non-matching interface exactly.",
+    ),
+    _BracketModuleSpec(
         "edelweissfe.constraints.nodetodeformablesurfacepenalty",
         "constraint",
         "nodetodeformablesurfacepenalty",
