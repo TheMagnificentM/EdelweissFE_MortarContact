@@ -13,6 +13,8 @@
 #  University of Innsbruck,
 #  2017 - today
 #
+#  Manuel Hradsky manuel.hradsky@uibk.ac.at
+#
 #  This file is part of EdelweissFE.
 #
 #  This library is free software; you can redistribute it and/or
@@ -488,7 +490,30 @@ class ContactElement(BaseElement):
         preserving the partition of unity. For linear element types the identity
         matrix is returned.
 
-        CONQUAD9 (full-Lagrangian, from hex27) is deliberately excluded: its
+        WHERE alpha = 1/3 COMES FROM, since two published values exist for this same
+        transformation and they differ. The form above is that of Popp, Wohlmuth, Gee &
+        Wall (2012), Section 4.4.1, Eqs. (4.6)/(4.9); the value is that of Farah (2018),
+        Section 6.2.3.2, Eq. (6.20), who uses the identical transformation matrix for
+        tet10 and writes: "the transformation parameter has to be chosen large enough to
+        guarantee integral positivity of the edge node shape functions, but is obviously
+        limited by alpha < 1/2 ... the transformation parameter is defined as alpha =
+        1/3". Popp et al. instead "suggest choosing the scalar alpha = 1/5".
+
+        Both are admissible - the requirement both derive is alpha > 0 for tri6 and
+        alpha > 1/8 for quad8 - and 1/3 is the better of the two here, because this
+        formulation integrates over PARTS of a facet. Recomputed independently for the
+        quad8 corner function: the integral is int(N_tilde_corner) = 8*alpha/3 - 1/3,
+        positive from alpha > 1/8 as stated, but its pointwise minimum over the
+        reference square is -0.0706 at alpha = 1/5 against -1/324 = -0.00309 at
+        alpha = 1/3, and reaches zero only at alpha = 3/8. A facet covered only where
+        the function is negative is what turns a nodal weight negative, so the deeper
+        dip of 1/5 is the more exposed choice. (CONLINE3 crosses into pointwise
+        non-negativity already at alpha = 1/4, which is why 1/3 buys it there.)
+
+        CONQUAD9 (full-Lagrangian, from hex27) is deliberately excluded, and this is the
+        one point the source states outright: "no basis transformation is needed in the
+        case of quad9 surfaces, because the corresponding shape functions N_j already
+        satisfy (4.2)" (Popp et al. 2012). Its
         corner-node integrals are already strictly positive (1/9 on the reference
         square), so no basis transformation is needed for it at all, and the
         serendipity mid-to-corner recipe does not even address its central node.

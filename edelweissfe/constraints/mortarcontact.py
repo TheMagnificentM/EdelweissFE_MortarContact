@@ -13,6 +13,8 @@
 #  University of Innsbruck,
 #  2017 - today
 #
+#  Manuel Hradsky manuel.hradsky@uibk.ac.at
+#
 #  This file is part of EdelweissFE.
 #
 #  This library is free software; you can redistribute it and/or
@@ -33,9 +35,19 @@ from scipy.sparse import coo_matrix, csr_matrix
 
 from edelweissfe.config.phenomena import getFieldSize
 from edelweissfe.constraints.base.constraintbase import ConstraintBase
+from edelweissfe.journal.journal import Journal
 from edelweissfe.models.femodel import FEModel
 from edelweissfe.timesteppers.timestep import TimeStep
 from edelweissfe.utils.caseinsensitivedict import CaseInsensitiveDict
+from edelweissfe.utils.mortargeometry import (
+    buildBoundingVolumeHierarchy,
+    clipLineSegments,
+    queryBoundingVolumeHierarchy,
+    sutherlandHodgmanClip,
+    tangentBasis,
+    toPlaneCoordinates,
+    triangulatePolygon,
+)
 from edelweissfe.utils.schema import buildSchemaFromOptions, schemaField
 
 """
@@ -63,7 +75,7 @@ while the force that has to cross there vanishes only linearly, and the multipli
 the two -- would grow without bound. Those rows are therefore rescaled so that their weight is the
 whole-facet integral again, which leaves the constraint untouched (both coupling matrices carry the
 same factor) and keeps the multiplier a pressure of ordinary magnitude. How much of a node is
-actually opposed is reported separately as ``current_coverage``, since it can no longer be read off
+actually opposed is reported separately as ``currentCoverage``, since it can no longer be read off
 the weights.
 
 The multiplier is discretised in a DUAL basis, biorthogonal to the standard one. This is what keeps
@@ -260,7 +272,7 @@ class MortarContactSchema:
     )
 
 
-def map_2d_to_natural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
+def mapPlaneToNatural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
     """Map a 2D local plane coordinate point_2d to the element's natural space.
 
     Returns (local_coords, converged).
@@ -286,7 +298,7 @@ def map_2d_to_natural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
     coordinate is the last iterate rather than a solution. Nothing downstream can
     tell those apart on its own (the value looks like any other), so the caller
     counts them and reports them; see the `gp_projection_failed` diagnostic in
-    compute_mortar_coupling_matrices. That the closest-point projection need not be
+    computeMortarCouplingMatrices. That the closest-point projection need not be
     solvable at all, and under which conditions it fails, is the subject of
     Konyukhov & Schweizerhof (2008); the local Newton used here is the standard one
     of the surrounding solids.
@@ -394,7 +406,17 @@ def map_2d_to_natural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
 # integration needs. The curvature of the facet enters only
 # through the shape function evaluation at the mapped Gauss points, never
 # through the clipping geometry itself.
-SUB_CELL_MAP = {
+#
+# The three quadratic decompositions below are those of Puso, Laursen & Solberg
+# (2008), Fig. 3: the nine-node patch into four quadrilaterals (b), the six-node
+# patch into four linear triangles (d), and the serendipity eight-node patch into
+# "four linear triangle sub-segments and one quadrilateral segment" (f). They note
+# what this costs and why it is acceptable: the geometrically exact description of
+# the quadratic surface is given up for the integration, but "through consideration
+# of simple affine maps between the parameterizations for these linear sub-segments
+# and their parent quadratic elements, we retain the ability to easily integrate
+# inner products of higher order shape functions".
+_subCellMap = {
     "CONLINE2": [[0, 1]],
     "CONLINE3": [[0, 2], [2, 1]],
     "CONQUAD4": [[0, 1, 2, 3]],
@@ -405,7 +427,7 @@ SUB_CELL_MAP = {
 }
 
 
-def _coo_to_csr(vals: list, rows: list, cols: list, shape: tuple) -> csr_matrix:
+def _cooToCsr(vals: list, rows: list, cols: list, shape: tuple) -> csr_matrix:
     """Build a CSR matrix from lists of per-block triples, summing duplicates."""
     if not vals:
         return csr_matrix(shape)
@@ -415,7 +437,7 @@ def _coo_to_csr(vals: list, rows: list, cols: list, shape: tuple) -> csr_matrix:
     ).tocsr()
 
 
-def _nonzero_rows(A: csr_matrix, n_rows: int, rtol: float = 1e-12) -> tuple[list, list]:
+def _nonzeroRows(A: csr_matrix, n_rows: int, rtol: float = 1e-12) -> tuple[list, list]:
     """Per-row (column indices, values) of a CSR matrix, filtered RELATIVE to max|A|.
 
     The threshold is part of the formulation's arithmetic, not of the storage: it
@@ -451,7 +473,7 @@ def _nonzero_rows(A: csr_matrix, n_rows: int, rtol: float = 1e-12) -> tuple[list
     return idx_per_row, val_per_row
 
 
-def is_convex_polygon(poly_2d, tol: float = 1e-14) -> bool:
+def isConvexPolygon(poly_2d, tol: float = 1e-14) -> bool:
     """Whether a planar polygon given in order is convex.
 
     BOTH sub-cells of a segmentation pair have to be convex, for two different
@@ -466,7 +488,7 @@ def is_convex_polygon(poly_2d, tol: float = 1e-14) -> bool:
     master (subject)      Sutherland-Hodgman itself accepts any subject polygon
         ("applicable to any polygon, convex or concave", Sutherland & Hodgman 1974,
         p. 33), but the overlap it returns inherits the subject's reflex vertices,
-        and `triangulate_polygon` fans from vertex 0 with a per-triangle |area|.
+        and `triangulatePolygon` fans from vertex 0 with a per-triangle |area|.
         For a non-convex overlap those fan triangles reach outside the polygon and
         the area is OVER-counted (measured: 0.375 instead of 0.125, i.e. +200 %).
 
@@ -490,26 +512,26 @@ def is_convex_polygon(poly_2d, tol: float = 1e-14) -> bool:
     return True
 
 
-def get_sub_cells(el) -> list[list[int]]:
+def getSubCells(el) -> list[list[int]]:
     """Return the linear sub-cell decomposition (local node indices) of a contact facet."""
     el_type = el.elType.upper()
-    if el_type not in SUB_CELL_MAP:
+    if el_type not in _subCellMap:
         raise NotImplementedError(f"No linear sub-cell decomposition defined for element type '{el_type}'.")
-    return SUB_CELL_MAP[el_type]
+    return _subCellMap[el_type]
 
 
-def facet_normal(coords: np.ndarray) -> np.ndarray:
+def facetNormal(coords: np.ndarray) -> np.ndarray:
     """Unnormalized area-weighted normal of a flat linear facet (3 or 4 corner nodes).
 
     Used for the AUXILIARY PLANE of the segmentation only - one plane per slave
     sub-cell, and the sub-cells are linear by construction, so this is the exact
     normal of their plane rather than an approximation.
 
-    It is deliberately NOT what compute_normals builds the nodal normal n_I from:
+    It is deliberately NOT what computeNormals builds the nodal normal n_I from:
     one constant direction per facet cannot distinguish a mid-side node from its
     corners, which costs an order of convergence on a curved slave surface. Note
-    also that its length is the facet AREA, whereas compute_normals sums unit
-    normals and so carries no area weighting at all. See compute_normals.
+    also that its length is the facet AREA, whereas computeNormals sums unit
+    normals and so carries no area weighting at all. See computeNormals.
     """
     if len(coords) == 3:
         return 0.5 * np.cross(coords[1] - coords[0], coords[2] - coords[0])
@@ -517,34 +539,40 @@ def facet_normal(coords: np.ndarray) -> np.ndarray:
 
 
 # 3-point Gauss-Legendre rule (degree 5) on [-1, 1] for 1D line segments
-LINE_GAUSS_PTS = np.array(
+_lineGaussPoints = np.array(
     [
         [-np.sqrt(0.6)],
         [0.0],
         [np.sqrt(0.6)],
     ]
 )
-LINE_GAUSS_W = np.array([5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0])
+_lineGaussWeights = np.array([5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0])
 
 
-# 7-point symmetric Gauss rule (degree 5) on the reference triangle.
+# 7-point symmetric Gauss rule (degree 5) on the reference triangle, the rule
+# tabulated by Dunavant (1985) for p = 5, n_g = 7, written here in closed form.
 # 7 points per integration cell are enough here,
 # since the nonlinear projection between the auxiliary plane and the curved
-# element surfaces raises the polynomial degree of the integrand.
-_TRI_A = (6.0 - np.sqrt(15.0)) / 21.0
-_TRI_B = (6.0 + np.sqrt(15.0)) / 21.0
-TRI_GAUSS_PTS = np.array(
+# element surfaces raises the polynomial degree of the integrand. That is also the
+# experience of Puso & Laursen (2004), Section 3.1, who report that "seven point
+# integration was used for most example problems and appears to be more than
+# sufficient when compared to higher order nine and thirteen point schemes" -- with
+# the caveat, which holds here too, that "the choice of integration rule is somewhat
+# problem dependent".
+_triangleGaussA = (6.0 - np.sqrt(15.0)) / 21.0
+_triangleGaussB = (6.0 + np.sqrt(15.0)) / 21.0
+_triangleGaussPoints = np.array(
     [
         [1.0 / 3.0, 1.0 / 3.0],
-        [_TRI_A, _TRI_A],
-        [_TRI_A, 1.0 - 2.0 * _TRI_A],
-        [1.0 - 2.0 * _TRI_A, _TRI_A],
-        [_TRI_B, _TRI_B],
-        [_TRI_B, 1.0 - 2.0 * _TRI_B],
-        [1.0 - 2.0 * _TRI_B, _TRI_B],
+        [_triangleGaussA, _triangleGaussA],
+        [_triangleGaussA, 1.0 - 2.0 * _triangleGaussA],
+        [1.0 - 2.0 * _triangleGaussA, _triangleGaussA],
+        [_triangleGaussB, _triangleGaussB],
+        [_triangleGaussB, 1.0 - 2.0 * _triangleGaussB],
+        [1.0 - 2.0 * _triangleGaussB, _triangleGaussB],
     ]
 )
-TRI_GAUSS_W = np.array(
+_triangleGaussWeights = np.array(
     [
         9.0 / 80.0,
         (155.0 - np.sqrt(15.0)) / 2400.0,
@@ -557,72 +585,46 @@ TRI_GAUSS_W = np.array(
 )
 
 
-class BVHNode:
-    """A node in the Bounding Volume Hierarchy (BVH) tree for contact detection."""
-
-    def __init__(self, aabb_min, aabb_max, left=None, right=None, facets=None):
-        self.aabb_min = aabb_min
-        self.aabb_max = aabb_max
-        self.left = left
-        self.right = right
-        self.facets = facets  # Only set for leaf nodes
-
-    def is_leaf(self) -> bool:
-        return self.facets is not None
-
-
-def build_bvh(facets_with_bounds) -> BVHNode:
-    """Recursively build a binary BVH tree from a list of tuples: (facet, centroid, aabb_min, aabb_max)."""
-    if not facets_with_bounds:
-        return None
-
-    # Compute enclosing AABB for all facets in the current subset
-    mins = np.array([f[2] for f in facets_with_bounds])
-    maxs = np.array([f[3] for f in facets_with_bounds])
-    aabb_min = np.min(mins, axis=0)
-    aabb_max = np.max(maxs, axis=0)
-
-    # Leaf node base case: 2 or fewer facets
-    if len(facets_with_bounds) <= 2:
-        return BVHNode(aabb_min, aabb_max, facets=[f[0] for f in facets_with_bounds])
-
-    # Find the longest axis to split along
-    extent = aabb_max - aabb_min
-    split_axis = np.argmax(extent)
-
-    # Sort facets by their centroid along the longest axis
-    facets_with_bounds.sort(key=lambda f: f[1][split_axis])
-    mid = len(facets_with_bounds) // 2
-
-    # Recursively build child nodes
-    left_child = build_bvh(facets_with_bounds[:mid])
-    right_child = build_bvh(facets_with_bounds[mid:])
-
-    return BVHNode(aabb_min, aabb_max, left=left_child, right=right_child)
-
-
-def query_bvh(node: BVHNode, q_min, q_max, candidates: list):
-    """Query the BVH tree to find all candidate facets overlapping the query AABB."""
-    if node is None:
-        return
-
-    # Check if query AABB overlaps with the node's AABB
-    if not (np.all(q_min <= node.aabb_max) and np.all(node.aabb_min <= q_max)):
-        return
-
-    if node.is_leaf():
-        candidates.extend(node.facets)
-    else:
-        query_bvh(node.left, q_min, q_max, candidates)
-        query_bvh(node.right, q_min, q_max, candidates)
-
-
 class Constraint(ConstraintBase):
+    """A segment-to-segment mortar contact constraint between two deformable surfaces.
+
+    The module docstring above states the formulation, its sign convention and the three ways the
+    discrete condition can be enforced; :doc:`the mortar theory page </documentation/mortartheory>`
+    gives the derivation and the sources. What follows is the object contract.
+
+    Both surfaces are element sets of geometry-only contact elements
+    (:mod:`~edelweissfe.elements.contactelement.element`), usually produced by
+    :mod:`~edelweissfe.generators.surfaceelementgenerator` with ``facets=wholeFace``. The non-mortar
+    set carries the constraint; under ``formulation=lagrange`` it also contributes one scalar
+    multiplier variable per non-mortar node to the global system, which is what makes that
+    formulation a saddle-point problem.
+
+    Parameters
+    ----------
+    name
+        The name of this constraint.
+    model
+        The model tree.
+    journal
+        The journal to report diagnostics to. ``None`` is accepted, for a constraint built directly
+        rather than from an input file; diagnostics then fall back to :mod:`warnings`.
+    kwargs
+        The options of :class:`MortarContactSchema`, by their input-file names. Resolution, case
+        folding, coercion and defaults are applied here, so that a direct call and the route through
+        :meth:`fromConstraintDefinition` see identical rules.
+    """
+
+    #: Option schema for this constraint, per OptionSchemaProvider.
     schema = MortarContactSchema
 
-    def __init__(self, name: str, model: FEModel, *args, **kwargs):
-        super().__init__(name, model, *args, **kwargs)
+    #: Sender of this constraint's journal messages. A short category rather than the instance name,
+    #: which the messages carry in their own text, so that several contact pairs share one column.
+    identification = "MortarContact"
 
+    def __init__(self, name: str, model: FEModel, journal: Journal = None, **kwargs):
+        super().__init__(name, model, **kwargs)
+
+        self.journal = journal
         self.model = model
         # Resolving names, coercing values and filling in defaults is the schema's job, done once
         # here so that a direct call from a test and the route through
@@ -642,22 +644,22 @@ class Constraint(ConstraintBase):
         self._nonMortarSurfaceSetName = non_mortar_surf_name
         self._mortarSurfaceSetName = mortar_surf_name
 
-        self.non_mortar_facets = self._collectFacets(model, non_mortar_surf_name, "Non-mortar")
-        self.mortar_facets = self._collectFacets(model, mortar_surf_name, "Mortar")
+        self.nonMortarFacets = self._collectFacets(model, non_mortar_surf_name, "Non-mortar")
+        self.mortarFacets = self._collectFacets(model, mortar_surf_name, "Mortar")
 
         # Identify nodes. First-seen order, so the node numbering of the contact system is a
         # function of the facet set alone and not of dictionary iteration order.
-        self.non_mortar_nodes = []
-        for el in self.non_mortar_facets:
+        self.nonMortarNodes = []
+        for el in self.nonMortarFacets:
             for node in el.nodes:
-                if node not in self.non_mortar_nodes:
-                    self.non_mortar_nodes.append(node)
+                if node not in self.nonMortarNodes:
+                    self.nonMortarNodes.append(node)
 
-        self.mortar_nodes = []
-        for el in self.mortar_facets:
+        self.mortarNodes = []
+        for el in self.mortarFacets:
             for node in el.nodes:
-                if node not in self.mortar_nodes:
-                    self.mortar_nodes.append(node)
+                if node not in self.mortarNodes:
+                    self.mortarNodes.append(node)
 
         # The formulation assumes a fixed pair of DISJOINT surfaces. A node listed
         # on both of them is not merely questionable input, it makes the system
@@ -670,7 +672,7 @@ class Constraint(ConstraintBase):
         # self-contact would additionally require an exclusion rule for a facet's
         # own and adjacent facets, an unambiguous nodal normal at doubly
         # classified nodes and a dynamic surface pairing; it is out of scope here.
-        shared_nodes = set(self.non_mortar_nodes) & set(self.mortar_nodes)
+        shared_nodes = set(self.nonMortarNodes) & set(self.mortarNodes)
         if shared_nodes:
             labels = sorted(node.label for node in shared_nodes)
             raise ValueError(
@@ -680,9 +682,9 @@ class Constraint(ConstraintBase):
                 f"identically vanishing weak gap and thus a singular system."
             )
 
-        self._nodes = self.non_mortar_nodes + self.mortar_nodes
-        self.nNonMortarNodes = len(self.non_mortar_nodes)
-        self.nMortarNodes = len(self.mortar_nodes)
+        self._nodes = self.nonMortarNodes + self.mortarNodes
+        self.nNonMortarNodes = len(self.nonMortarNodes)
+        self.nMortarNodes = len(self.mortarNodes)
 
         # ------------------------------------------------------------------
         # FORMULATION. Two ways to enforce the same discrete constraint g_A = 0,
@@ -722,14 +724,14 @@ class Constraint(ConstraintBase):
         # inside the geometry block, because the rule needs the nodal weights.
         self.kappa = float(kwargs["penaltyStiffness"])
         self._derive_kappa = self.kappa <= 0.0
-        self.use_augmented_lagrange = bool(kwargs["augmentedLagrange"])
-        self.augmentation_tolerance = float(kwargs["augmentationTolerance"])
-        self.max_augmentations = int(kwargs["maxAugmentations"])
+        self.useAugmentedLagrange = bool(kwargs["augmentedLagrange"])
+        self.augmentationTolerance = float(kwargs["augmentationTolerance"])
+        self.maxAugmentations = int(kwargs["maxAugmentations"])
 
         # A parameter that belongs to the OTHER formulation is silently inert, which
         # is exactly the kind of thing that costs an afternoon. Say it once.
         if self.formulation == "penalty" and float(kwargs["cn"]) > 0.0:
-            self._warn_once(
+            self._warnOnce(
                 "cn_ignored_in_penalty",
                 "'cn' was given but formulation=penalty ignores it: the complementarity "
                 "parameter belongs to the semi-smooth NCP of the Lagrange-multiplier "
@@ -737,7 +739,7 @@ class Constraint(ConstraintBase):
                 "'penaltyStiffness' instead.",
             )
         if self.formulation == "lagrange" and float(kwargs["penaltyStiffness"]) > 0.0:
-            self._warn_once(
+            self._warnOnce(
                 "penalty_ignored_in_lagrange",
                 "'penaltyStiffness' was given but formulation=lagrange ignores it: the "
                 "multipliers are unknowns there and the constraint is enforced exactly. "
@@ -745,9 +747,9 @@ class Constraint(ConstraintBase):
             )
 
         # Node index lookups for fast access
-        self.node_to_global_idx = {node: i for i, node in enumerate(self._nodes)}
-        self.slave_node_to_idx = {node: i for i, node in enumerate(self.non_mortar_nodes)}
-        self.master_node_to_idx = {node: i for i, node in enumerate(self.mortar_nodes)}
+        self.nodeToGlobalIndex = {node: i for i, node in enumerate(self._nodes)}
+        self.nonMortarNodeToIndex = {node: i for i, node in enumerate(self.nonMortarNodes)}
+        self.mortarNodeToIndex = {node: i for i, node in enumerate(self.mortarNodes)}
 
         # Undeformed coordinates of all constraint nodes (slaves first, then masters)
         self._X = np.array([node.coordinates for node in self._nodes])
@@ -762,7 +764,7 @@ class Constraint(ConstraintBase):
         self._interfaceDiameter = float(np.max(np.ptp(slaveCoordinates, axis=0))) if len(slaveCoordinates) else 0.0
 
         # Precompute undeformed normals
-        self.undeformed_normals = self.compute_normals()
+        self.undeformedNormals = self.computeNormals()
 
         # The orientation of the contact facets is an INPUT property: it decides
         # the direction of n_I and with it the sign of gap and pressure. Nothing
@@ -771,62 +773,73 @@ class Constraint(ConstraintBase):
         # tension. Two independent checks, both diagnostic rather than fatal,
         # because a legitimate mesh may be split, non-manifold at its border, or
         # deliberately one-sided.
-        self._check_facet_winding(self.non_mortar_facets, non_mortar_surf_name)
-        self._check_facet_winding(self.mortar_facets, mortar_surf_name)
-        self._check_surfaces_face_each_other()
+        self._checkFacetWinding(self.nonMortarFacets, non_mortar_surf_name)
+        self._checkFacetWinding(self.mortarFacets, mortar_surf_name)
+        self._checkSurfacesFaceEachOther()
 
         # Initialize PDASS variables
-        self.active_set = np.zeros(self.nNonMortarNodes, dtype=bool)
-        self.use_active_set = True
+        self.activeSet = np.zeros(self.nNonMortarNodes, dtype=bool)
+        self.useActiveSet = True
         # Identifies the increment ATTEMPT (number, size, end time) - see
         # applyConstraint: a cutback re-attempt keeps the number but changes size.
-        self.last_timestep_key = None
-        self.current_iteration = 0
+        self.lastTimeStepKey = None
+        self.currentIteration = 0
         # Termination + anti-cycling state of the semi-smooth (PDASS) iteration,
         # reset per increment in applyConstraint: the set is frozen for the rest
         # of the increment once it has settled, or once a discrete state already
         # visited this increment recurs.
-        self.active_set_frozen = False
-        self.active_set_stable_count = 0
+        self.activeSetFrozen = False
+        self.activeSetStableCount = 0
         self._seen_states = set()
         self._last_state = None
 
         # ---------------- state of the penalty / augmented branch ----------------
-        # z_aug is the nodal pressure estimate p^k_A of the augmented Lagrangian
+        # augmentedMultipliers is the nodal pressure estimate p^k_A of the augmented Lagrangian
         # of the augmented outer loop, in the PHYSICAL convention
         # p >= 0 in compression. It is zero for pure penalty, where the pressure is
-        # kappa*g_A alone. z_aug_converged carries it across increments (warm start)
+        # kappa*g_A alone. augmentedMultipliersConverged carries it across increments (warm start)
         # and is what a cutback re-attempt is reset to.
-        self.z_aug = np.zeros(self.nNonMortarNodes)
-        self.z_aug_converged = np.zeros(self.nNonMortarNodes)
+        self.augmentedMultipliers = np.zeros(self.nNonMortarNodes)
+        self.augmentedMultipliersConverged = np.zeros(self.nNonMortarNodes)
         self._augmentation_counter = 0
         # Last assembled weighted gap and nodal multiplier per slave node. The gap is
-        # what the augmentation updates from; lambda_nodal exists so that BOTH
+        # what the augmentation updates from; nodalMultipliers exists so that BOTH
         # formulations expose the contact pressure the same way - in the penalty
         # branch it is not a degree of freedom and could not be read off the
         # solution vector otherwise.
-        self.current_g_weak = np.zeros(self.nNonMortarNodes)
-        self.lambda_nodal = np.zeros(self.nNonMortarNodes)
+        self.currentWeakGap = np.zeros(self.nNonMortarNodes)
+        self.nodalMultipliers = np.zeros(self.nNonMortarNodes)
 
         # NOTE: self._warned is initialized at the very top of __init__, because the
         # input checks above already emit diagnostics through it. Every assumption
         # behind those diagnostics was measured over the Control_Tests and
         # patch-test suite before being wired up; the counts are recorded in the
-        # documentation. They are emitted through `warnings` rather than the
-        # journal because the constraint interface does not hand a Journal
-        # instance to constraints.
+        # documentation.
 
-    def _warn_once(self, key: str, message: str):
+    def _warnOnce(self, key: str, message: str):
         """Emit a runtime diagnostic at most once per constraint instance and cause.
 
         These conditions repeat every increment once they occur at all, so warning
         per occurrence would bury the message in its own repetitions. One message
         per run and cause is what makes it readable.
+
+        Parameters
+        ----------
+        key
+            The cause, which is what is deduplicated on.
+        message
+            The text, which already names the condition and what it implies.
         """
         if key in self._warned:
             return
         self._warned.add(key)
-        warnings.warn(f"MortarContact '{self._name}': {message}", RuntimeWarning, stacklevel=3)
+        text = f"contact '{self._name}': {message}"
+        if self.journal is not None:
+            self.journal.message(text, self.identification, level=1)
+        else:
+            # No journal: a constraint constructed directly rather than from an input file. The
+            # diagnostic is worth more than the channel, so it still goes out.
+            warnings.warn(f"MortarContact {text}", RuntimeWarning, stacklevel=3)
 
     @staticmethod
     def _collectFacets(model: FEModel, elementSetName: str, side: str) -> list:
@@ -873,7 +886,7 @@ class Constraint(ConstraintBase):
 
         return facets
 
-    def _check_facet_winding(self, facets, surface_name: str):
+    def _checkFacetWinding(self, facets, surface_name: str):
         """Whether the facets of one surface are wound consistently.
 
         Purely topological, no geometry involved. Two facets sharing an edge must
@@ -888,7 +901,7 @@ class Constraint(ConstraintBase):
 
         This catches a locally inconsistent surface. It cannot catch a surface that
         is consistently wound but globally inside-out - that is what
-        _check_surfaces_face_each_other is for.
+        _checkSurfacesFaceEachOther is for.
         """
         dim = self.model.domainSize
         culprits = []
@@ -917,7 +930,7 @@ class Constraint(ConstraintBase):
 
         if culprits:
             pairs = ", ".join(f"({a}, {b})" for a, b in culprits[:5])
-            self._warn_once(
+            self._warnOnce(
                 f"winding_{surface_name}",
                 f"surface '{surface_name}' is not consistently wound: {len(culprits)} facet "
                 f"pair(s) traverse a shared edge in the SAME direction, first {pairs}. One facet "
@@ -926,7 +939,7 @@ class Constraint(ConstraintBase):
                 f"compression. Fix the node ordering of the contact overlay elements.",
             )
 
-    def _check_surfaces_face_each_other(self):
+    def _checkSurfacesFaceEachOther(self):
         """Whether the slave normals point towards the master surface at all.
 
         A surface can be wound perfectly consistently and still be inside-out as a
@@ -957,7 +970,7 @@ class Constraint(ConstraintBase):
         if separation < 1e-14:
             return  # coincident centroids: no information, and not our problem
 
-        mean_normal = np.mean(self.undeformed_normals, axis=0)
+        mean_normal = np.mean(self.undeformedNormals, axis=0)
         if np.linalg.norm(mean_normal) < 1e-8:
             return  # normals cancel out (e.g. a closed surface) - nothing to say
 
@@ -969,7 +982,7 @@ class Constraint(ConstraintBase):
             return
 
         if normalSeparation < -0.1 * interfaceDiameter:
-            self._warn_once(
+            self._warnOnce(
                 "surfaces_face_away",
                 f"the averaged non-mortar normal points AWAY from the mortar surface: the mortar "
                 f"centroid lies {-normalSeparation:.4g} BEHIND the non-mortar one, against an "
@@ -979,7 +992,7 @@ class Constraint(ConstraintBase):
                 f"and the contact bonds the surfaces instead of separating them.",
             )
 
-    def _adjacent_youngs_moduli(self) -> dict:
+    def _adjacentYoungsModuli(self) -> dict:
         """Young's moduli of the materials whose elements touch the contact surfaces.
 
         Returned as {section/material: E} so that a caller can report what it chose
@@ -1025,21 +1038,38 @@ class Constraint(ConstraintBase):
 
         return candidates
 
-    def _smallest_adjacent_youngs_modulus(self):
-        """The smallest of :meth:`_adjacent_youngs_moduli`, or None if there is none."""
+    def _smallestAdjacentYoungsModulus(self):
+        """The smallest of :meth:`_adjacentYoungsModuli`, or None if there is none."""
 
-        candidates = self._adjacent_youngs_moduli()
+        candidates = self._adjacentYoungsModuli()
         return min(candidates.values()) if candidates else None
 
-    def _resolve_c_n(self):
+    def _resolveCn(self):
         """Set c_n to the smallest initial Young's modulus adjacent to the interface.
 
         Why a Young's modulus at all: the lower end of the admissible band, below which
         the active set does not converge, scales linearly with the stiffness of the
         contacting pair, and above that bound the influence of the value is negligible
         until, far above it, the set begins to chatter between two states. The modulus
-        therefore fixes the order of magnitude and nothing finer. Taking it at the start
-        of the computation is
+        therefore fixes the order of magnitude and nothing finer.
+
+        On the sources, precisely, because neither covers this case as it stands. That
+        the parameter is purely algorithmic is Gitterle, Popp, Gee & Wall (2010): "the
+        algorithmic parameters c_n and c_t do not influence the accuracy of the solution
+        but can influence the convergence behaviour". The lower bound and its stiffness
+        dependence are Hueber & Wohlmuth (2005), Section 7: "for c > c_0, the influence
+        of c on N_l is negligible ... the lower bound c_0 depends on the material
+        parameters ... it seems to be that c_0 depends linearly on E" - their wording,
+        an observation rather than a result. But that whole section concerns their
+        INEXACT strategy, which updates the active set after each multigrid sweep, and
+        they say plainly that c "does not have an influence, if we solve the linear
+        problems exactly". EdelweissFE does solve them exactly, so their argument does
+        not reach this code directly; what makes the value matter here is that the set
+        is re-decided per Newton iteration on a geometry that changes between
+        increments, which their quasi-linear setting does not have. The band is real -
+        it is measured in 06_active_set_pdass - but it is measured here, not inherited.
+
+        Taking the modulus at the start of the computation is
         well defined even for a damaging material (GCDP), because no damage has
         accumulated yet - and since c_n is purely algorithmic, its later evolution
         does not matter.
@@ -1053,11 +1083,11 @@ class Constraint(ConstraintBase):
         the Young's modulus (LINEARELASTIC, GCDP, ...). That is a convention, not a
         guarantee, which is why the resolved value is always reported.
         """
-        candidates = self._adjacent_youngs_moduli()
+        candidates = self._adjacentYoungsModuli()
 
         if not candidates:
             self.c_n = 1.0e6
-            self._warn_once(
+            self._warnOnce(
                 "cn_not_derivable",
                 "no Young's modulus could be determined for the materials adjacent to the "
                 f"contact surfaces, so c_n falls back to {self.c_n:.3e}. That value carries a "
@@ -1070,7 +1100,7 @@ class Constraint(ConstraintBase):
         chosen = min(candidates, key=candidates.get)
         self.c_n = candidates[chosen]
         listed = ", ".join(f"{k} = {v:.4g}" for k, v in sorted(candidates.items(), key=lambda kv: kv[1]))
-        self._warn_once(
+        self._warnOnce(
             "cn_derived",
             f"c_n was not given and has been derived as {self.c_n:.4g}, the smallest initial "
             f"Young's modulus adjacent to the interface ({chosen}). Considered: {listed}. This "
@@ -1079,7 +1109,7 @@ class Constraint(ConstraintBase):
             f"safe direction.",
         )
 
-    def _resolve_kappa(self):
+    def _resolveKappa(self):
         """Derive the penalty parameter kappa of t_A = kappa*g_A.
 
         THIS RULE IS NOT AN ESTABLISHED ONE. The penalty form itself prescribes no way
@@ -1116,14 +1146,14 @@ class Constraint(ConstraintBase):
         """
         self._derive_kappa = False
 
-        weights = self.current_D_rowsum
+        weights = self.currentNodalWeights
         total = float(np.sum(weights))
-        nFacets = len(self.non_mortar_facets)
+        nFacets = len(self.nonMortarFacets)
         dim = self.model.domainSize
 
         if total <= 0.0 or nFacets == 0 or self.nNonMortarNodes == 0:
             self.kappa = 1.0e6
-            self._warn_once(
+            self._warnOnce(
                 "kappa_not_derivable",
                 f"the interface measure needed to derive the penalty parameter is not "
                 f"available (covered measure {total:.3e} over {nFacets} facet(s)), so kappa "
@@ -1140,10 +1170,10 @@ class Constraint(ConstraintBase):
         # augmentation enabled it does not influence the converged result.
         stiffness_ratio = 100.0
 
-        E = self._smallest_adjacent_youngs_modulus()
+        E = self._smallestAdjacentYoungsModulus()
         if E is None:
             self.kappa = 1.0e6
-            self._warn_once(
+            self._warnOnce(
                 "kappa_not_derivable_E",
                 f"no Young's modulus could be determined for the materials adjacent to the "
                 f"contact surfaces, so kappa falls back to {self.kappa:.3e}. That value "
@@ -1153,17 +1183,17 @@ class Constraint(ConstraintBase):
             return
 
         self.kappa = stiffness_ratio * E / (h * d_mean)
-        self._warn_once(
+        self._warnOnce(
             "kappa_derived",
             f"'penaltyStiffness' was not given and kappa has been derived as "
             f"{self.kappa:.4g} = {stiffness_ratio:g}*E/(h*D_mean) with E = {E:.4g}, "
             f"h = {h:.4g} and D_mean = {d_mean:.4g}, i.e. a contact stiffness per unit "
-            f"area of eps_N = {stiffness_ratio:g}*E/h = {stiffness_ratio * E / h:.4g}. This is an engineering rule of this "
-            f"implementation rather than an established value. With augmentedLagrange "
+            f"area of eps_N = {stiffness_ratio:g}*E/h = {stiffness_ratio * E / h:.4g}. This is an "
+            f"engineering rule of this implementation rather than an established value. With augmentedLagrange "
             f"enabled the converged result does not depend on it.",
         )
 
-    def _check_converged_active_set(self, U_ref: np.ndarray):
+    def _checkConvergedActiveSet(self, U_ref: np.ndarray):
         """Re-evaluate the NCP indicator on the CONVERGED state of the last increment.
 
         The active set is frozen once it has settled for two consecutive iterations
@@ -1179,7 +1209,7 @@ class Constraint(ConstraintBase):
         If not, the increment enforced the wrong branch at those nodes and its
         solution does not satisfy the Signorini conditions.
         """
-        if not self.use_active_set:
+        if not self.useActiveSet:
             return
 
         # Only the Lagrange branch freezes its set. The penalty branch re-derives it
@@ -1201,21 +1231,21 @@ class Constraint(ConstraintBase):
 
         would_be = np.zeros(nSlave, dtype=bool)
         for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
-            n_I = self.current_normals[I]
-            nzD, nzC = self.current_D_nz[I], self.current_C_nz[I]
+            n_I = self.currentNormals[I]
+            nzD, nzC = self.currentDNonzero[I], self.currentCNonzero[I]
             g_weak = 0.0
             if len(nzD):
-                g_weak -= self.current_D_row[I] @ (x_slave[nzD] @ n_I)
+                g_weak -= self.currentDRow[I] @ (x_slave[nzD] @ n_I)
             if len(nzC):
-                g_weak += self.current_C_row[I] @ (x_master[nzC] @ n_I)
-            D_II = self.current_D_rowsum[I]
-            inv_D = 1.0 / D_II if abs(D_II) > self.current_D_tol else 0.0
+                g_weak += self.currentCRow[I] @ (x_master[nzC] @ n_I)
+            D_II = self.currentNodalWeights[I]
+            inv_D = 1.0 / D_II if abs(D_II) > self.currentWeightTolerance else 0.0
             p_n = U_ref[idx_LM_0 + I] * np.sign(D_II)
             would_be[I] = bool(p_n - self.c_n * g_weak * inv_D > 0.0)
 
-        flipped = np.flatnonzero(would_be != self.active_set)
+        flipped = np.flatnonzero(would_be != self.activeSet)
         if len(flipped):
-            self._warn_once(
+            self._warnOnce(
                 "active_set_unstable_at_convergence",
                 f"the active set of a converged increment does not reproduce itself: "
                 f"{len(flipped)} slave node(s) (first local index {flipped[0]}) would switch "
@@ -1225,6 +1255,19 @@ class Constraint(ConstraintBase):
                 f"conditions. Reduce the increment size, or verify the result by checking the "
                 f"nodal pressures and openings of the converged state against each other.",
             )
+
+    @classmethod
+    def fromConstraintDefinition(cls, name: str, definition: dict, model: FEModel, journal: Journal) -> "Constraint":
+        """Build this constraint from a parsed ``*constraint`` definition. See
+        :class:`~edelweissfe.constraints.base.constraintbase.ConstraintBase` for why this is
+        separate from ``__init__``.
+
+        Overridden only to pass the journal through: the base class accepts one and the input-file
+        route supplies one, but its default implementation drops it, which would leave this
+        constraint's diagnostics with nowhere to go. The options themselves stay in their raw form,
+        since ``__init__`` resolves them against the schema itself.
+        """
+        return cls(name, model, journal, **definition)
 
     @property
     def nodes(self) -> list:
@@ -1241,7 +1284,7 @@ class Constraint(ConstraintBase):
     def getNumberOfAdditionalNeededScalarVariables(self) -> int:
         return self.nMultipliers
 
-    def compute_normals(self, U_np: np.ndarray = None) -> np.ndarray:
+    def computeNormals(self, U_np: np.ndarray = None) -> np.ndarray:
         """Averaged outward-pointing unit normal at every non-mortar (slave) node.
 
         The averaged nodal normal: the element normal
@@ -1286,10 +1329,10 @@ class Constraint(ConstraintBase):
         dim = self.model.domainSize
         normals = np.zeros((self.nNonMortarNodes, dim))
 
-        node_to_idx = self.slave_node_to_idx
+        node_to_idx = self.nonMortarNodeToIndex
 
         # Iterate over all non-mortar facets
-        for el in self.non_mortar_facets:
+        for el in self.nonMortarFacets:
             facet_nodes = el.nodes
 
             # Retrieve coordinates
@@ -1298,7 +1341,7 @@ class Constraint(ConstraintBase):
                 X = node.coordinates
                 if U_np is not None:
                     # Retrieve displacement from local solution slice
-                    node_idx = self.node_to_global_idx[node]
+                    node_idx = self.nodeToGlobalIndex[node]
                     u = U_np[self.sizeField * node_idx : self.sizeField * node_idx + dim]
                     coords.append(X + u)
                 else:
@@ -1308,9 +1351,9 @@ class Constraint(ConstraintBase):
 
             # Element normal evaluated AT each node's own natural coordinate,
             # normalized, and summed over the adjacent facets - the averaged nodal
-            # normal,
-            # Eq. (4.41). Both sum UNIT element normals; see the docstring for what
-            # each of the two steps is worth, measured.
+            # normal of Popp, Gitterle, Gee & Wall (2010), written out as Farah
+            # (2018), Eq. (4.41). Both sum UNIT element normals; see the docstring
+            # for what each of the two steps is worth, measured.
             #
             # A contribution of zero length is a degenerate facet at that node. It is
             # dropped rather than divided by: the sum below then rests on the
@@ -1349,7 +1392,7 @@ class Constraint(ConstraintBase):
             # cancel, which is what a node on a sharp fold between two opposing
             # facets does - and note that with unit contributions the cancellation
             # no longer needs the two facets to be of equal size.
-            self._warn_once(
+            self._warnOnce(
                 "degenerate_nodal_normal",
                 f"{len(degenerate)} slave node(s) with a vanishing averaged nodal normal "
                 f"(first: local index {degenerate[0]}). Such nodes carry no contact at all - "
@@ -1361,36 +1404,7 @@ class Constraint(ConstraintBase):
 
         return normals
 
-    def compute_local_dual_matrices(
-        self, U_np: np.ndarray = None
-    ) -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        """Compute the local standard mass matrices M_e, diagonal matrices D_e, and transformation matrices A_e for all non-mortar facets.
-
-        If U_np is provided, coordinates are evaluated in the deformed configuration.
-        Otherwise, they are evaluated in the undeformed configuration.
-        """
-        dim = self.model.domainSize
-        dual_matrices = {}
-        for el in self.non_mortar_facets:
-            # Extract coordinates for element nodes
-            coords = []
-            for node in el.nodes:
-                X = node.coordinates
-                if U_np is not None:
-                    node_idx = self.node_to_global_idx[node]
-                    u = U_np[self.sizeField * node_idx : self.sizeField * node_idx + dim]
-                    coords.append(X + u)
-                else:
-                    coords.append(X)
-            coords = np.array(coords)
-
-            # Compute M_e, D_e, A_e
-            M_e, D_e, A_e = el.computeLocalMassMatrices(coords)
-            dual_matrices[el.elNumber] = (M_e, D_e, A_e)
-
-        return dual_matrices
-
-    def compute_mortar_coupling_matrices(self, U_np: np.ndarray = None) -> tuple[np.ndarray, np.ndarray]:
+    def computeMortarCouplingMatrices(self, U_np: np.ndarray = None) -> tuple[np.ndarray, np.ndarray]:
         """Compute the global mortar coupling matrices D (slave-slave) and C (slave-master).
         Supports both 2D and 3D contact elements.
         """
@@ -1401,31 +1415,12 @@ class Constraint(ConstraintBase):
         n_slave = self.nNonMortarNodes
         n_master = self.nMortarNodes
 
-        # D and C are assembled sparsely from the element-local blocks. The sparsity
-        # is a property of the dual formulation, not an implementation detail:
-        # dual Lagrange multipliers
-        # yield slave-side nodal basis functions "which have only local support",
-        # algebraically visible as D becoming diagonal; sec. 5 adds that the
-        # biorthogonality reduces D^-1 "either to a diagonal matrix ... or to at
-        # least a sparse matrix". Dense storage would therefore cost O(n_slave^2) for
-        # a structurally sparse object.
-        D_rows, D_cols, D_vals = [], [], []
-        C_rows, C_cols, C_vals = [], [], []
-
-        from edelweissfe.constraints.mortar_geom_utils import (
-            clip_1d_segments,
-            get_tangent_basis,
-            sutherland_hodgman_clip,
-            to_plane_coords,
-            triangulate_polygon,
-        )
-
         # Precompute current deformed coordinates for all nodes
         current_coords = {}
         for node in self._nodes:
             X = node.coordinates
             if U_np is not None:
-                node_idx = self.node_to_global_idx[node]
+                node_idx = self.nodeToGlobalIndex[node]
                 u = U_np[self.sizeField * node_idx : self.sizeField * node_idx + dim]
                 current_coords[node] = X + u
             else:
@@ -1433,7 +1428,7 @@ class Constraint(ConstraintBase):
 
         # Build AABB bounding boxes for all master facets to construct the BVH tree
         facets_with_bounds = []
-        for m_el in self.mortar_facets:
+        for m_el in self.mortarFacets:
             m_coords = np.array([current_coords[n] for n in m_el.nodes])
             centroid = np.mean(m_coords, axis=0)
 
@@ -1445,7 +1440,7 @@ class Constraint(ConstraintBase):
 
             facets_with_bounds.append((m_el, centroid, aabb_min, aabb_max))
 
-        bvh_root = build_bvh(facets_with_bounds)
+        bvh_root = buildBoundingVolumeHierarchy(facets_with_bounds)
 
         # ------------------------------------------------------------------
         # PASS 1: Segmentation - collect all integration point records per
@@ -1455,18 +1450,18 @@ class Constraint(ConstraintBase):
         seg_masters = {}  # slave elNumber -> {master elNumber: m_el}
         slave_els = {}  # slave elNumber -> (s_el, s_idx)
 
-        # Gauss point back-mapping failures (see map_2d_to_natural): a non-converged
+        # Gauss point back-mapping failures (see mapPlaneToNatural): a non-converged
         # natural coordinate is indistinguishable from a converged one and goes
         # straight into N_s / N_m and thus into D and C, so it has to be counted here
         # - nothing downstream can notice it.
         n_proj_failed = 0
         first_proj_failure = None
 
-        for s_el in self.non_mortar_facets:
+        for s_el in self.nonMortarFacets:
             s_nodes = s_el.nodes
 
             s_coords = np.array([current_coords[nd] for nd in s_nodes])
-            s_idx = np.array([self.slave_node_to_idx[nd] for nd in s_nodes])
+            s_idx = np.array([self.nonMortarNodeToIndex[nd] for nd in s_nodes])
 
             # Query the BVH tree once per slave facet to find nearby Master candidates
             s_aabb_min = np.min(s_coords, axis=0)
@@ -1474,35 +1469,35 @@ class Constraint(ConstraintBase):
             s_margin = max(0.15 * np.max(s_aabb_max - s_aabb_min), 0.1)
 
             candidates = []
-            query_bvh(bvh_root, s_aabb_min - s_margin, s_aabb_max + s_margin, candidates)
+            queryBoundingVolumeHierarchy(bvh_root, s_aabb_min - s_margin, s_aabb_max + s_margin, candidates)
             if not candidates:
                 continue
 
             # Loop over the linear sub-cells of the slave facet
-            for s_sub in get_sub_cells(s_el):
+            for s_sub in getSubCells(s_el):
                 sc_coords = s_coords[s_sub]
 
                 if dim == 3:
                     # 3D surface Mortar integration (Auxiliary plane projection & Sutherland-Hodgman clipping)
-                    n_vec = facet_normal(sc_coords)
+                    n_vec = facetNormal(sc_coords)
                     n_norm = np.linalg.norm(n_vec)
                     if n_norm < 1e-14:
                         continue  # degenerate sub-cell
                     normal = n_vec / n_norm
                     p0 = np.mean(sc_coords, axis=0)
-                    t1, t2 = get_tangent_basis(normal)
+                    t1, t2 = tangentBasis(normal)
 
-                    s_sub_2d = to_plane_coords(sc_coords, p0, t1, t2)
-                    s_full_2d = to_plane_coords(s_coords, p0, t1, t2)
+                    s_sub_2d = toPlaneCoordinates(sc_coords, p0, t1, t2)
+                    s_full_2d = toPlaneCoordinates(s_coords, p0, t1, t2)
 
                     # The slave sub-cell is the CLIP polygon, so it must be convex
-                    # (see is_convex_polygon). For CONQUAD8 this requires the
+                    # (see isConvexPolygon). For CONQUAD8 this requires the
                     # mid-side node to stay on its own side of the element centre,
                     # for CONQUAD9 the centre node to stay clear of the corners -
                     # margins no usable volume element gets anywhere near, which is
                     # why this is a warning and not a raise.
-                    if not is_convex_polygon(s_sub_2d):
-                        self._warn_once(
+                    if not isConvexPolygon(s_sub_2d):
+                        self._warnOnce(
                             "nonconvex_subcell",
                             f"non-convex sub-cell on slave facet {s_el.elNumber} (element type "
                             f"{s_el.elType}). The segmentation clips against the half-plane of "
@@ -1514,17 +1509,17 @@ class Constraint(ConstraintBase):
                     for m_el in candidates:
                         m_nodes = m_el.nodes
                         m_coords = np.array([current_coords[nd] for nd in m_nodes])
-                        m_full_2d = to_plane_coords(m_coords, p0, t1, t2)
+                        m_full_2d = toPlaneCoordinates(m_coords, p0, t1, t2)
 
-                        for m_sub in get_sub_cells(m_el):
+                        for m_sub in getSubCells(m_el):
                             m_sub_2d = m_full_2d[m_sub]
 
                             # The master sub-cell is the SUBJECT of the clip, which
                             # Sutherland-Hodgman accepts non-convex - but the overlap
                             # inherits its reflex vertices and the fan triangulation
-                            # below then over-counts the area (see is_convex_polygon).
-                            if not is_convex_polygon(m_sub_2d):
-                                self._warn_once(
+                            # below then over-counts the area (see isConvexPolygon).
+                            if not isConvexPolygon(m_sub_2d):
+                                self._warnOnce(
                                     "nonconvex_master_subcell",
                                     f"non-convex sub-cell on master facet {m_el.elNumber} (element "
                                     f"type {m_el.elType}), projected into the plane of slave facet "
@@ -1535,22 +1530,22 @@ class Constraint(ConstraintBase):
                                     f"distorted.",
                                 )
 
-                            overlap_2d = sutherland_hodgman_clip(m_sub_2d, s_sub_2d)
+                            overlap_2d = sutherlandHodgmanClip(m_sub_2d, s_sub_2d)
                             if len(overlap_2d) < 3:
                                 continue
 
-                            for tri in triangulate_polygon(overlap_2d):
+                            for tri in triangulatePolygon(overlap_2d):
                                 v0, v1, v2 = tri[0], tri[1], tri[2]
                                 area_jac = abs((v1[0] - v0[0]) * (v2[1] - v0[1]) - (v2[0] - v0[0]) * (v1[1] - v0[1]))
                                 if area_jac < 1e-14:
                                     continue
 
-                                for gp, w in zip(TRI_GAUSS_PTS, TRI_GAUSS_W):
+                                for gp, w in zip(_triangleGaussPoints, _triangleGaussWeights):
                                     L1, L2 = gp[0], gp[1]
                                     x_gp_2d = (1.0 - L1 - L2) * v0 + L1 * v1 + L2 * v2
 
-                                    local_s, ok_s = map_2d_to_natural(s_el, s_full_2d, x_gp_2d)
-                                    local_m, ok_m = map_2d_to_natural(m_el, m_full_2d, x_gp_2d)
+                                    local_s, ok_s = mapPlaneToNatural(s_el, s_full_2d, x_gp_2d)
+                                    local_m, ok_m = mapPlaneToNatural(m_el, m_full_2d, x_gp_2d)
                                     if not ok_s:
                                         n_proj_failed += 1
                                         if first_proj_failure is None:
@@ -1576,21 +1571,21 @@ class Constraint(ConstraintBase):
                     for m_el in candidates:
                         m_nodes = m_el.nodes
                         m_coords = np.array([current_coords[nd] for nd in m_nodes])
-                        for m_sub in get_sub_cells(m_el):
+                        for m_sub in getSubCells(m_el):
                             mc_coords = m_coords[m_sub]
-                            s_start, s_end, t_vec = clip_1d_segments(sc_coords, mc_coords)
+                            s_start, s_end, t_vec = clipLineSegments(sc_coords, mc_coords)
                             if s_end - s_start < 1e-12:
                                 continue
 
                             half_len = 0.5 * (s_end - s_start)
                             mid_s = 0.5 * (s_start + s_end)
-                            for gp_1d, w_1d in zip(LINE_GAUSS_PTS, LINE_GAUSS_W):
+                            for gp_1d, w_1d in zip(_lineGaussPoints, _lineGaussWeights):
                                 s_gp = mid_s + half_len * gp_1d[0]
                                 x_gp = sc_coords[0] + s_gp * t_vec
                                 dG = half_len * w_1d
 
-                                local_s, ok_s = map_2d_to_natural(s_el, s_coords, x_gp)
-                                local_m, ok_m = map_2d_to_natural(m_el, m_coords, x_gp)
+                                local_s, ok_s = mapPlaneToNatural(s_el, s_coords, x_gp)
+                                local_m, ok_m = mapPlaneToNatural(m_el, m_coords, x_gp)
                                 if not ok_s:
                                     n_proj_failed += 1
                                     if first_proj_failure is None:
@@ -1613,7 +1608,7 @@ class Constraint(ConstraintBase):
 
         if n_proj_failed:
             side, el_num, el_type = first_proj_failure
-            self._warn_once(
+            self._warnOnce(
                 "gp_projection_failed",
                 f"the Gauss point back-mapping did not converge for {n_proj_failed} integration "
                 f"point(s) (first on the {side} facet {el_num}, element type {el_type}). For those "
@@ -1624,6 +1619,695 @@ class Constraint(ConstraintBase):
                 f"facets (Konyukhov & Schweizerhof 2008); check the facets around the one named "
                 f"above.",
             )
+
+        return self._assembleCouplingMatricesFromSegments(
+            seg_records, seg_masters, slave_els, current_coords, n_slave, n_master
+        )
+
+    def requiresCorrectionBeforeConvergence(self) -> bool:
+        """True on the first assembly of an increment in the penalty branch.
+
+        There the contact pressure is a FUNCTION of the current state,
+        p = z + kappa*g_A, and not an unknown with an equation of its own. The
+        forces assembled on the extrapolated state that opens an increment have
+        therefore never been equilibrated - and with the augmented Lagrangian the
+        estimate z is warm-started from the previous increment on top of that, so
+        they are not even the forces that produced the incoming displacements. The
+        state has to be corrected before it can be tested, exactly as after an
+        augmentation.
+
+        Without this, an increment can be accepted at iteration 0 on the
+        extrapolated state: no correction exists yet, so the field-correction
+        criterion is satisfied by an ABSENT correction rather than a small one, and
+        the flux criterion carries an absolute floor that the nodal forces of a
+        small model fall below anyway. Measured on the scale-invariance case
+        (11_scale_invariance, k = 1e-3): a residual of 2.5e-03 against a flux
+        measure of 5.4e-04 was accepted, and the contact pressure stayed at half its
+        correct value with no warning at all. The saddle-point branch cannot reach
+        that state, because its multiplier rows are checked as scalar variables and
+        that criterion has no floor.
+        """
+
+        return self.active and self.formulation == "penalty" and self.currentIteration == 0
+
+    def augmentConstraint(self) -> bool:
+        """One augmented-Lagrangian (Uzawa) outer iteration on the converged state.
+
+        The augmented (Uzawa) update,
+
+            p^(k+1)_A = p^k_A + kappa * g_A ,
+
+        which is Eq. (18) of Puso, Laursen & Solberg (2008), advanced - as they require -
+        only "once convergence of the Newton-Raphson loop is achieved", after which
+        equilibrium is re-established with the updated estimate. The projection onto
+        p >= 0 is this implementation's own release condition, where they instead let
+        the contact-status step decide; a node whose augmented pressure would turn
+        tensile is simply inactive.
+
+        Termination monitors the change of the multiplier estimate from one
+        augmentation to the next, as a
+        RELATIVE change. The alternative they mention first - checking
+        non-penetration directly - would have to bound the weighted gap, which
+        carries length x area and is therefore not scale-invariant; the same trap
+        the absolute solver tolerance on the multiplier row falls into (see the
+        documentation section on the limit of the length scale).
+
+        Returns
+        -------
+        bool
+            True if the estimate moved and the increment has to be re-equilibrated.
+
+        """
+
+        # Everything except an augmented penalty constraint is enforced inside the
+        # Newton loop and is done at this point.
+        if not self.active or self.formulation != "penalty" or not self.useAugmentedLagrange:
+            return False
+
+        # Nothing assembled yet (a constraint that never saw an increment).
+        if not hasattr(self, "currentNodalWeights"):
+            return False
+
+        sgn_D = np.sign(self.currentNodalWeights)
+        g_pen = -self.currentWeakGap * sgn_D
+        # The same noise floor the activation uses, applied here as well - see currentGapTolerance.
+        # This update runs past the active set rather than through it, by design: a node that is
+        # currently released must still be able to build pressure again. That makes the floor
+        # indispensable here, because without it a load-free interface feeds kappa times the
+        # rounding of its own geometry into the estimate. The estimate then never stops moving,
+        # the convergence test below divides one noise by another, and the loop exhausts its cap
+        # on an interface that has nothing to correct.
+        g_pen = np.where(np.abs(self.currentWeakGap) > self.currentGapTolerance, g_pen, 0.0)
+        z_new = np.maximum(0.0, self.augmentedMultipliers + self.kappa * g_pen)
+
+        change = float(np.max(np.abs(z_new - self.augmentedMultipliers))) if len(z_new) else 0.0
+        scale = float(np.max(np.abs(z_new))) if len(z_new) else 0.0
+        self.augmentedMultipliers = z_new
+        self._augmentation_counter += 1
+
+        # scale == 0 means no node carries pressure - the interface is open and
+        # there is nothing to augment.
+        converged = change <= self.augmentationTolerance * scale or scale == 0.0
+
+        if converged:
+            self.augmentedMultipliersConverged[:] = self.augmentedMultipliers
+            return False
+
+        if self._augmentation_counter >= self.maxAugmentations:
+            self.augmentedMultipliersConverged[:] = self.augmentedMultipliers
+            self._warnOnce(
+                "augmentation_cap",
+                f"the augmented Lagrangian hit its cap of {self.maxAugmentations} outer "
+                f"iterations without reaching the tolerance "
+                f"{self.augmentationTolerance:.1e} (last relative change "
+                f"{change / scale:.2e}). The increment therefore converged on a pressure "
+                f"estimate that had not settled, so the remaining penetration is larger "
+                f"than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it "
+                f"sets the rate of the outer loop), or reduce the increment size.",
+            )
+            return False
+
+        return True
+
+    def applyConstraint(
+        self,
+        U_np: np.ndarray,
+        dU: np.ndarray,
+        PExt: np.ndarray,
+        K: np.ndarray,
+        timeStep: TimeStep,
+    ):
+        if not self.active:
+            return
+
+        # c_n belongs to the semi-smooth activation test of the multiplier branch and is read
+        # nowhere else. Deriving it under formulation=penalty would announce a value that does not
+        # enter a single equation, which is worse than saying nothing: a reported number invites the
+        # reader to check it against a result it cannot have influenced.
+        if self._derive_c_n and self.formulation == "lagrange":
+            self._derive_c_n = False
+            self._resolveCn()
+
+        dim = self.model.domainSize
+        sf = self.sizeField
+        nNodes = len(self._nodes)
+        nSlave = self.nNonMortarNodes
+
+        # Detect new increment to track iterations and reset currentIteration.
+        # Normals and coupling matrices are frozen within each increment
+        # (staggered geometry update), so the assembled stiffness is the exact
+        # Jacobian of the residual equations within the increment.
+        # A RE-ATTEMPT of an increment after a solver cutback carries the SAME
+        # increment number but a smaller time increment, and it restarts the Newton
+        # iteration from the last converged state. It must therefore be treated
+        # exactly like a new increment: the staggered geometry (normals, D, C) has
+        # to be re-evaluated at the state the attempt starts from - otherwise the
+        # frozen data would stem from the diverged iterate of the failed attempt -
+        # and the semi-smooth active-set iteration has to restart as well.
+        # Keying the reset on the increment number alone would miss this.
+        #
+        # REFERENCE CONFIGURATION of the frozen geometry: the LAST CONVERGED state,
+        # U_n = U_np - dU, not the state handed in as U_np.
+        #
+        # The reference formulations do not freeze at all: they re-evaluate D, M and the nodal
+        # normals in every Newton iteration and carry their linearizations in K (Popp, Gitterle,
+        # Gee & Wall 2010, Section 4.3 and Appendix A; Gitterle et al. 2010 does the same for the
+        # frictional case). That is the target state (see the "The tangent" section of the mortar
+        # theory page), not what is done here.
+        #
+        # Note what this is NOT. Popp et al. measure an "incomplete linearization" in their Table I
+        # -- a LIVE geometry carried with a tangent that omits the linearizations of the nodal
+        # normal and of D and M -- and it costs them 52 Newton steps against 8. Here the geometry
+        # is FROZEN, so the assembled tangent is exact for the residual that is actually assembled
+        # (measured: max|K - K_FD| / max|K| = 5.3e-10). The Newton rate is therefore not what
+        # suffers; the cost is a consistency error of the increment itself, first order in its
+        # size. Their number must not be quoted against this scheme.
+        #
+        # Within a staggered scheme, however, the reference must be the converged
+        # state. EdelweissFE's solvers extrapolate the previous increment before the
+        # first assembly (`extrapolation`, DEFAULT "linear": U_np = U_n + dU_extrap
+        # already at iteration 0). Freezing at that predictor would make the
+        # CONVERGED contact solution depend on a solver switch that must not
+        # influence it - and it would be inconsistent within itself, since a cutback
+        # re-attempt resets dU to zero and would then use a different kind of
+        # reference than a regular increment. It would also void the error statement
+        # of the staggered scheme, which is first order in the increment size only
+        # with respect to an equilibrated reference configuration.
+        step_key = (timeStep.number, timeStep.timeIncrement, timeStep.totalTime)
+        self._refreshFrozenGeometry(step_key, U_np, dU, timeStep)
+
+        normals = self.currentNormals
+
+        # Current coordinates of all constraint nodes in the deformed configuration
+        disp = U_np[: sf * nNodes].reshape(nNodes, sf)[:, :dim]
+        coords = self._X + disp
+        x_slave = coords[:nSlave]
+        x_master = coords[nSlave:]
+
+        # ----------------------------------------------------------------------
+        # SADDLE-POINT MODE: Lagrange multipliers lambda_I are explicit unknowns
+        # in U_np, solved for jointly with the displacements. This is the only
+        # currently supported/validated formulation; the module docstring above says
+        # why a condensed (multiplier-free) variant was removed.
+        # ----------------------------------------------------------------------
+        idx_LM_0 = sf * nNodes
+        penalty = self.formulation == "penalty"
+        _dim_offsets = np.arange(dim)
+
+        for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
+            idx_LM_I = idx_LM_0 + I
+            lambda_I = 0.0 if penalty else U_np[idx_LM_I]
+            n_I = normals[I]
+            nzD = self.currentDNonzero[I]
+            nzC = self.currentCNonzero[I]
+            dRow = self.currentDRow[I]
+            cRow = self.currentCRow[I]
+
+            g_I_weak = 0.0
+            if len(nzD):
+                g_I_weak -= dRow @ (x_slave[nzD] @ n_I)
+            if len(nzC):
+                g_I_weak += cRow @ (x_master[nzC] @ n_I)
+
+            # Sign-consistent contact measures, valid for BOTH signs of the nodal
+            # weight D_II = int(Phi_I). D_II is positive by construction for
+            # CONQUAD4/8, CONTRI3/6 and CONLINE2/3, but NOT guaranteed for the
+            # full-Lagrangian CONQUAD9 under partial coverage: its shape functions
+            # are not pointwise non-negative, so the integral positivity required by
+            # Popp, Wohlmuth, Gee & Wall (2012) can be violated there.
+            #
+            #   pressure  lambda_I is the multiplier in the LITERATURE convention
+            #             lambda_n >= 0 in compression, i.e. the
+            #             NEGATIVE slave traction. The nodal contact force along n_I
+            #             is therefore -lambda_I * D_II, which points against n_I -
+            #             into the slave body - for lambda_I > 0 and D_II > 0. With a
+            #             negative weight the roles flip, so the physical pressure is
+            #             p_n = lambda_I * sgn(D_II) >= 0 in compression for either
+            #             sign of D_II.
+            #   opening   Translating the master by a * n_I changes the weak gap by
+            #             D_II * a (row-sum identity sum_K D_IK = sum_J C_IJ). The
+            #             physical nodal opening is therefore g_weak / D_II. Dividing
+            #             by the SIGNED D_II already restores exactly the property
+            #             the formulation demands - "a positive weighted
+            #             gap if the physical gap is positive". Multiplying by
+            #             sgn(D_II) on top of that flips the sign back and makes an
+            #             open node look like a penetrating one; that is a bug this
+            #             code carried until it was caught by the negative-weight
+            #             regression test in 06_active_set_pdass. Note the asymmetry:
+            #             the pressure carries sgn(D_II), the opening does not.
+            D_II = self.currentNodalWeights[I]
+            sgn_D = np.sign(D_II)
+            inv_D = 1.0 / D_II if abs(D_II) > self.currentWeightTolerance else 0.0
+            p_n = lambda_I * sgn_D  # physical normal pressure (>= 0 in contact)
+            g_sep = g_I_weak * inv_D  # physical opening (>0 open, <0 penetrating)
+
+            if penalty:
+                # ==============================================================
+                # PENALTY / AUGMENTED LAGRANGIAN
+                #
+                # The penalty pressure is t_A = kappa * g_A, and the augmentation advances it
+                # as p^(k+1) = p^k + kappa * g_A.
+                #
+                # g_A is the WEIGHTED gap, i.e. our g_weak up to the sign convention: the
+                # non-penetration condition is usually written g_A <= 0 with the gap measured
+                # from the non-mortar side towards the mortar one, while here g_sep > 0 means
+                # open. g_pen below is that g_A: positive under penetration, and weighted
+                # (length x area), NOT the physical opening.
+                #
+                # NO DIVISION BY D_II HAPPENS HERE, and that is the reason for
+                # following the weighted form of the papers rather than penalizing
+                # the physical opening g_sep: D_II is not guaranteed positive (a
+                # partially covered CONQUAD9, a CONQUAD8 corner at alpha = 1/3, or
+                # the sliver fallback all produce negative or near-zero weights, see
+                # the negative-weight diagnostic above). In a form p = eps*g_sep that
+                # weight sits in the DENOMINATOR of the contact pressure.
+                #
+                # The sign of the gap measure does depend on sgn(D_II) - translating
+                # the master by a*n changes g_weak by D_II*a - so g_pen carries it.
+                # The pressure is physical (>= 0), the assembled multiplier is
+                # lambda_I = p_n * sgn(D_II), the same convention the Lagrange branch
+                # uses, so that the force lambda_I * D_II * n is compressive for
+                # either sign of the weight.
+                #
+                # ACTIVE SET. p_trial > 0 IS the Signorini branch test here; no
+                # complementarity parameter and no primal-dual iteration are
+                # involved. With augmentedMultipliers = 0 it reduces to "penetrating" and the law
+                # to the pure penalty form; with the augmentation it is the release
+                # condition of the outer loop. Note that
+                # this indicator has the same structure as the semi-smooth NCP
+                # indicator s_n = p_n - c_n*g_sep of the Lagrange branch, with the
+                # augmented multiplier in place of the multiplier unknown - the
+                # augmented Lagrangian and the semi-smooth reformulation are the
+                # same object seen from two sides.
+                # Consequently there is no active-set freezing and no anti-cycling
+                # bookkeeping in this branch: the set is not iterated, it follows
+                # the pressure.
+                # ==============================================================
+                self.currentWeakGap[I] = g_I_weak
+                g_pen = -g_I_weak * sgn_D
+                p_trial = self.augmentedMultipliers[I] + self.kappa * g_pen
+                # useActiveSet = False pins the branch from outside - the same
+                # switch the Lagrange branch honours. It is what lets a consistency
+                # check perturb the state without the branch flipping underneath it,
+                # and what a deliberately tied (bilateral) contact would use.
+                if self.useActiveSet:
+                    # Against the noise floor of the gap the pressure is made from, not against
+                    # zero - see currentGapTolerance. Once the augmentation carries a real pressure the
+                    # shift is immaterial: it moves the release point by kappa*currentGapTolerance,
+                    # which is 1e-7 against pressures of order 10 in the deck this was measured on.
+                    self.activeSet[I] = bool(p_trial > self.kappa * self.currentGapTolerance)
+
+                if not self.activeSet[I]:
+                    self.nodalMultipliers[I] = 0.0
+                    continue
+
+                lambda_I = p_trial * sgn_D
+                self.nodalMultipliers[I] = lambda_I
+
+                # The whole nodal contribution is rank one. With the weights
+                #   w_a = +D_IK on the slave nodes, w_a = -C_IJ on the master nodes,
+                # the weighted gap is g_weak = -sum_a w_a (x_a . n_I), so
+                #   dg_weak/dx_a = -w_a n_I,    dlambda_I/dx_a = +kappa w_a n_I
+                # (the sgn(D_II) cancels), and with v_a = w_a n_I:
+                #   PExt_a -= lambda_I * v_a,     K_ab += kappa * v_a v_b.
+                # K is therefore symmetric positive semi-definite - this is the
+                # first term of the linearised penalty force; the second and
+                # third terms are the linearizations of the nodal normal and of the
+                # mortar weights, which the frozen geometry of this implementation
+                # deliberately omits (see the note on the reference configuration
+                # above and the documentation chapter on consistent linearization).
+                # astype: both index arrays can be empty (a slave node that lost
+                # all coverage while still carrying an augmented pressure), and
+                # concatenating two empty arrays does not reliably keep an integer
+                # dtype - which np.ix_ below would reject.
+                node_ids = np.concatenate((nzD, nSlave + nzC)).astype(np.intp)
+                w = np.concatenate((dRow, -cRow))
+                idcs = (sf * node_ids[:, None] + _dim_offsets).ravel()
+                v = (w[:, None] * n_I[None, :]).ravel()
+                PExt[idcs] -= lambda_I * v
+                K[np.ix_(idcs, idcs)] += self.kappa * np.outer(v, v)
+                continue
+
+            self.nodalMultipliers[I] = lambda_I
+            self.currentWeakGap[I] = g_I_weak
+
+            if self.useActiveSet and not self.activeSetFrozen:
+                # Semi-smooth normal complementarity: the Signorini conditions p_n >= 0,
+                # g_sep >= 0,
+                # p_n*g_sep = 0 are written as the single non-smooth function
+                #   C_n = p_n - max(0, p_n - c_n*g_sep) = 0,
+                # whose two branches are
+                #   active   (s_n > 0):  constraint  g_weak = 0,
+                #   inactive (s_n <= 0): constraint  lambda = 0,
+                # with the augmented indicator s_n = p_n - c_n*g_sep. It is
+                # re-evaluated EVERY Newton iteration - this is the literature-
+                # standard PDASS = semi-smooth-Newton formulation with local
+                # superlinear convergence (Hintermueller, Ito & Kunisch 2002, who
+                # identify the primal-dual active set strategy AS a semi-smooth
+                # Newton method; De Luca, Facchinei & Kanzow 1996 for the
+                # complementarity function itself; Hueber & Wohlmuth 2005, Eq. (3.9)
+                # and Gitterle et al. 2010, Eq. (55) for this contact form of it).
+                # c_n is purely algorithmic: at convergence g_sep -> 0, so the
+                # converged result is c_n-independent and identical to any admissible
+                # active-set rule.
+                #
+                # Which gap measure enters the indicator is a choice, and the one made here
+                # is the POINTWISE gap, i.e. a length.
+                # g_sep = g_weak/D_II is exactly that: the physical nodal opening.
+                # This is a DEPARTURE from the sources just named: Gitterle et al.
+                # Eq. (55) reads C_nj = z_nj - max(0, z_nj - c_n*g~_j) with g~_j the
+                # mortar-WEIGHTED gap of their Eq. (36), which carries length x area.
+                # Both are admissible - the
+                # indicator only decides the branch, and at convergence either gap
+                # vanishes - but only the length-valued form makes c_n*g_sep a
+                # pressure comparable to p_n, and only for it is the recommendation
+                # c_n ~ O(E) dimensionally meaningful.
+                s_n = p_n - self.c_n * g_sep
+                self.activeSet[I] = bool(s_n > 0.0)
+
+            # Assembly in the literature sign convention (lambda_n >= 0 in
+            # compression). Throughout, K = -dPExt/dU, which is what makes the
+            # multiplier block symmetric:
+            #   slave force   -lambda_I * D_IK * n_I     -> K[x_s, lambda] = +D_IK*n
+            #   master force  +lambda_I * C_IJ * n_I     -> K[x_m, lambda] = -C_IJ*n
+            #   lambda row    +g_weak (active)           -> K[lambda, x_s] = +D_IK*n,
+            #                                               K[lambda, x_m] = -C_IJ*n
+            # The active lambda row therefore carries the OPPOSITE overall sign to
+            # the one it had while lambda was the slave traction; that is a row
+            # scaling by -1 and is exactly what keeps K[x, lambda] = K[lambda, x].
+            # The inactive row (lambda = 0) has no coupling and is unaffected.
+            if self.activeSet[I]:
+                PExt[idx_LM_I] += g_I_weak
+
+                for K_nd, D_IK in zip(nzD, dRow):
+                    s_dofs = slice(sf * K_nd, sf * K_nd + dim)
+                    D_IK_n = D_IK * n_I
+                    PExt[s_dofs] -= lambda_I * D_IK_n
+                    K[s_dofs, idx_LM_I] += D_IK_n
+                    K[idx_LM_I, s_dofs] += D_IK_n
+
+                for J, C_IJ in zip(nzC, cRow):
+                    m_global = nSlave + J
+                    m_dofs = slice(sf * m_global, sf * m_global + dim)
+                    C_IJ_n = C_IJ * n_I
+                    PExt[m_dofs] += lambda_I * C_IJ_n
+                    K[m_dofs, idx_LM_I] -= C_IJ_n
+                    K[idx_LM_I, m_dofs] -= C_IJ_n
+            else:
+                PExt[idx_LM_I] -= lambda_I
+                K[idx_LM_I, idx_LM_I] += 1.0
+
+        # Termination of the semi-smooth active-set iteration. The discrete state
+        # is the normal active set, updated every Newton iteration. Two
+        # literature-grounded freeze triggers:
+        #  (1) the active set has settled,
+        #      i.e. is unchanged for two consecutive iterations past a warm-up.
+        #  (2) anti-cycling: the state CHANGED this iteration but
+        #      revisits a state already seen earlier this increment -> a proven
+        #      limit cycle (only finitely many states, so a revisit-after-change
+        #      is a cycle). Freezing breaks it; the remaining Newton iterations
+        #      are a linear solve on the fixed set.
+        # A hard iteration cap remains as a final safeguard.
+        self._freezeActiveSetIfSettled(penalty, timeStep)
+        self._reportThinlyCoveredNodes(timeStep)
+
+    def _freezeActiveSetIfSettled(self, penalty: bool, timeStep: TimeStep):
+        """Decide whether the active set may stop being re-evaluated for the rest of this increment.
+
+        Three triggers, in the order they are tested: the set has reproduced itself for two
+        iterations (the PDASS criterion, which is the one that normally fires), a discrete state
+        already seen in this increment has recurred after a change (a proven limit cycle, since
+        there are only finitely many states), or the iteration cap is reached. Only the last is
+        reported, because only it leaves the set unconfirmed.
+
+        Parameters
+        ----------
+        penalty
+            Whether the penalty branch is active, which has no active set to freeze.
+        timeStep
+            The current time step, for the increment number in the diagnostic.
+        """
+        if self.useActiveSet and not self.activeSetFrozen and not penalty:
+            state = self.activeSet.tobytes()
+            changed = state != self._last_state
+            if changed:
+                self.activeSetStableCount = 0
+            else:
+                self.activeSetStableCount += 1
+            cycle = changed and (state in self._seen_states)
+            self._seen_states.add(state)
+            self._last_state = state
+            settled = self.activeSetStableCount >= 2 and self.currentIteration >= 2
+            hit_cap = self.currentIteration >= 20
+            if settled or cycle or hit_cap:
+                if hit_cap and not settled and not cycle:
+                    # Measured over the Control_Tests and patch-test suite: this
+                    # never fires - the set freezes 111 times out of 111 through the
+                    # PDASS criterion, at most 11 iterations. Where it DOES fire the
+                    # set was still moving, so the increment converges onto a set
+                    # that was never confirmed and the converged solution may
+                    # violate the Signorini conditions. Nothing checks that
+                    # automatically; a converged model has to be checked by comparing
+                    # its nodal pressures and openings against each other.
+                    self._warnOnce(
+                        "active_set_iteration_cap",
+                        f"the active set was frozen by the iteration cap (20), not by the PDASS "
+                        f"convergence criterion, first in increment {timeStep.number}. The set had "
+                        f"not settled, so the converged solution of such increments is not "
+                        f"guaranteed to satisfy the Signorini conditions - verify it by checking "
+                        f"the nodal pressures and openings of the converged state against each other.",
+                    )
+                self.activeSetFrozen = True
+
+    def _reportThinlyCoveredNodes(self, timeStep: TimeStep):
+        """Report non-mortar nodes in contact whose own facet area is almost entirely unopposed.
+
+        Parameters
+        ----------
+        timeStep
+            The current time step, for the increment number in the diagnostic.
+        """
+        # A node that carries a constraint while almost none of its own facet area is opposed by the
+        # other surface is worth saying out loud. The constraint is exact there and the weighting of
+        # the boundary rows keeps its multiplier an ordinary pressure, so nothing is broken - but the
+        # force that crosses at such a node is set by the surrounding mechanics rather than by the
+        # sliver it stands on, and on a surface that ends while still under full pressure that force
+        # is not small. Putting the SMALLER of the two surfaces on the non-mortar side avoids the
+        # situation altogether, since every one of its facets is then fully covered.
+        #
+        # Checked here rather than at the start of an increment, and against the active set of THIS
+        # assembly: the condition can develop within the last increment of a run, where an
+        # increment-boundary check would never see it. Restricted to nodes actually in contact,
+        # because a thinly covered node that carries no multiplier transmits nothing - a curved
+        # indenter has such nodes just outside its contact zone in every increment, and reporting
+        # those would bury the case that matters.
+        #
+        # The bound decides when to speak and nothing else. No quantity entering the solution is
+        # compared against it.
+        if hasattr(self, "currentCoverage"):
+            thinlyCovered = np.flatnonzero(
+                (self.currentCoverage < 1e-2) & (self.currentCoverage > 0.0) & self.activeSet
+            )
+            if len(thinlyCovered):
+                self._warnOnce(
+                    "thinly_covered_nodes",
+                    f"{len(thinlyCovered)} non-mortar node(s) in contact are opposed over less than "
+                    f"1 % of their own facet area (thinnest: "
+                    f"{float(np.min(self.currentCoverage[thinlyCovered])):.2e}), first in increment "
+                    f"{timeStep.number}. Such a node is constrained exactly like a fully covered one "
+                    f"- coverage sets how the contact force is distributed, never whether a node is "
+                    f"tied - so it can transmit a force out of proportion to the area backing it. "
+                    f"This arises where the mortar surface ends while still transmitting pressure. "
+                    f"Putting the smaller of the two surfaces on the non-mortar side removes it, "
+                    f"because every non-mortar facet is then fully covered.",
+                )
+
+    def _refreshFrozenGeometry(self, step_key: tuple, U_np: np.ndarray, dU: np.ndarray, timeStep: TimeStep):
+        """Re-freeze the geometry at the start of an increment, or count an iteration within one.
+
+        Everything geometric -- the nodal normals, the segmentation, and the two coupling matrices --
+        is evaluated once per increment from the LAST CONVERGED configuration and then held fixed
+        for that increment's Newton iterations. This is the method that decides which of the two
+        has happened and, on a new increment, does the evaluating: it also resets the active-set
+        bookkeeping, restores the augmented multiplier estimate, and derives the relative
+        tolerances that the per-node loop compares against.
+
+        Parameters
+        ----------
+        step_key
+            Identifies the increment AND the attempt, so that a cutback re-freezes rather than
+            reusing the geometry of the attempt that failed.
+        U_np
+            The current solution vector.
+        dU
+            The increment of it, so that ``U_np - dU`` is the last converged state.
+        timeStep
+            The current time step, for the increment number in the diagnostics.
+        """
+        nSlave = self.nNonMortarNodes
+
+        if step_key != self.lastTimeStepKey or not hasattr(self, "currentNormals"):
+            # The previous increment has converged and U_np - dU is its result.
+            # Before anything is reset, ask whether its active set reproduces
+            # itself on that result - the one moment where that is checkable.
+            if hasattr(self, "currentNormals") and self.activeSetFrozen:
+                self._checkConvergedActiveSet(U_np - dU)
+
+            self.lastTimeStepKey = step_key
+            self.currentIteration = 0
+            # The active set (Signorini) is re-evaluated in EVERY Newton iteration
+            # and the outer semi-smooth loop is converged once the set no longer
+            # changes - the convergence criterion of the primal-dual active set
+            # strategy, i.e. a semi-smooth Newton method. There is deliberately NO
+            # fixed iteration-count cutoff (that would be an ad-hoc heuristic and
+            # could freeze a not-yet-settled set); a safeguard cap only guards
+            # against pathological non-settling. Reset per increment:
+            self.activeSetFrozen = False
+            self.activeSetStableCount = 0
+            # Anti-cycling bookkeeping: the discrete states already
+            # visited this increment, and the immediately previous one.
+            self._seen_states = set()
+            self._last_state = None
+            # Last converged state - see the reference-configuration note above.
+            U_ref = U_np - dU
+            self.currentNormals = self.computeNormals(U_ref)
+            D_full, C_full = self.computeMortarCouplingMatrices(U_ref)
+            # The FULL (element-locally sparse) D matrix is used for forces,
+            # stiffness and weak gap. With the basis transformation T_e the
+            # biorthogonality holds w.r.t. N_tilde, so D is not diagonal for
+            # quadratic elements - lumping it would destroy the consistency of
+            # the contact force distribution (a constant pressure could not be
+            # transmitted exactly, i.e. the patch test would fail). This is
+            # algebraically equivalent to the transformed formulation of Popp,
+            # Wohlmuth, Gee & Wall (2012) of the condensed system.
+            # Translational invariance of the weak gap is guaranteed by the
+            # row-sum identity sum_K D_IK = sum_J C_IJ (same-domain integration).
+            self.currentD = D_full
+            self.currentC = C_full
+            # Positive by construction: sum_K D_IK = int(Phi_I) = int(N_tilde_I) > 0
+            self.currentNodalWeights = np.asarray(D_full.sum(axis=1)).ravel()
+            # The sign-consistent contact measures below carry a negative D_II
+            # correctly, but the weighted gap loses its reading as a mean opening
+            # there - so it is worth saying out loud that it happened.
+            # Only for weights that are meaningfully negative, though: a node far
+            # outside the covered region integrates to a value that is zero up to
+            # round-off, and whether that lands at +1e-19 or -1e-19 says nothing.
+            # Measured range of the real cases: -0.031 (CONQUAD9 at 70 % coverage,
+            # 06_active_set_pdass) down to -0.60 (sliver fallback,
+            # hertz_hex20_medium), so a relative threshold of 1e-6 separates them
+            # from the dust by orders of magnitude.
+            weights = self.currentNodalWeights
+            weight_scale = np.max(np.abs(weights)) if len(weights) else 0.0
+            # Threshold below which a nodal weight counts as "no weight at all" and
+            # the division 1/D_II is suppressed. RELATIVE, for the same reason as in
+            # _nonzeroRows: D_II = int(Phi_I) carries the unit of an area, so an
+            # absolute bound only ever fits one system of units. It also has to be
+            # generous rather than tiny: at D_II = 1e-25 an absolute bound of 1e-30
+            # would still divide, g_sep = g_weak/D_II would explode by 25 orders, and
+            # the sign of that garbage would decide the branch of the NCP indicator -
+            # a node can be switched ACTIVE by pure round-off that way, with a
+            # constraint row that means nothing. Relative to the largest weight of the
+            # interface, 1e-12 is far below any weight a covered node can have (the
+            # smallest measured over the test suite is ~1e-3 of the largest) and far
+            # above the dust of an uncovered one.
+            self.currentWeightTolerance = 1e-12 * weight_scale
+            # Noise floor of the WEIGHTED GAP, by the same reasoning and with the same relative
+            # factor. The weighted gap is an integral of a length against a nodal basis function, so
+            # its own scale is the interface diameter times the largest nodal weight, and the
+            # rounding of the coordinate differences and the segment quadrature that produce it
+            # lands a few hundred times below that product. Anything at or beneath this level is not
+            # a small gap, it is the absence of one.
+            #
+            # The penalty branch needs this where the multiplier branch does not. There the contact
+            # pressure is an unknown of the system and a node that touches nothing simply solves to
+            # zero; here the pressure is MANUFACTURED from the gap as kappa*g, so at kappa = 1e6 a
+            # gap of 5e-16 becomes a pressure of 5e-10 and a bare `p > 0` test reads it as contact.
+            # Measured on MortarContactPenaltyHexa20: without the floor, 2 to 9 of 21 nodes are
+            # declared active in the load-free increment 0, the set flickers from one augmentation
+            # to the next, and the outer loop compares noise against noise until it exhausts its
+            # iteration cap. The separation is not marginal - the noise sits at 5e-16 against a
+            # threshold of 1e-13, while the first genuinely loaded increment carries 5e-06.
+            self.currentGapTolerance = 1e-12 * weight_scale * self._interfaceDiameter
+            if weight_scale > 0.0:
+                significant = np.flatnonzero(weights < -1e-6 * weight_scale)
+                if len(significant):
+                    worst = np.min(weights) / weight_scale
+                    self._warnOnce(
+                        "negative_nodal_weight",
+                        f"{len(significant)} slave node(s) with a negative nodal mortar weight "
+                        f"D_II (worst: {worst:.3e} of the largest weight), first in increment "
+                        f"{timeStep.number}. The active-set indicator handles the sign, but the "
+                        f"weighted gap is no longer a mean opening at those nodes. Usual causes: a "
+                        f"partially covered CONQUAD9, or a sliver overlap that triggered the "
+                        f"reference-element fallback.",
+                    )
+            # Precompute the sparsity patterns AND the row values once per increment.
+            # The geometry is frozen for the increment, so both are constant while
+            # applyConstraint runs once per Newton iteration.
+            self.currentDNonzero, self.currentDRow = _nonzeroRows(D_full, nSlave)
+            self.currentCNonzero, self.currentCRow = _nonzeroRows(C_full, nSlave)
+
+            # The penalty parameter needs the nodal weights, so it is derived here
+            # rather than at the top of the assembly like c_n.
+            if self.formulation == "penalty" and self._derive_kappa:
+                self._resolveKappa()
+
+            # Restart the augmented Lagrangian for this increment ATTEMPT from the
+            # last CONVERGED pressure estimate. Warm starting is what makes the outer
+            # loop cheap after the first increment; resetting on a cutback re-attempt
+            # is required for the same reason the frozen geometry is reset - the
+            # estimate of a failed attempt belongs to a diverged iterate.
+            self._augmentation_counter = 0
+            self.augmentedMultipliers[:] = self.augmentedMultipliersConverged
+        else:
+            self.currentIteration += 1
+
+    def _assembleCouplingMatricesFromSegments(
+        self, seg_records, seg_masters, slave_els, current_coords, n_slave, n_master
+    ) -> tuple[csr_matrix, csr_matrix]:
+        """Turn the segment quadrature of one increment into the two mortar coupling matrices.
+
+        The second of the two passes: the first clips the two surfaces against each other and
+        records an integration point per clipped cell, this one builds the dual basis those points
+        imply and assembles D and C from it. The dual coefficients are rebuilt per facet from the
+        covered area rather than taken from a reference element, and the rows of a partly covered
+        facet are weighted back to their whole-facet integral; both steps are explained where they
+        happen below.
+
+        Parameters
+        ----------
+        seg_records
+            Per non-mortar facet number, the integration point records ``(N_s, mortar element
+            number, N_m, dGamma)`` collected by the segmentation.
+        seg_masters
+            Per non-mortar facet number, the mortar elements it was found to overlap.
+        slave_els
+            Per non-mortar facet number, the element and its node indices.
+        current_coords
+            The deformed coordinates of every node of both surfaces.
+        n_slave
+            Number of non-mortar nodes.
+        n_master
+            Number of mortar nodes.
+
+        Returns
+        -------
+        tuple[csr_matrix, csr_matrix]
+            The non-mortar matrix D and the mortar matrix C.
+        """
+        # D and C are assembled sparsely from the element-local blocks. The sparsity
+        # is a property of the dual formulation, not an implementation detail: the
+        # point of the dual space of Wohlmuth (2000) is a nodal basis function that
+        # satisfies the interface constraint and "at the same time has local
+        # support", so that the mortar map "can be represented by a diagonal matrix"
+        # instead of a linear system. Popp, Wohlmuth, Gee & Wall (2012) carry this to
+        # second order, where the basis transformation splits D into two trivially
+        # invertible factors and the biorthogonality reduces the inverse "either to a
+        # diagonal matrix (see section 4.2) or to at least a sparse matrix (see
+        # section 4.4)" - the quadratic case here. Dense storage would therefore cost
+        # O(n_slave^2) for a structurally sparse object.
+        D_rows, D_cols, D_vals = [], [], []
+        C_rows, C_cols, C_vals = [], [], []
 
         # ------------------------------------------------------------------
         # PASS 2: Dual coefficients from the actual segment quadrature
@@ -1639,6 +2323,17 @@ class Constraint(ConstraintBase):
 
             # Biorthogonality system on the true integration domain:
             # M_t[a,b] = int_seg(N_tilde_a * N_tilde_b), D_t[a] = int_seg(N_tilde_a)
+            #
+            # Two things decide that these integrals run over the SEGMENTS rather than over a
+            # reference element. First, Popp, Gitterle, Gee & Wall (2010) after their Eq. (22):
+            # "the biorthogonality condition has to be fulfilled in the physical space and not in
+            # the finite element parameter space" -- it makes no difference only where the element
+            # Jacobian is constant. Second, and this is the first of the two remedies of Cichosz &
+            # Bischoff (2011) for partly covered facets, their Eq. (41): "the underlying integrals
+            # now have to be evaluated on the contact area instead of the entire slave element".
+            # The extra factor T_e is the basis transformation of Popp et al. (2012), which Cichosz
+            # & Bischoff (2D, linear) do not need; composing the two is this implementation's own
+            # step, not something either paper states.
             T_e = s_el.getBasisTransformation()
             M_t = np.zeros((n_s, n_s))
             D_t = np.zeros(n_s)
@@ -1675,7 +2370,7 @@ class Constraint(ConstraintBase):
                 # over half the element, so the integral over a sub-region takes
                 # any sign AND any magnitude. Measured: below ~0.1 % coverage
                 # D_II flips sign, at -1.0 of the largest weight.
-                self._warn_once(
+                self._warnOnce(
                     "sliver_fallback",
                     f"degenerate overlap on slave facet {s_num}: cond(M_t) = {cond_M_t:.2e} >= 1e12, "
                     f"falling back to reference-element dual coefficients. Biorthogonality then "
@@ -1685,12 +2380,16 @@ class Constraint(ConstraintBase):
                 # Evaluated only HERE, not for every slave facet up front: the
                 # reference-element coefficients cost an element mass matrix plus its
                 # inversion, and this branch is taken for 4 of 3989 slave-element
-                # evaluations over the test suite. Same quantity as
-                # compute_local_dual_matrices returns, for this one element and the
+                # evaluations over the test suite. These are the element's own
+                # reference-element coefficients, for this one element and the
                 # same (deformed) coordinates.
                 A_e = s_el.computeLocalMassMatrices(np.array([current_coords[nd] for nd in s_el.nodes]))[2]
 
-            # WEIGHTING OF THE BOUNDARY ROWS.
+            # WEIGHTING OF THE BOUNDARY ROWS -- the second remedy of Cichosz & Bischoff (2011),
+            # their Eqs. (43) to (45), whose diagnosis is exactly the one below: the nodal weight
+            # of a boundary element decreases "quadratically with the contact area" while the
+            # contact force decreases "approximately linearly", so "the corresponding nodal value
+            # of the Lagrange multiplier is increasing by 1/a".
             #
             # A non-mortar facet that is only partly covered by the mortar surface integrates its
             # own basis functions over the covered part alone, so its nodal weight decreases
@@ -1720,7 +2419,16 @@ class Constraint(ConstraintBase):
             #
             # No case distinction is needed. On a fully covered facet the covered and the whole
             # integral coincide and the factor is exactly one, which is why an inner facet and a
-            # boundary facet can be treated by the same expression.
+            # boundary facet can be treated by the same expression. That is Cichosz & Bischoff's
+            # own point: with the weighting in place "there is no difference between slave mortar
+            # integrals in inner and boundary elements and the switch introduced in Eq. (42) can be
+            # skipped".
+            #
+            # Their weighting factor is defined parametrically, kappa_k = [int_covered N_k dxi]^-1,
+            # which for their straight two-node elements returns the row to the whole-element value
+            # l_e/2. The ratio of the two PHYSICAL integrals used here lands on the same value and
+            # generalises it to a curved facet, whose Jacobian does not cancel out of a parametric
+            # expression.
             #
             # NOTE what this costs: D_II is no longer the covered area of a node. It is the area of
             # its facets, covered or not. The coverage itself is kept separately below, because the
@@ -1743,7 +2451,7 @@ class Constraint(ConstraintBase):
             # diagnostic - nothing in the formulation reads it - but it is the quantity that tells a
             # partially covered node from a fully covered one now that the weights no longer do.
             for local, node in enumerate(s_el.nodes):
-                idx = self.slave_node_to_idx[node]
+                idx = self.nonMortarNodeToIndex[node]
                 coverageCovered[idx] += D_t[local]
                 coverageFull[idx] += D_full[local]
 
@@ -1762,7 +2470,7 @@ class Constraint(ConstraintBase):
             D_cols.append(cc.ravel())
             D_vals.append(D_blk.ravel())
             for m_num, C_blk in C_blks.items():
-                m_idx = np.array([self.master_node_to_idx[nd] for nd in seg_masters[s_num][m_num].nodes])
+                m_idx = np.array([self.mortarNodeToIndex[nd] for nd in seg_masters[s_num][m_num].nodes])
                 rr, cc = np.meshgrid(s_idx, m_idx, indexing="ij")
                 C_rows.append(rr.ravel())
                 C_cols.append(cc.ravel())
@@ -1771,581 +2479,13 @@ class Constraint(ConstraintBase):
         # coo -> csr sums duplicate entries, which is exactly what the dense "+="
         # accumulation did. The summation ORDER differs, so the result agrees with the
         # dense one to round-off rather than bit for bit.
-        D = _coo_to_csr(D_vals, D_rows, D_cols, (n_slave, n_slave))
-        C = _coo_to_csr(C_vals, C_rows, C_cols, (n_slave, n_master))
+        D = _cooToCsr(D_vals, D_rows, D_cols, (n_slave, n_slave))
+        C = _cooToCsr(C_vals, C_rows, C_cols, (n_slave, n_master))
 
         # Fraction of each node's own facet area that the other surface actually opposes. Zero for a
         # node with nothing opposite it, one for a fully covered one. Diagnostic only.
-        self.current_coverage = np.zeros(n_slave)
+        self.currentCoverage = np.zeros(n_slave)
         opposed = coverageFull > 0.0
-        self.current_coverage[opposed] = coverageCovered[opposed] / coverageFull[opposed]
+        self.currentCoverage[opposed] = coverageCovered[opposed] / coverageFull[opposed]
 
         return D, C
-
-    def requiresCorrectionBeforeConvergence(self) -> bool:
-        """True on the first assembly of an increment in the penalty branch.
-
-        There the contact pressure is a FUNCTION of the current state,
-        p = z + kappa*g_A, and not an unknown with an equation of its own. The
-        forces assembled on the extrapolated state that opens an increment have
-        therefore never been equilibrated - and with the augmented Lagrangian the
-        estimate z is warm-started from the previous increment on top of that, so
-        they are not even the forces that produced the incoming displacements. The
-        state has to be corrected before it can be tested, exactly as after an
-        augmentation.
-
-        Without this, an increment can be accepted at iteration 0 on the
-        extrapolated state: no correction exists yet, so the field-correction
-        criterion is satisfied by an ABSENT correction rather than a small one, and
-        the flux criterion carries an absolute floor that the nodal forces of a
-        small model fall below anyway. Measured on the scale-invariance case
-        (11_scale_invariance, k = 1e-3): a residual of 2.5e-03 against a flux
-        measure of 5.4e-04 was accepted, and the contact pressure stayed at half its
-        correct value with no warning at all. The saddle-point branch cannot reach
-        that state, because its multiplier rows are checked as scalar variables and
-        that criterion has no floor.
-        """
-
-        return self.active and self.formulation == "penalty" and self.current_iteration == 0
-
-    def augmentConstraint(self) -> bool:
-        """One augmented-Lagrangian (Uzawa) outer iteration on the converged state.
-
-        The augmented (Uzawa) update,
-
-            p^(k+1)_A = p^k_A + kappa * g_A ,
-
-        advanced - as they require - only "once convergence of the Newton-Raphson
-        loop is achieved", after which equilibrium is re-established with the
-        updated estimate. The projection onto p >= 0 is the release condition of
-        the release condition; a node whose augmented pressure would turn tensile is
-        simply inactive.
-
-        Termination monitors the change of the multiplier estimate from one
-        augmentation to the next, as a
-        RELATIVE change. The alternative they mention first - checking
-        non-penetration directly - would have to bound the weighted gap, which
-        carries length x area and is therefore not scale-invariant; the same trap
-        the absolute solver tolerance on the multiplier row falls into (see the
-        documentation section on the limit of the length scale).
-
-        Returns
-        -------
-        bool
-            True if the estimate moved and the increment has to be re-equilibrated.
-
-        """
-
-        # Everything except an augmented penalty constraint is enforced inside the
-        # Newton loop and is done at this point.
-        if not self.active or self.formulation != "penalty" or not self.use_augmented_lagrange:
-            return False
-
-        # Nothing assembled yet (a constraint that never saw an increment).
-        if not hasattr(self, "current_D_rowsum"):
-            return False
-
-        sgn_D = np.sign(self.current_D_rowsum)
-        g_pen = -self.current_g_weak * sgn_D
-        # The same noise floor the activation uses, applied here as well - see current_gap_tol.
-        # This update runs past the active set rather than through it, by design: a node that is
-        # currently released must still be able to build pressure again. That makes the floor
-        # indispensable here, because without it a load-free interface feeds kappa times the
-        # rounding of its own geometry into the estimate. The estimate then never stops moving,
-        # the convergence test below divides one noise by another, and the loop exhausts its cap
-        # on an interface that has nothing to correct.
-        g_pen = np.where(np.abs(self.current_g_weak) > self.current_gap_tol, g_pen, 0.0)
-        z_new = np.maximum(0.0, self.z_aug + self.kappa * g_pen)
-
-        change = float(np.max(np.abs(z_new - self.z_aug))) if len(z_new) else 0.0
-        scale = float(np.max(np.abs(z_new))) if len(z_new) else 0.0
-        self.z_aug = z_new
-        self._augmentation_counter += 1
-
-        # scale == 0 means no node carries pressure - the interface is open and
-        # there is nothing to augment.
-        converged = change <= self.augmentation_tolerance * scale or scale == 0.0
-
-        if converged:
-            self.z_aug_converged[:] = self.z_aug
-            return False
-
-        if self._augmentation_counter >= self.max_augmentations:
-            self.z_aug_converged[:] = self.z_aug
-            self._warn_once(
-                "augmentation_cap",
-                f"the augmented Lagrangian hit its cap of {self.max_augmentations} outer "
-                f"iterations without reaching the tolerance "
-                f"{self.augmentation_tolerance:.1e} (last relative change "
-                f"{change / scale:.2e}). The increment therefore converged on a pressure "
-                f"estimate that had not settled, so the remaining penetration is larger "
-                f"than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it "
-                f"sets the rate of the outer loop), or reduce the increment size.",
-            )
-            return False
-
-        return True
-
-    def applyConstraint(
-        self,
-        U_np: np.ndarray,
-        dU: np.ndarray,
-        PExt: np.ndarray,
-        K: np.ndarray,
-        timeStep: TimeStep,
-    ):
-        if not self.active:
-            return
-
-        # c_n belongs to the semi-smooth activation test of the multiplier branch and is read
-        # nowhere else. Deriving it under formulation=penalty would announce a value that does not
-        # enter a single equation, which is worse than saying nothing: a reported number invites the
-        # reader to check it against a result it cannot have influenced.
-        if self._derive_c_n and self.formulation == "lagrange":
-            self._derive_c_n = False
-            self._resolve_c_n()
-
-        dim = self.model.domainSize
-        sf = self.sizeField
-        nNodes = len(self._nodes)
-        nSlave = self.nNonMortarNodes
-
-        # Detect new increment to track iterations and reset current_iteration.
-        # Normals and coupling matrices are frozen within each increment
-        # (staggered geometry update), so the assembled stiffness is the exact
-        # Jacobian of the residual equations within the increment.
-        # A RE-ATTEMPT of an increment after a solver cutback carries the SAME
-        # increment number but a smaller time increment, and it restarts the Newton
-        # iteration from the last converged state. It must therefore be treated
-        # exactly like a new increment: the staggered geometry (normals, D, C) has
-        # to be re-evaluated at the state the attempt starts from - otherwise the
-        # frozen data would stem from the diverged iterate of the failed attempt -
-        # and the semi-smooth active-set iteration has to restart as well.
-        # Keying the reset on the increment number alone would miss this.
-        #
-        # REFERENCE CONFIGURATION of the frozen geometry: the LAST CONVERGED state,
-        # U_n = U_np - dU, not the state handed in as U_np.
-        #
-        # The reference formulations do not freeze at all: they re-evaluate D, M and the nodal
-        # normals in every Newton iteration and carry their linearizations in K;
-        # differentiates it by AD. That is the target state (see the documentation,
-        # section "Ausblick / Konsistente Linearisierung"), not what is done here.
-        #
-        # Within a staggered scheme, however, the reference must be the converged
-        # state. EdelweissFE's solvers extrapolate the previous increment before the
-        # first assembly (`extrapolation`, DEFAULT "linear": U_np = U_n + dU_extrap
-        # already at iteration 0). Freezing at that predictor would make the
-        # CONVERGED contact solution depend on a solver switch that must not
-        # influence it - and it would be inconsistent within itself, since a cutback
-        # re-attempt resets dU to zero and would then use a different kind of
-        # reference than a regular increment. It would also void the error statement
-        # of the staggered scheme, which is first order in the increment size only
-        # with respect to an equilibrated reference configuration.
-        step_key = (timeStep.number, timeStep.timeIncrement, timeStep.totalTime)
-        if step_key != self.last_timestep_key or not hasattr(self, "current_normals"):
-            # The previous increment has converged and U_np - dU is its result.
-            # Before anything is reset, ask whether its active set reproduces
-            # itself on that result - the one moment where that is checkable.
-            if hasattr(self, "current_normals") and self.active_set_frozen:
-                self._check_converged_active_set(U_np - dU)
-
-            self.last_timestep_key = step_key
-            self.current_iteration = 0
-            # The active set (Signorini) is re-evaluated in EVERY Newton iteration
-            # and the outer semi-smooth loop is converged once the set no longer
-            # changes - the convergence criterion of the primal-dual active set
-            # strategy, i.e. a semi-smooth Newton method. There is deliberately NO
-            # fixed iteration-count cutoff (that would be an ad-hoc heuristic and
-            # could freeze a not-yet-settled set); a safeguard cap only guards
-            # against pathological non-settling. Reset per increment:
-            self.active_set_frozen = False
-            self.active_set_stable_count = 0
-            # Anti-cycling bookkeeping: the discrete states already
-            # visited this increment, and the immediately previous one.
-            self._seen_states = set()
-            self._last_state = None
-            # Last converged state - see the reference-configuration note above.
-            U_ref = U_np - dU
-            self.current_normals = self.compute_normals(U_ref)
-            D_full, C_full = self.compute_mortar_coupling_matrices(U_ref)
-            # The FULL (element-locally sparse) D matrix is used for forces,
-            # stiffness and weak gap. With the basis transformation T_e the
-            # biorthogonality holds w.r.t. N_tilde, so D is not diagonal for
-            # quadratic elements - lumping it would destroy the consistency of
-            # the contact force distribution (a constant pressure could not be
-            # transmitted exactly, i.e. the patch test would fail). This is
-            # algebraically equivalent to the transformed formulation of
-            # of the condensed system.
-            # Translational invariance of the weak gap is guaranteed by the
-            # row-sum identity sum_K D_IK = sum_J C_IJ (same-domain integration).
-            self.current_D = D_full
-            self.current_C = C_full
-            # Positive by construction: sum_K D_IK = int(Phi_I) = int(N_tilde_I) > 0
-            self.current_D_rowsum = np.asarray(D_full.sum(axis=1)).ravel()
-            # The sign-consistent contact measures below carry a negative D_II
-            # correctly, but the weighted gap loses its reading as a mean opening
-            # there - so it is worth saying out loud that it happened.
-            # Only for weights that are meaningfully negative, though: a node far
-            # outside the covered region integrates to a value that is zero up to
-            # round-off, and whether that lands at +1e-19 or -1e-19 says nothing.
-            # Measured range of the real cases: -0.031 (CONQUAD9 at 70 % coverage,
-            # 06_active_set_pdass) down to -0.60 (sliver fallback,
-            # hertz_hex20_medium), so a relative threshold of 1e-6 separates them
-            # from the dust by orders of magnitude.
-            weights = self.current_D_rowsum
-            weight_scale = np.max(np.abs(weights)) if len(weights) else 0.0
-            # Threshold below which a nodal weight counts as "no weight at all" and
-            # the division 1/D_II is suppressed. RELATIVE, for the same reason as in
-            # _nonzero_rows: D_II = int(Phi_I) carries the unit of an area, so an
-            # absolute bound only ever fits one system of units. It also has to be
-            # generous rather than tiny: at D_II = 1e-25 an absolute bound of 1e-30
-            # would still divide, g_sep = g_weak/D_II would explode by 25 orders, and
-            # the sign of that garbage would decide the branch of the NCP indicator -
-            # a node can be switched ACTIVE by pure round-off that way, with a
-            # constraint row that means nothing. Relative to the largest weight of the
-            # interface, 1e-12 is far below any weight a covered node can have (the
-            # smallest measured over the test suite is ~1e-3 of the largest) and far
-            # above the dust of an uncovered one.
-            self.current_D_tol = 1e-12 * weight_scale
-            # Noise floor of the WEIGHTED GAP, by the same reasoning and with the same relative
-            # factor. The weighted gap is an integral of a length against a nodal basis function, so
-            # its own scale is the interface diameter times the largest nodal weight, and the
-            # rounding of the coordinate differences and the segment quadrature that produce it
-            # lands a few hundred times below that product. Anything at or beneath this level is not
-            # a small gap, it is the absence of one.
-            #
-            # The penalty branch needs this where the multiplier branch does not. There the contact
-            # pressure is an unknown of the system and a node that touches nothing simply solves to
-            # zero; here the pressure is MANUFACTURED from the gap as kappa*g, so at kappa = 1e6 a
-            # gap of 5e-16 becomes a pressure of 5e-10 and a bare `p > 0` test reads it as contact.
-            # Measured on MortarContactPenaltyHexa20: without the floor, 2 to 9 of 21 nodes are
-            # declared active in the load-free increment 0, the set flickers from one augmentation
-            # to the next, and the outer loop compares noise against noise until it exhausts its
-            # iteration cap. The separation is not marginal - the noise sits at 5e-16 against a
-            # threshold of 1e-13, while the first genuinely loaded increment carries 5e-06.
-            self.current_gap_tol = 1e-12 * weight_scale * self._interfaceDiameter
-            if weight_scale > 0.0:
-                significant = np.flatnonzero(weights < -1e-6 * weight_scale)
-                if len(significant):
-                    worst = np.min(weights) / weight_scale
-                    self._warn_once(
-                        "negative_nodal_weight",
-                        f"{len(significant)} slave node(s) with a negative nodal mortar weight "
-                        f"D_II (worst: {worst:.3e} of the largest weight), first in increment "
-                        f"{timeStep.number}. The active-set indicator handles the sign, but the "
-                        f"weighted gap is no longer a mean opening at those nodes. Usual causes: a "
-                        f"partially covered CONQUAD9, or a sliver overlap that triggered the "
-                        f"reference-element fallback.",
-                    )
-            # Precompute the sparsity patterns AND the row values once per increment.
-            # The geometry is frozen for the increment, so both are constant while
-            # applyConstraint runs once per Newton iteration.
-            self.current_D_nz, self.current_D_row = _nonzero_rows(D_full, nSlave)
-            self.current_C_nz, self.current_C_row = _nonzero_rows(C_full, nSlave)
-
-            # The penalty parameter needs the nodal weights, so it is derived here
-            # rather than at the top of the assembly like c_n.
-            if self.formulation == "penalty" and self._derive_kappa:
-                self._resolve_kappa()
-
-            # Restart the augmented Lagrangian for this increment ATTEMPT from the
-            # last CONVERGED pressure estimate. Warm starting is what makes the outer
-            # loop cheap after the first increment; resetting on a cutback re-attempt
-            # is required for the same reason the frozen geometry is reset - the
-            # estimate of a failed attempt belongs to a diverged iterate.
-            self._augmentation_counter = 0
-            self.z_aug[:] = self.z_aug_converged
-        else:
-            self.current_iteration += 1
-
-        normals = self.current_normals
-
-        # Current coordinates of all constraint nodes in the deformed configuration
-        disp = U_np[: sf * nNodes].reshape(nNodes, sf)[:, :dim]
-        coords = self._X + disp
-        x_slave = coords[:nSlave]
-        x_master = coords[nSlave:]
-
-        # ----------------------------------------------------------------------
-        # SADDLE-POINT MODE: Lagrange multipliers lambda_I are explicit unknowns
-        # in U_np, solved for jointly with the displacements. This is the only
-        # currently supported/validated formulation; see note below on why a
-        # condensed (multiplier-free) variant was removed.
-        # ----------------------------------------------------------------------
-        idx_LM_0 = sf * nNodes
-        penalty = self.formulation == "penalty"
-        _dim_offsets = np.arange(dim)
-
-        for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
-            idx_LM_I = idx_LM_0 + I
-            lambda_I = 0.0 if penalty else U_np[idx_LM_I]
-            n_I = normals[I]
-            nzD = self.current_D_nz[I]
-            nzC = self.current_C_nz[I]
-            dRow = self.current_D_row[I]
-            cRow = self.current_C_row[I]
-
-            g_I_weak = 0.0
-            if len(nzD):
-                g_I_weak -= dRow @ (x_slave[nzD] @ n_I)
-            if len(nzC):
-                g_I_weak += cRow @ (x_master[nzC] @ n_I)
-
-            # Sign-consistent contact measures, valid for BOTH signs of the nodal
-            # weight D_II = int(Phi_I). D_II is positive by construction for
-            # CONQUAD4/8, CONTRI3/6 and CONLINE2/3, but NOT guaranteed for the
-            # full-Lagrangian CONQUAD9 under partial coverage: its shape functions
-            # are not pointwise non-negative, so the integral positivity required by
-            # can be violated there.
-            #
-            #   pressure  lambda_I is the multiplier in the LITERATURE convention
-            #             lambda_n >= 0 in compression, i.e. the
-            #             NEGATIVE slave traction. The nodal contact force along n_I
-            #             is therefore -lambda_I * D_II, which points against n_I -
-            #             into the slave body - for lambda_I > 0 and D_II > 0. With a
-            #             negative weight the roles flip, so the physical pressure is
-            #             p_n = lambda_I * sgn(D_II) >= 0 in compression for either
-            #             sign of D_II.
-            #   opening   Translating the master by a * n_I changes the weak gap by
-            #             D_II * a (row-sum identity sum_K D_IK = sum_J C_IJ). The
-            #             physical nodal opening is therefore g_weak / D_II. Dividing
-            #             by the SIGNED D_II already restores exactly the property
-            #             the formulation demands - "a positive weighted
-            #             gap if the physical gap is positive". Multiplying by
-            #             sgn(D_II) on top of that flips the sign back and makes an
-            #             open node look like a penetrating one; that is a bug this
-            #             code carried until it was caught by the negative-weight
-            #             regression test in 06_active_set_pdass. Note the asymmetry:
-            #             the pressure carries sgn(D_II), the opening does not.
-            D_II = self.current_D_rowsum[I]
-            sgn_D = np.sign(D_II)
-            inv_D = 1.0 / D_II if abs(D_II) > self.current_D_tol else 0.0
-            p_n = lambda_I * sgn_D  # physical normal pressure (>= 0 in contact)
-            g_sep = g_I_weak * inv_D  # physical opening (>0 open, <0 penetrating)
-
-            if penalty:
-                # ==============================================================
-                # PENALTY / AUGMENTED LAGRANGIAN
-                #
-                # The penalty pressure is t_A = kappa * g_A, and the augmentation advances it
-                # as p^(k+1) = p^k + kappa * g_A.
-                #
-                # g_A is the WEIGHTED gap, i.e. our g_weak up to the sign convention: the
-                # non-penetration condition is usually written g_A <= 0 with the gap measured
-                # from the non-mortar side towards the mortar one, while here g_sep > 0 means
-                # open. g_pen below is that g_A: positive under penetration, and weighted
-                # (length x area), NOT the physical opening.
-                #
-                # NO DIVISION BY D_II HAPPENS HERE, and that is the reason for
-                # following the weighted form of the papers rather than penalizing
-                # the physical opening g_sep: D_II is not guaranteed positive (a
-                # partially covered CONQUAD9, a CONQUAD8 corner at alpha = 1/3, or
-                # the sliver fallback all produce negative or near-zero weights, see
-                # the negative-weight diagnostic above). In a form p = eps*g_sep that
-                # weight sits in the DENOMINATOR of the contact pressure.
-                #
-                # The sign of the gap measure does depend on sgn(D_II) - translating
-                # the master by a*n changes g_weak by D_II*a - so g_pen carries it.
-                # The pressure is physical (>= 0), the assembled multiplier is
-                # lambda_I = p_n * sgn(D_II), the same convention the Lagrange branch
-                # uses, so that the force lambda_I * D_II * n is compressive for
-                # either sign of the weight.
-                #
-                # ACTIVE SET. p_trial > 0 IS the Signorini branch test here; no
-                # complementarity parameter and no primal-dual iteration are
-                # involved. With z_aug = 0 it reduces to "penetrating" and the law
-                # to the pure penalty form; with the augmentation it is the release
-                # condition of the outer loop. Note that
-                # this indicator has the same structure as the semi-smooth NCP
-                # indicator s_n = p_n - c_n*g_sep of the Lagrange branch, with the
-                # augmented multiplier in place of the multiplier unknown - the
-                # augmented Lagrangian and the semi-smooth reformulation are the
-                # same object seen from two sides.
-                # Consequently there is no active-set freezing and no anti-cycling
-                # bookkeeping in this branch: the set is not iterated, it follows
-                # the pressure.
-                # ==============================================================
-                self.current_g_weak[I] = g_I_weak
-                g_pen = -g_I_weak * sgn_D
-                p_trial = self.z_aug[I] + self.kappa * g_pen
-                # use_active_set = False pins the branch from outside - the same
-                # switch the Lagrange branch honours. It is what lets a consistency
-                # check perturb the state without the branch flipping underneath it,
-                # and what a deliberately tied (bilateral) contact would use.
-                if self.use_active_set:
-                    # Against the noise floor of the gap the pressure is made from, not against
-                    # zero - see current_gap_tol. Once the augmentation carries a real pressure the
-                    # shift is immaterial: it moves the release point by kappa*current_gap_tol,
-                    # which is 1e-7 against pressures of order 10 in the deck this was measured on.
-                    self.active_set[I] = bool(p_trial > self.kappa * self.current_gap_tol)
-
-                if not self.active_set[I]:
-                    self.lambda_nodal[I] = 0.0
-                    continue
-
-                lambda_I = p_trial * sgn_D
-                self.lambda_nodal[I] = lambda_I
-
-                # The whole nodal contribution is rank one. With the weights
-                #   w_a = +D_IK on the slave nodes, w_a = -C_IJ on the master nodes,
-                # the weighted gap is g_weak = -sum_a w_a (x_a . n_I), so
-                #   dg_weak/dx_a = -w_a n_I,    dlambda_I/dx_a = +kappa w_a n_I
-                # (the sgn(D_II) cancels), and with v_a = w_a n_I:
-                #   PExt_a -= lambda_I * v_a,     K_ab += kappa * v_a v_b.
-                # K is therefore symmetric positive semi-definite - this is the
-                # first term of the linearised penalty force; the second and
-                # third terms are the linearizations of the nodal normal and of the
-                # mortar weights, which the frozen geometry of this implementation
-                # deliberately omits (see the note on the reference configuration
-                # above and the documentation chapter on consistent linearization).
-                # astype: both index arrays can be empty (a slave node that lost
-                # all coverage while still carrying an augmented pressure), and
-                # concatenating two empty arrays does not reliably keep an integer
-                # dtype - which np.ix_ below would reject.
-                node_ids = np.concatenate((nzD, nSlave + nzC)).astype(np.intp)
-                w = np.concatenate((dRow, -cRow))
-                idcs = (sf * node_ids[:, None] + _dim_offsets).ravel()
-                v = (w[:, None] * n_I[None, :]).ravel()
-                PExt[idcs] -= lambda_I * v
-                K[np.ix_(idcs, idcs)] += self.kappa * np.outer(v, v)
-                continue
-
-            self.lambda_nodal[I] = lambda_I
-            self.current_g_weak[I] = g_I_weak
-
-            if self.use_active_set and not self.active_set_frozen:
-                # Semi-smooth normal complementarity: the Signorini conditions p_n >= 0,
-                # g_sep >= 0,
-                # p_n*g_sep = 0 are written as the single non-smooth function
-                #   C_n = p_n - max(0, p_n - c_n*g_sep) = 0,
-                # whose two branches are
-                #   active   (s_n > 0):  constraint  g_weak = 0,
-                #   inactive (s_n <= 0): constraint  lambda = 0,
-                # with the augmented indicator s_n = p_n - c_n*g_sep. It is
-                # re-evaluated EVERY Newton iteration - this is the literature-
-                # standard PDASS = semi-smooth-Newton formulation with local
-                # superlinear convergence. c_n is purely algorithmic: at
-                # convergence g_sep -> 0, so the converged result is c_n-
-                # independent and identical to any admissible active-set rule.
-                #
-                # Which gap measure enters the indicator is a choice, and the one made here
-                # is the POINTWISE gap, i.e. a length.
-                # g_sep = g_weak/D_II is exactly that: the physical nodal opening.
-                # The alternative form instead inserts the mortar-weighted
-                # gap g_weak, which carries length x area. Both are admissible - the
-                # indicator only decides the branch, and at convergence either gap
-                # vanishes - but only the length-valued form makes c_n*g_sep a
-                # pressure comparable to p_n, and only for it is the recommendation
-                # c_n ~ O(E) dimensionally meaningful.
-                s_n = p_n - self.c_n * g_sep
-                self.active_set[I] = bool(s_n > 0.0)
-
-            # Assembly in the literature sign convention (lambda_n >= 0 in
-            # compression). Throughout, K = -dPExt/dU, which is what makes the
-            # multiplier block symmetric:
-            #   slave force   -lambda_I * D_IK * n_I     -> K[x_s, lambda] = +D_IK*n
-            #   master force  +lambda_I * C_IJ * n_I     -> K[x_m, lambda] = -C_IJ*n
-            #   lambda row    +g_weak (active)           -> K[lambda, x_s] = +D_IK*n,
-            #                                               K[lambda, x_m] = -C_IJ*n
-            # The active lambda row therefore carries the OPPOSITE overall sign to
-            # the one it had while lambda was the slave traction; that is a row
-            # scaling by -1 and is exactly what keeps K[x, lambda] = K[lambda, x].
-            # The inactive row (lambda = 0) has no coupling and is unaffected.
-            if self.active_set[I]:
-                PExt[idx_LM_I] += g_I_weak
-
-                for K_nd, D_IK in zip(nzD, dRow):
-                    s_dofs = slice(sf * K_nd, sf * K_nd + dim)
-                    D_IK_n = D_IK * n_I
-                    PExt[s_dofs] -= lambda_I * D_IK_n
-                    K[s_dofs, idx_LM_I] += D_IK_n
-                    K[idx_LM_I, s_dofs] += D_IK_n
-
-                for J, C_IJ in zip(nzC, cRow):
-                    m_global = nSlave + J
-                    m_dofs = slice(sf * m_global, sf * m_global + dim)
-                    C_IJ_n = C_IJ * n_I
-                    PExt[m_dofs] += lambda_I * C_IJ_n
-                    K[m_dofs, idx_LM_I] -= C_IJ_n
-                    K[idx_LM_I, m_dofs] -= C_IJ_n
-            else:
-                PExt[idx_LM_I] -= lambda_I
-                K[idx_LM_I, idx_LM_I] += 1.0
-
-        # Termination of the semi-smooth active-set iteration. The discrete state
-        # is the normal active set, updated every Newton iteration. Two
-        # literature-grounded freeze triggers:
-        #  (1) the active set has settled,
-        #      i.e. is unchanged for two consecutive iterations past a warm-up.
-        #  (2) anti-cycling: the state CHANGED this iteration but
-        #      revisits a state already seen earlier this increment -> a proven
-        #      limit cycle (only finitely many states, so a revisit-after-change
-        #      is a cycle). Freezing breaks it; the remaining Newton iterations
-        #      are a linear solve on the fixed set.
-        # A hard iteration cap remains as a final safeguard.
-        if self.use_active_set and not self.active_set_frozen and not penalty:
-            state = self.active_set.tobytes()
-            changed = state != self._last_state
-            if changed:
-                self.active_set_stable_count = 0
-            else:
-                self.active_set_stable_count += 1
-            cycle = changed and (state in self._seen_states)
-            self._seen_states.add(state)
-            self._last_state = state
-            settled = self.active_set_stable_count >= 2 and self.current_iteration >= 2
-            hit_cap = self.current_iteration >= 20
-            if settled or cycle or hit_cap:
-                if hit_cap and not settled and not cycle:
-                    # Measured over the Control_Tests and patch-test suite: this
-                    # never fires - the set freezes 111 times out of 111 through the
-                    # PDASS criterion, at most 11 iterations. Where it DOES fire the
-                    # set was still moving, so the increment converges onto a set
-                    # that was never confirmed and the converged solution may
-                    # violate the Signorini conditions. Nothing checks that
-                    # automatically; a converged model has to be checked by comparing
-                    # its nodal pressures and openings against each other.
-                    self._warn_once(
-                        "active_set_iteration_cap",
-                        f"the active set was frozen by the iteration cap (20), not by the PDASS "
-                        f"convergence criterion, first in increment {timeStep.number}. The set had "
-                        f"not settled, so the converged solution of such increments is not "
-                        f"guaranteed to satisfy the Signorini conditions - verify it by checking "
-                        f"the nodal pressures and openings of the converged state against each other.",
-                    )
-                self.active_set_frozen = True
-
-        # A node that carries a constraint while almost none of its own facet area is opposed by the
-        # other surface is worth saying out loud. The constraint is exact there and the weighting of
-        # the boundary rows keeps its multiplier an ordinary pressure, so nothing is broken - but the
-        # force that crosses at such a node is set by the surrounding mechanics rather than by the
-        # sliver it stands on, and on a surface that ends while still under full pressure that force
-        # is not small. Putting the SMALLER of the two surfaces on the non-mortar side avoids the
-        # situation altogether, since every one of its facets is then fully covered.
-        #
-        # Checked here rather than at the start of an increment, and against the active set of THIS
-        # assembly: the condition can develop within the last increment of a run, where an
-        # increment-boundary check would never see it. Restricted to nodes actually in contact,
-        # because a thinly covered node that carries no multiplier transmits nothing - a curved
-        # indenter has such nodes just outside its contact zone in every increment, and reporting
-        # those would bury the case that matters.
-        #
-        # The bound decides when to speak and nothing else. No quantity entering the solution is
-        # compared against it.
-        if hasattr(self, "current_coverage"):
-            thinlyCovered = np.flatnonzero(
-                (self.current_coverage < 1e-2) & (self.current_coverage > 0.0) & self.active_set
-            )
-            if len(thinlyCovered):
-                self._warn_once(
-                    "thinly_covered_nodes",
-                    f"{len(thinlyCovered)} non-mortar node(s) in contact are opposed over less than "
-                    f"1 % of their own facet area (thinnest: "
-                    f"{float(np.min(self.current_coverage[thinlyCovered])):.2e}), first in increment "
-                    f"{timeStep.number}. Such a node is constrained exactly like a fully covered one "
-                    f"- coverage sets how the contact force is distributed, never whether a node is "
-                    f"tied - so it can transmit a force out of proportion to the area backing it. "
-                    f"This arises where the mortar surface ends while still transmitting pressure. "
-                    f"Putting the smaller of the two surfaces on the non-mortar side removes it, "
-                    f"because every non-mortar facet is then fully covered.",
-                )

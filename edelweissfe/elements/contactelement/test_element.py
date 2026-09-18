@@ -13,6 +13,8 @@
 #  University of Innsbruck,
 #  2017 - today
 #
+#  Manuel Hradsky manuel.hradsky@uibk.ac.at
+#
 #  This file is part of EdelweissFE.
 #
 #  This library is free software; you can redistribute it and/or

@@ -13,6 +13,8 @@
 #  University of Innsbruck,
 #  2017 - today
 #
+#  Manuel Hradsky manuel.hradsky@uibk.ac.at
+#
 #  This file is part of EdelweissFE.
 #
 #  This library is free software; you can redistribute it and/or
@@ -56,21 +58,21 @@ import warnings
 import numpy as np
 
 import edelweissfe.utils.inputfileparser  # noqa: F401 bootstrap input language
-from edelweissfe.constraints.mortar_geom_utils import (
-    clip_1d_segments,
-    get_tangent_basis,
-    sutherland_hodgman_clip,
-    to_3d_coords,
-    to_plane_coords,
-    triangulate_polygon,
-)
 from edelweissfe.constraints.mortarcontact import Constraint as MortarContact
-from edelweissfe.constraints.mortarcontact import facet_normal, is_convex_polygon
+from edelweissfe.constraints.mortarcontact import facetNormal, isConvexPolygon
 from edelweissfe.generators.surfaceelementgenerator import buildContactFacets
 from edelweissfe.journal.journal import Journal
 from edelweissfe.models.femodel import FEModel
 from edelweissfe.points.node import Node
 from edelweissfe.sets.elementset import ElementSet
+from edelweissfe.utils.mortargeometry import (
+    clipLineSegments,
+    sutherlandHodgmanClip,
+    tangentBasis,
+    toPlaneCoordinates,
+    toSpatialCoordinates,
+    triangulatePolygon,
+)
 
 
 def _polygonArea(polygon: np.ndarray) -> float:
@@ -91,7 +93,7 @@ class TestOverlapGeometry(unittest.TestCase):
         subject = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
         clip = subject + np.array([0.5, 0.25])
 
-        overlap = np.asarray(sutherland_hodgman_clip(subject, clip))
+        overlap = np.asarray(sutherlandHodgmanClip(subject, clip))
 
         self.assertEqual(len(overlap), 4)
         self.assertAlmostEqual(_polygonArea(overlap), 0.5 * 0.75, places=13)
@@ -103,7 +105,7 @@ class TestOverlapGeometry(unittest.TestCase):
         subject = np.array([[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]])
         clip = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
 
-        overlap = np.asarray(sutherland_hodgman_clip(subject, clip))
+        overlap = np.asarray(sutherlandHodgmanClip(subject, clip))
         self.assertAlmostEqual(_polygonArea(overlap), 0.25, places=13)
 
     def test_disjoint_faces_clip_to_nothing(self):
@@ -114,14 +116,14 @@ class TestOverlapGeometry(unittest.TestCase):
         subject = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
         clip = subject + np.array([3.0, 0.0])
 
-        overlap = sutherland_hodgman_clip(subject, clip)
+        overlap = sutherlandHodgmanClip(subject, clip)
         self.assertEqual(len(overlap), 0)
 
     def test_the_triangulation_preserves_the_area(self):
         """The overlap is integrated triangle by triangle, so the fan has to tile it exactly."""
 
         polygon = np.array([[0.0, 0.0], [2.0, 0.0], [2.5, 1.0], [1.0, 1.8], [-0.3, 0.9]])
-        triangles = triangulate_polygon(polygon)
+        triangles = triangulatePolygon(polygon)
 
         total = sum(_polygonArea(np.asarray(triangle)) for triangle in triangles)
         self.assertEqual(len(triangles), len(polygon) - 2)
@@ -141,10 +143,10 @@ class TestOverlapGeometry(unittest.TestCase):
         # an L-shaped, i.e. non-convex, window covering three quarters of the subject
         window = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 0.5], [0.5, 0.5], [0.5, 1.0], [0.0, 1.0]])
 
-        overlap = sutherland_hodgman_clip(subject, window)
+        overlap = sutherlandHodgmanClip(subject, window)
         clippedArea = _polygonArea(np.asarray(overlap)) if len(overlap) else 0.0
 
-        self.assertFalse(is_convex_polygon(window))
+        self.assertFalse(isConvexPolygon(window))
         self.assertLess(clippedArea, 0.75 - 1e-9, "the non-convex window did not lose any area -- test is vacuous")
 
     def test_one_dimensional_segments_clip_to_their_overlap(self):
@@ -154,7 +156,7 @@ class TestOverlapGeometry(unittest.TestCase):
         slaveSegment = np.array([[0.0, 0.0], [2.0, 0.0]])
         masterSegment = np.array([[1.5, 0.0], [4.0, 0.0]])
 
-        start, end, direction = clip_1d_segments(slaveSegment, masterSegment)
+        start, end, direction = clipLineSegments(slaveSegment, masterSegment)
         # The interval is returned in the ARC LENGTH of the slave segment, not as a fraction of it:
         # the slave runs from 0 to 2, the master covers it from 1.5 onwards, so the overlap is 0.5
         # long and begins at 1.5.
@@ -169,7 +171,7 @@ class TestOverlapGeometry(unittest.TestCase):
 
         normal = np.array([1.0, 2.0, -0.5])
         normal /= np.linalg.norm(normal)
-        t1, t2 = get_tangent_basis(normal)
+        t1, t2 = tangentBasis(normal)
 
         np.testing.assert_allclose([t1 @ t1, t2 @ t2], 1.0, atol=1e-13)
         np.testing.assert_allclose([t1 @ t2, t1 @ normal, t2 @ normal], 0.0, atol=1e-13)
@@ -177,8 +179,8 @@ class TestOverlapGeometry(unittest.TestCase):
         origin = np.array([0.3, -1.2, 4.0])
         points = origin + np.outer([0.0, 1.0, 2.0, -1.5], t1) + np.outer([0.0, -0.7, 1.1, 2.0], t2)
 
-        planar = to_plane_coords(points, origin, t1, t2)
-        np.testing.assert_allclose(to_3d_coords(planar, origin, t1, t2), points, atol=1e-13)
+        planar = toPlaneCoordinates(points, origin, t1, t2)
+        np.testing.assert_allclose(toSpatialCoordinates(planar, origin, t1, t2), points, atol=1e-13)
 
 
 class TestFacetNormals(unittest.TestCase):
@@ -188,10 +190,10 @@ class TestFacetNormals(unittest.TestCase):
 
         face = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
 
-        normal = facet_normal(face)
+        normal = facetNormal(face)
         self.assertAlmostEqual(float(np.linalg.norm(normal)), 1.0, places=13)
 
-        reversed_normal = facet_normal(face[::-1])
+        reversed_normal = facetNormal(face[::-1])
         np.testing.assert_allclose(reversed_normal, -normal, atol=1e-13)
 
     def test_the_facet_normal_of_a_tilted_face_is_exact(self):
@@ -201,7 +203,7 @@ class TestFacetNormals(unittest.TestCase):
         s = np.sqrt(0.5)
         face = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, s, s], [0.0, s, s]])
 
-        normal = facet_normal(face)
+        normal = facetNormal(face)
         expected = np.array([0.0, -s, s])
         np.testing.assert_allclose(np.abs(normal), np.abs(expected), atol=1e-13)
 
@@ -266,8 +268,8 @@ class _TwoBlockModel:
         return model
 
     @staticmethod
-    def constraint(model: FEModel, **options) -> MortarContact:
-        journal = Journal(verbose=False)
+    def constraint(model: FEModel, journal: Journal = None, **options) -> MortarContact:
+        journal = journal if journal is not None else Journal(verbose=False)
         # cn belongs to the multiplier branch; handing it to the penalty branch is refused as a
         # contradiction, so the helper only supplies it where it means something.
         settings = dict(nonMortarSurface="nonMortar_facets", mortarSurface="mortar_facets")
@@ -275,6 +277,21 @@ class _TwoBlockModel:
             settings["cn"] = 1000.0
         settings.update(options)
         return MortarContact("contact", model, journal, **settings)
+
+
+class _RecordingJournal(Journal):
+    """A journal that keeps what was written to it, so a diagnostic can be asserted on.
+
+    The constraint reports through the journal like every other one in the package, so a test that
+    wants to see a diagnostic has to read it there rather than from :mod:`warnings`.
+    """
+
+    def __init__(self):
+        super().__init__(verbose=False)
+        self.records = []
+
+    def message(self, message: str, senderIdentification: str, level: int = 1):
+        self.records.append((senderIdentification, message))
 
 
 class TestConstraintSetup(unittest.TestCase):
@@ -285,10 +302,10 @@ class TestConstraintSetup(unittest.TestCase):
         model = _TwoBlockModel.build()
         constraint = _TwoBlockModel.constraint(model)
 
-        self.assertEqual(len(constraint.non_mortar_facets), 1)
-        self.assertEqual(len(constraint.mortar_facets), 1)
-        self.assertEqual(constraint.non_mortar_facets[0].elType, "CONQUAD4")
-        self.assertEqual(len(constraint.non_mortar_nodes), 4)
+        self.assertEqual(len(constraint.nonMortarFacets), 1)
+        self.assertEqual(len(constraint.mortarFacets), 1)
+        self.assertEqual(constraint.nonMortarFacets[0].elType, "CONQUAD4")
+        self.assertEqual(len(constraint.nonMortarNodes), 4)
 
     def test_a_missing_element_set_is_named_in_the_error(self):
         model = _TwoBlockModel.build()
@@ -314,9 +331,11 @@ class TestConstraintSetup(unittest.TestCase):
         away."""
 
         model = _TwoBlockModel.build(flipNonMortar=True)
-        with self.assertWarns(RuntimeWarning) as ctx:
-            _TwoBlockModel.constraint(model)
-        self.assertIn("points AWAY", str(ctx.warning))
+        journal = _RecordingJournal()
+        _TwoBlockModel.constraint(model, journal=journal)
+        reported = [text for sender, text in journal.records if "points AWAY" in text]
+        self.assertTrue(reported, f"the inverted surface was not reported; journal held {journal.records}")
+        self.assertEqual([sender for sender, _ in journal.records][0], "MortarContact")
 
     def test_an_initial_overlap_is_not_reported_as_facing_away(self):
         """The counterpart, and the reason the check carries a margin rather than a bare sign test:
@@ -325,10 +344,9 @@ class TestConstraintSetup(unittest.TestCase):
         anything being wrong."""
 
         model = _TwoBlockModel.build(gap=-0.01, masterShift=0.2)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            _TwoBlockModel.constraint(model)
-        facingAway = [w for w in caught if "points AWAY" in str(w.message)]
+        journal = _RecordingJournal()
+        _TwoBlockModel.constraint(model, journal=journal)
+        facingAway = [text for _, text in journal.records if "points AWAY" in text]
         self.assertEqual(facingAway, [], "an initial overlap was mistaken for an inverted surface")
 
     def test_sharing_a_node_between_the_two_surfaces_is_refused(self):
@@ -375,8 +393,8 @@ class TestCouplingMatrices(unittest.TestCase):
         model = _TwoBlockModel.build(masterShift=0.3)
         constraint = self._assembled(model)
 
-        D = np.asarray(constraint.current_D.todense())
-        C = np.asarray(constraint.current_C.todense())
+        D = np.asarray(constraint.currentD.todense())
+        C = np.asarray(constraint.currentC.todense())
 
         active = np.abs(D).sum(axis=1) > 1e-14
         self.assertTrue(active.any(), "no node was coupled at all -- test is vacuous")
@@ -400,7 +418,7 @@ class TestCouplingMatrices(unittest.TestCase):
             model = _TwoBlockModel.build(masterShift=shift)
             constraint = self._assembled(model)
 
-            D = np.asarray(constraint.current_D.todense())
+            D = np.asarray(constraint.currentD.todense())
             self.assertAlmostEqual(float(np.trace(D)), 1.0, places=11, msg=f"shift {shift}")
 
     def test_the_coverage_reports_the_shared_area(self):
@@ -410,12 +428,12 @@ class TestCouplingMatrices(unittest.TestCase):
 
         model = _TwoBlockModel.build()
         constraint = self._assembled(model)
-        np.testing.assert_allclose(constraint.current_coverage, 1.0, atol=1e-11)
+        np.testing.assert_allclose(constraint.currentCoverage, 1.0, atol=1e-11)
 
         model = _TwoBlockModel.build(masterShift=0.3)
         constraint = self._assembled(model)
-        coverage = constraint.current_coverage
-        weights = np.asarray(constraint.current_D_rowsum)
+        coverage = constraint.currentCoverage
+        weights = np.asarray(constraint.currentNodalWeights)
 
         # Area-weighted mean over the nodes, which is the covered fraction of the whole face.
         self.assertAlmostEqual(float(coverage @ weights / weights.sum()), 0.7, places=11)
@@ -430,12 +448,12 @@ class TestCouplingMatrices(unittest.TestCase):
         model = _TwoBlockModel.build()
         constraint = self._assembled(model)
 
-        facet = constraint.non_mortar_facets[0]
+        facet = constraint.nonMortarFacets[0]
         coordinates = np.array([node.coordinates for node in facet.nodes])
         fullFacetWeights = np.diag(facet.computeLocalMassMatrices(coordinates)[1])
-        weights = np.asarray(constraint.current_D_rowsum)
+        weights = np.asarray(constraint.currentNodalWeights)
 
-        indices = [constraint.slave_node_to_idx[node] for node in facet.nodes]
+        indices = [constraint.nonMortarNodeToIndex[node] for node in facet.nodes]
         np.testing.assert_allclose(weights[indices], fullFacetWeights, rtol=1e-11)
 
 
@@ -471,13 +489,13 @@ class TestPenaltyActivation(unittest.TestCase):
         constraint = self._penaltyConstraint(model)
         self._assembleOnce(constraint)
 
-        self.assertGreater(constraint.current_gap_tol, 0.0)
+        self.assertGreater(constraint.currentGapTolerance, 0.0)
         self.assertLess(
-            float(np.max(np.abs(constraint.current_g_weak))),
-            constraint.current_gap_tol,
+            float(np.max(np.abs(constraint.currentWeakGap))),
+            constraint.currentGapTolerance,
             "the fixture does not actually produce a round-off gap -- test is vacuous",
         )
-        self.assertEqual(int(np.sum(constraint.active_set)), 0)
+        self.assertEqual(int(np.sum(constraint.activeSet)), 0)
 
     def test_the_outer_loop_stops_at_once_when_there_is_nothing_to_correct(self):
         """And therefore does not spend its iteration cap, nor report a failure to converge, on an
@@ -489,7 +507,7 @@ class TestPenaltyActivation(unittest.TestCase):
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            for _ in range(constraint.max_augmentations + 1):
+            for _ in range(constraint.maxAugmentations + 1):
                 if not constraint.augmentConstraint():
                     break
 
@@ -505,14 +523,14 @@ class TestPenaltyActivation(unittest.TestCase):
         constraint = self._penaltyConstraint(model)
         self._assembleOnce(constraint)
 
-        self.assertEqual(int(np.sum(constraint.active_set)), len(constraint.non_mortar_nodes))
+        self.assertEqual(int(np.sum(constraint.activeSet)), len(constraint.nonMortarNodes))
         self.assertGreater(
-            float(np.max(np.abs(constraint.current_g_weak))),
-            1e3 * constraint.current_gap_tol,
+            float(np.max(np.abs(constraint.currentWeakGap))),
+            1e3 * constraint.currentGapTolerance,
             "a genuine gap has to sit orders of magnitude above the noise floor",
         )
         self.assertTrue(constraint.augmentConstraint())
-        self.assertGreater(float(np.max(constraint.z_aug)), 0.0)
+        self.assertGreater(float(np.max(constraint.augmentedMultipliers)), 0.0)
 
 
 class TestConsistentTangent(unittest.TestCase):
@@ -544,8 +562,8 @@ class TestConsistentTangent(unittest.TestCase):
         # this test did before, and why the check below counts active nodes rather than merely
         # asking whether the tangent is non-zero.
         constraint.applyConstraint(U, dU, np.zeros(nDof), np.zeros((nDof, nDof)), timeStep)
-        self.assertGreater(int(np.sum(constraint.active_set)), 0, "no node is in contact -- test is vacuous")
-        constraint.use_active_set = False
+        self.assertGreater(int(np.sum(constraint.activeSet)), 0, "no node is in contact -- test is vacuous")
+        constraint.useActiveSet = False
 
         P0 = np.zeros(nDof)
         K0 = np.zeros((nDof, nDof))
