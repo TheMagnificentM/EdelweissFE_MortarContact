@@ -352,9 +352,12 @@ normalises to the same direction. The difference appears only on a curved surfac
 in size.
 
 Evaluating at the node's own coordinate rather than at the face centre is what ties the normal to
-the geometry at that node. Measured against the analytical normal of a cylindrical patch resolved by
-quadratic elements, the angular error falls by about a factor of eight for every halving of the
-facet size, i.e. at third order.
+the geometry at that node, and it is what the quadratic element types buy. Measured against the
+analytical normal of a cylindrical patch, halving the facet size takes the angular error from
+0.0278 to 0.0035 degrees for the quadratic types -- a factor of 7.95, i.e. third order -- while a
+single facet-constant normal leaves them at the linear types' own 7.1620 to 3.5810 degrees, a
+factor of 2. A facet-constant normal assigns one direction to a corner and to a mid-side node of
+the same face, so the curvature of that face never reaches the normal at all.
 
 The construction has a failure mode worth naming: across a sharp edge -- the ninety-degree step
 between a shaft and a head, say -- it averages two normals that are ninety degrees apart and returns
@@ -427,9 +430,13 @@ Which of the two surfaces is made the non-mortar one is not a matter of taste wh
 differ in extent. Putting the SMALLER one there makes every one of its facets fully covered, and no
 boundary row arises at all. The same model with the sides exchanged produces them in numbers.
 
-This is the first remedy Cichosz and Bischoff name, and it is the one to reach for whenever the
-geometry allows it. The two decks ``MortarContactPunchEdge`` and ``MortarContactPartialOverlap``
-are the same configuration with the two choices, and their headers carry the measurements.
+This is not one of the two remedies below but something better: it is the case in which they are
+not needed at all, and it is the one to reach for whenever the geometry allows it. Cichosz and
+Bischoff establish it by example rather than by derivation -- their Section 6.1 punches a small
+block onto a larger one, runs the same model twice with the sides exchanged, and compares the
+contact pressure and the condition number of the stiffness matrix. The two decks
+``MortarContactPunchEdge`` and ``MortarContactPartialOverlap`` are the same configuration with the
+two choices, and their headers carry the measurements.
 
 
 The discrete system, step by step
@@ -773,8 +780,9 @@ that a reader checking a single line does not have to reconstruct which work it 
   (2011), 1317--1332. -- The partially covered facet at the boundary of the contact area: the
   quadratic decay of its nodal weight, the reciprocal growth of its multiplier and the resulting
   loss of conditioning, and both remedies used here -- biorthogonality over the covered area, and
-  the weighting of the boundary rows. Their Section 4 and Eqs. (41) to (45); the choice of sides is
-  the advice of their Example 6.1.
+  the weighting of the boundary rows. Their Section 4 and Eqs. (41) to (45). The choice of sides is not one of
+  those but their Section 6.1, which shows by example what exchanging the two surfaces does to
+  the contact pressure and to the condition number.
 
 *Segment-to-segment contact*
 
