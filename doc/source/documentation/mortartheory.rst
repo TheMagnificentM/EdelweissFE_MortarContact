@@ -576,6 +576,16 @@ Choosing the parameters
   either, but reaches it only for overlaps confined to the small region where its transformed corner
   function is negative.
 
+  Which types are actually reachable is narrower than the list of types the constraint supports.
+  :mod:`~edelweissfe.generators.surfaceelementgenerator` emits a contact element from a face of a
+  solid element, so it can only emit the faces the solid elements of EdelweissFE have: ``CONLINE2``
+  and ``CONLINE3`` from the two-dimensional ones, ``CONQUAD4`` from ``hexa8`` and ``CONQUAD8`` from
+  ``hexa20``. ``CONQUAD9``, ``CONTRI3`` and ``CONTRI6`` are implemented throughout the constraint
+  and the contact element, but their source elements -- a 27-node hexahedron and the tetrahedra --
+  do not exist in EdelweissFE, so no generator call can produce them. They are reachable today only
+  from a hand-written element set, and are there so that the constraint does not have to be revisited
+  when such an element is added.
+
 
 Inside the solver
 ~~~~~~~~~~~~~~~~~

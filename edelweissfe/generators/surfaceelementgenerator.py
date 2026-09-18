@@ -183,6 +183,12 @@ _MIDSIDE_FACE_TABLES = {
 # returns -- corner cycle first, then the midside node of each corner-to-corner edge in the same
 # cycle order -- is the node ordering these element types themselves use, so the indices can be
 # applied directly with no permutation.
+# One contact element type per parent face type. The table is shorter than the set of contact
+# element types the mortar constraint supports, and deliberately so: a whole-face contact element is
+# a face of a solid element, so only the faces EdelweissFE's solid elements actually have can appear
+# here. CONQUAD9, CONTRI3 and CONTRI6 would need a 27-node hexahedron and tetrahedra, which the
+# element library does not have; the constraint supports them so that it need not be revisited when
+# one is added, and until then they are reachable only from a hand-written element set.
 _WHOLE_FACE_ELEMENT_TYPES = {
     "line2": "CONLINE2",
     "line3": "CONLINE3",
