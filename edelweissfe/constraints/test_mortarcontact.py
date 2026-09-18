@@ -43,13 +43,15 @@ The pieces, in the order the constraint uses them:
   partition of the non-mortar surface, and the weighting that keeps a boundary row's multiplier a
   pressure rather than a ratio of a force to a vanishing area
 * the noise floor below which the penalty branch must not read a gap as contact
+* the semi-smooth active set of the multiplier branch: what decides it, that it is re-decided in
+  every Newton iteration, when it stops being re-decided, and that it reads the gap correctly where
+  a nodal weight has turned negative
 * the tangent, against finite differences of the residual it claims to differentiate
 
-NOT covered here, and worth naming so the list above is not read as a complete one: the semi-smooth
-active-set indicator of the multiplier branch -- its re-decision in every Newton iteration, the
-freeze once it has settled, and the anti-cycling that stops a state from recurring. Those are
-exercised end to end by the regression decks, which walk a model through closing, separating and
-closing again, but nothing tests them as a building block.
+NOT covered here, and worth naming so the list above is not read as a complete one: whether the
+CONVERGED solution satisfies the Signorini conditions. That is a property of a solved model rather
+than of a piece of one, and it is checked in ``tests/test_mortarsignorini.py``, which runs the
+regression decks and reads the conditions off the state they converged to.
 """
 
 import unittest
@@ -585,25 +587,296 @@ class TestConsistentTangent(unittest.TestCase):
         np.testing.assert_allclose(K0 / scale, numeric / scale, atol=5e-6)
 
 
-def _frozenTimeStep():
-    """One time step object, reused for every evaluation of the tangent test.
+def _frozenTimeStep(number: int = 1):
+    """One time step object, identical for every call with the same increment number.
 
     The constraint recomputes its geometry when it sees a new increment, and identifies an increment
-    by number, size and end time. Handing out a fresh step per evaluation would therefore recompute
-    the geometry under the perturbation and compare the tangent against a residual it never
-    assembled.
+    by number, size and end time. For the tangent test that means handing out the SAME step for
+    every evaluation, since a fresh one would recompute the geometry under the perturbation and
+    compare the tangent against a residual it never assembled. For the active-set tests it means the
+    opposite: a new ``number`` is how a new increment is staged, which is what thaws a frozen set
+    and refreezes the geometry, exactly as the solver does.
+
+    Parameters
+    ----------
+    number
+        The increment number.
+
+    Returns
+    -------
+    TimeStep
+        The time step.
     """
 
     from edelweissfe.timesteppers.timestep import TimeStep
 
     return TimeStep(
-        number=1,
+        number=number,
         stepProgressIncrement=1.0,
         stepProgress=1.0,
         timeIncrement=1.0,
         stepTime=1.0,
-        totalTime=1.0,
+        totalTime=float(number),
     )
+
+
+class _Quad9PartialOverlapModel:
+    """Two nine-node contact facets in the same plane, the mortar one shifted sideways.
+
+    The one configuration in which a nodal weight turns NEGATIVE. ``CONQUAD9`` receives no basis
+    transformation -- its corner integrals are already positive over the whole facet, so it needs
+    none -- and its shape functions are therefore not pointwise non-negative. Once only part of the
+    facet is covered, the integral that defines the weight can run over the region where the
+    function is negative and come out below zero.
+
+    Built from contact elements directly rather than from the generator, because the generator
+    cannot emit ``CONQUAD9``: it emits faces of solid elements, and EdelweissFE has no 27-node
+    hexahedron for such a face to come from.
+    """
+
+    @staticmethod
+    def build(shiftX: float = 0.3) -> FEModel:
+        from edelweissfe.config.elementlibrary import getElementClass
+        from edelweissfe.variables.fieldvariable import FieldVariable
+
+        def facet(originX):
+            return [
+                [originX, 0.0, 0.0],
+                [originX + 1.0, 0.0, 0.0],
+                [originX + 1.0, 1.0, 0.0],
+                [originX, 1.0, 0.0],
+                [originX + 0.5, 0.0, 0.0],
+                [originX + 1.0, 0.5, 0.0],
+                [originX + 0.5, 1.0, 0.0],
+                [originX, 0.5, 0.0],
+                [originX + 0.5, 0.5, 0.0],
+            ]
+
+        model = FEModel(3)
+        contactElementClass = getElementClass("CONQUAD9", "edelweiss")
+
+        elements = {}
+        for label, (name, originX) in enumerate((("nonMortar", 0.0), ("mortar", shiftX)), start=1):
+            nodes = [Node(100 * label + i, np.array(x, dtype=float)) for i, x in enumerate(facet(originX))]
+            for node in nodes:
+                model.nodes[node.label] = node
+                node.fields["displacement"] = FieldVariable(node, "displacement")
+            element = contactElementClass("CONQUAD9", label)
+            element.setNodes(nodes)
+            model.elements[label] = element
+            elements[name] = element
+
+        for name, element in elements.items():
+            model.elementSets[f"{name}_facets"] = ElementSet(f"{name}_facets", [element])
+        return model
+
+    @staticmethod
+    def constraint(model: FEModel) -> MortarContact:
+        return MortarContact(
+            "contact",
+            model,
+            Journal(verbose=False),
+            nonMortarSurface="nonMortar_facets",
+            mortarSurface="mortar_facets",
+            cn=1000.0,
+        )
+
+
+class TestActiveSet(unittest.TestCase):
+    """The semi-smooth active set of the multiplier branch: what decides it, how often, and when it
+    stops being decided.
+
+    This is the machinery that chooses which nodes are in contact, and a defect in it is silent. The
+    Newton iteration converges just as cleanly onto a wrong set as onto the right one -- it then
+    solves a different problem. The regression decks compare converged displacements and cannot see
+    that, since they never exercise the intermediate states the decision is made in.
+    """
+
+    @staticmethod
+    def _setNonMortarGap(constraint: MortarContact, U: np.ndarray, openings) -> None:
+        """Displace each non-mortar node along the interface normal, in its own order.
+
+        The two blocks of the fixture face each other across y, and for linear facets D is diagonal,
+        so each nodal gap follows that node's own displacement alone.
+        """
+        for local, node in enumerate(constraint.nonMortarNodes):
+            index = constraint.nodeToGlobalIndex[node]
+            U[constraint.sizeField * index + 1] = openings[local]
+
+    @staticmethod
+    def _setNodalPressure(constraint: MortarContact, U: np.ndarray, pressure: float) -> None:
+        """Prescribe the nodal contact pressure through the multiplier unknowns.
+
+        ``lambda_I = p_n * sgn(D_II)`` is the constraint's own convention, so that a positive value
+        means compression for either sign of the nodal weight.
+        """
+        firstMultiplier = constraint.sizeField * len(constraint.nodes)
+        U[firstMultiplier:] = pressure * np.sign(constraint.currentNodalWeights)
+
+    def _assemble(self, constraint: MortarContact, U: np.ndarray, increment: int) -> None:
+        nDof = constraint.nDof
+        constraint.applyConstraint(
+            U, np.zeros(nDof), np.zeros(nDof), np.zeros((nDof, nDof)), _frozenTimeStep(increment)
+        )
+
+    def test_the_indicator_decides_by_pressure_where_the_gap_is_closed(self):
+        """At a closed gap the branch is decided by the pressure, which a penetration test cannot
+        represent: the same geometry must be active under compression and released under tension.
+
+        This is the content of the complementarity function -- active where
+        ``p_n - c_n * g_sep > 0`` -- as opposed to the heuristic ``active where the node has
+        penetrated``, which the two cases below are indistinguishable for.
+        """
+
+        model = _TwoBlockModel.build(gap=0.1)
+        constraint = _TwoBlockModel.constraint(model)
+        U = np.zeros(constraint.nDof)
+
+        # Close the gap exactly: g_sep = 0, so the gap term of the indicator vanishes.
+        self._setNonMortarGap(constraint, U, [0.1] * len(constraint.nonMortarNodes))
+
+        self._assemble(constraint, U, 1)
+        self.assertLess(
+            float(np.max(np.abs(constraint.currentWeakGap))),
+            1e-12,
+            "the fixture did not actually close the gap -- test is vacuous",
+        )
+        self.assertEqual(int(np.sum(constraint.activeSet)), 0, "a vanishing indicator must not activate")
+
+        self._setNodalPressure(constraint, U, +1.0)
+        self._assemble(constraint, U, 2)
+        self.assertTrue(np.all(constraint.activeSet), "compression at a closed gap must be active")
+
+        self._setNodalPressure(constraint, U, -1.0)
+        self._assemble(constraint, U, 3)
+        self.assertEqual(int(np.sum(constraint.activeSet)), 0, "tension at a closed gap must release the node")
+
+    def test_the_set_is_re_decided_in_every_iteration(self):
+        """Not on a fixed schedule and not once per increment: the indicator is evaluated again in
+        every iteration for as long as the set keeps changing.
+
+        Driven through eight pairwise different patterns so that the set neither settles nor repeats
+        a state, which are the two things that would legitimately stop the re-evaluation.
+        """
+
+        model = _TwoBlockModel.build(gap=0.1)
+        constraint = _TwoBlockModel.constraint(model)
+        U = np.zeros(constraint.nDof)
+
+        patterns = [
+            (0, 0, 0, 0),
+            (1, 0, 0, 0),
+            (0, 1, 0, 0),
+            (1, 1, 0, 0),
+            (0, 0, 1, 0),
+            (1, 0, 1, 0),
+            (0, 1, 1, 0),
+            (1, 1, 1, 0),
+        ]
+        for iteration, pattern in enumerate(patterns):
+            self._setNonMortarGap(constraint, U, [0.15 if p else 0.0 for p in pattern])
+            self._assemble(constraint, U, 1)
+
+            self.assertEqual(constraint.currentIteration, iteration)
+            self.assertFalse(constraint.activeSetFrozen, "a set that is still moving must not be frozen")
+            self.assertEqual(
+                tuple(int(a) for a in constraint.activeSet),
+                pattern,
+                f"iteration {iteration}: the set was not re-decided",
+            )
+
+    def test_the_set_freezes_once_it_has_settled_and_thaws_next_increment(self):
+        """The semi-smooth loop terminates on the set reproducing itself, not on an iteration count,
+        and the freeze lasts exactly one increment.
+
+        The second half is the more valuable one: a frozen set that is then contradicted within its
+        own increment must stay frozen -- otherwise the freeze is no termination criterion at all --
+        and the contradiction must be reported at the start of the next increment, which is the one
+        moment a converged state is available to check it against.
+        """
+
+        model = _TwoBlockModel.build(gap=0.1)
+        constraint = _TwoBlockModel.constraint(model)
+        journal = _RecordingJournal()
+        constraint.journal = journal
+        U = np.zeros(constraint.nDof)
+
+        for iteration in range(3):
+            self._assemble(constraint, U, 1)
+            self.assertEqual(constraint.currentIteration, iteration)
+        self.assertTrue(constraint.activeSetFrozen, "a settled set must terminate the iteration")
+
+        self._setNonMortarGap(constraint, U, [0.15] * len(constraint.nonMortarNodes))
+        self._assemble(constraint, U, 1)
+        self.assertEqual(int(np.sum(constraint.activeSet)), 0, "a frozen set must not move within its increment")
+
+        self._assemble(constraint, U, 2)
+        self.assertFalse(constraint.activeSetFrozen, "a new increment must thaw the set")
+        self.assertTrue(np.all(constraint.activeSet), "the penetration must be found again")
+        self.assertTrue(
+            [text for _, text in journal.records if "does not reproduce itself" in text],
+            f"the contradicted frozen set was not reported; journal held {journal.records}",
+        )
+
+    def test_a_node_of_negative_weight_still_opens_and_still_closes(self):
+        """A regression test for a sign defect that made an open node look like a penetrating one.
+
+        Where the nodal weight is negative both conventions flip. The nodal force along the normal
+        is ``-lambda * D_II``, so compression means ``lambda < 0`` once ``D_II < 0``, which is why
+        the pressure carries ``sgn(D_II)``. Translating the mortar surface away by ``a`` changes the
+        weighted gap by ``D_II * a``, so an OPEN gap gives a NEGATIVE weighted gap there. The
+        indicator therefore has to use the opening normalised by the SIGNED weight, which is
+        positive-when-open either way. Multiplying by ``sgn(D_II)`` on top of that -- the defect --
+        turns a wide open node into a penetrating one, keeps it active and transmits tension.
+
+        Both directions are asserted: a test that merely never activates anything would pass the
+        first half on its own.
+        """
+
+        model = _Quad9PartialOverlapModel.build()
+        constraint = _Quad9PartialOverlapModel.constraint(model)
+        U = np.zeros(constraint.nDof)
+
+        self._assemble(constraint, U, 1)
+        negative = np.flatnonzero(constraint.currentNodalWeights < 0.0)
+        self.assertTrue(
+            len(negative),
+            "the fixture no longer produces a negative nodal weight -- test is vacuous",
+        )
+
+        normal = constraint.currentNormals[0]
+        self.assertGreater(abs(normal[2]), 0.99, f"expected an out-of-plane normal, got {normal}")
+
+        def evaluateAt(offset: float, increment: int) -> np.ndarray:
+            """Translate the whole mortar facet along the normal and re-decide the set.
+
+            A fresh increment per configuration, because a settled set would otherwise stop being
+            re-decided, and because the geometry is refrozen per increment -- which is what the
+            solver does too. Translating along the normal leaves the overlap in the auxiliary plane
+            unchanged, so the weights, and with them the negative ones, are the same throughout.
+            """
+            U[:] = 0.0
+            for node in constraint.mortarNodes:
+                index = constraint.nodeToGlobalIndex[node]
+                U[constraint.sizeField * index : constraint.sizeField * index + 3] = offset * normal
+            self._assemble(constraint, U, increment)
+            return constraint.activeSet.copy()
+
+        for k, opening in enumerate((0.01, 0.05, 0.2)):
+            active = evaluateAt(+opening, 10 + k)
+            self.assertEqual(
+                int(np.sum(active)),
+                0,
+                f"an interface open by {opening} activated nodes {list(np.flatnonzero(active))}; "
+                f"of those, {list(np.intersect1d(np.flatnonzero(active), negative))} carry a negative weight",
+            )
+
+        for k, penetration in enumerate((0.01, 0.05)):
+            active = evaluateAt(-penetration, 20 + k)
+            self.assertTrue(
+                np.all(active),
+                f"a uniform penetration of {penetration} left nodes " f"{list(np.flatnonzero(~active))} inactive",
+            )
 
 
 if __name__ == "__main__":

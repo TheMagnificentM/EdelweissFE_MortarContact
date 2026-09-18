@@ -1,0 +1,80 @@
+** Mortar contact with an interface that is partly closed and partly open, non-matching.
+**
+** Every other MortarContact* deck ends with its interface either fully in contact or with the
+** nodes that are not in contact having nothing opposite them at all. Neither reaches the case the
+** active set exists for: a node that HAS a counterpart and is nevertheless separated. Across the
+** whole deck suite there was no such node, so the branch of the Signorini conditions that asks
+** whether a released node has penetrated (tests/test_mortarsignorini.py) was never exercised.
+**
+** Two linear elastic blocks stacked along y, 2x2 against 3x3 in plane so the interface does not
+** share nodes. The upper block is tilted rather than pushed: its left face is driven down by 0.02
+** and its right face up by the same amount, which rotates its underside about the centre of the
+** interface. The left half is therefore pressed into the lower block and the right half lifts off,
+** while both halves stay fully covered -- the two surfaces have the same extent.
+**
+** What this pins, none of which a fully closed interface can show:
+**   - nodes on the compressed side are active and carry a positive pressure
+**   - nodes on the lifted side are inactive and carry NO multiplier, rather than being held by a
+**     tensile one, which is what a formulation that tied instead of contacting would produce
+**   - the released nodes have a positive opening: they are on the far side of the interface, not
+**     penetrating it
+**
+** Measured on the accepted solution: 9 non-mortar nodes, of which 6 are active and 3 are covered
+** but inactive, and the largest tensile multiplier is 0 exactly -- the released nodes are removed
+** from the system rather than solved to a small number.
+**
+** The reference covers the nodal displacements and, because the multipliers of
+** formulation=lagrange are scalar variables of the global system, the nodal contact pressures.
+
+*material, name=LinearElastic, id=mat, provider=edelweiss
+1000.0, 0.0
+
+*modelGenerator, generator=boxGen, name=lower
+x0=0, y0=0, z0=0
+lX=1.0, lY=1.0, lZ=1.0
+nX=2, nY=1, nZ=2
+elType=C3D8
+elProvider=edelweiss
+
+*modelGenerator, generator=boxGen, name=upper
+x0=0, y0=1.0, z0=0
+lX=1.0, lY=1.0, lZ=1.0
+nX=3, nY=1, nZ=3
+elType=C3D8
+elProvider=edelweiss
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen1
+surface = lower_top
+name    = nonMortarSurf
+facets  = wholeFace
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen2
+surface = upper_bottom
+name    = mortarSurf
+facets  = wholeFace
+
+*section, name=secLower, material=mat, type=solid
+lower_all
+*section, name=secUpper, material=mat, type=solid
+upper_all
+
+*constraint, name=contact, type=mortarcontact
+nonMortarSurface=nonMortarSurf_facets
+mortarSurface=mortarSurf_facets
+field=displacement
+cn=1000.0
+
+*job, name=mortarTilted, domain=3d
+*solver, name=theSolver, solver=NIST
+
+*fieldOutput
+>>perNode, elSet=lower_all, field=displacement, result=U, name=dispLower
+>>perNode, elSet=upper_all, field=displacement, result=U, name=dispUpper
+
+*step, solver=theSolver
+maxInc=0.5, minInc=1e-4, maxNumInc=100, maxIter=25, stepLength=1
+>>dirichlet, name=fixBottom, nSet=lower_bottom, field=displacement, 1=0.0, 2=0.0, 3=0.0
+>>dirichlet, name=tiltLeft,  nSet=upper_left,   field=displacement, 2=-0.02
+>>dirichlet, name=tiltRight, nSet=upper_right,  field=displacement, 2=0.02
+>>dirichlet, name=holdX,     nSet=upper_left,   field=displacement, 1=0.0
+>>dirichlet, name=holdZ,     nSet=upper_back,   field=displacement, 3=0.0
