@@ -783,6 +783,13 @@ class Constraint(ConstraintBase):
         # Identifies the increment ATTEMPT (number, size, end time) - see
         # applyConstraint: a cutback re-attempt keeps the number but changes size.
         self.lastTimeStepKey = None
+        # Whether the frozen geometry (segmentation, coupling matrices, nodal normals)
+        # has to be rebuilt before it is used again. Set by updateConnectivity, which
+        # the solver ticks at ITS own cadence: once per increment under the implicit
+        # solvers, and only every 'contact-update-frequency' increments under explicit
+        # dynamics, where a rebuild per time step would be unaffordable. Starts True so
+        # that the first assembly builds it even if no solver ticked first.
+        self._geometryStale = True
         self.currentIteration = 0
         # Termination + anti-cycling state of the semi-smooth (PDASS) iteration,
         # reset per increment in applyConstraint: the set is frozen for the rest
@@ -2122,6 +2129,84 @@ class Constraint(ConstraintBase):
                     f"because every non-mortar facet is then fully covered.",
                 )
 
+    def applyConstraintExplicit(
+        self,
+        U_np: np.ndarray,
+        dU: np.ndarray,
+        PExt: np.ndarray,
+        timeStep: TimeStep,
+    ):
+        """Refuse the variants an explicit solver cannot honour, then evaluate normally.
+
+        This method is called by explicit solvers and by nothing else, which makes it the
+        one place where "am I being integrated explicitly?" can be answered without the
+        constraint knowing about solvers.
+
+        ``formulation=lagrange`` is already refused by the explicit dynamic solver itself,
+        whose ``validateModelCapabilities`` rejects any constraint carrying its own scalar
+        variables: such degrees of freedom have no inertia, so the explicit update never
+        moves them and the constraint would appear active while enforcing nothing. The
+        check is repeated here because that refusal belongs to one solver, while this
+        entry point is common to all of them.
+
+        ``augmentedLagrange`` needs refusing for a different and more dangerous reason. The
+        augmented update runs from :meth:`augmentConstraint`, which only the implicit
+        solvers call. Under an explicit solver it is simply never invoked -- so the
+        constraint would not fail, it would silently degrade to the pure penalty form and
+        report nothing. A run would look like an augmented-Lagrangian result and be a
+        penalty one, which is precisely the kind of quiet wrong answer that is worth an
+        exception.
+
+        The tangent is NOT skipped here, unlike the node-to-surface constraint's override:
+        measured on this constraint, residual and tangent together are 2 to 7 % of its
+        cost while the frozen geometry is the remaining 93 to 98 %, so building and
+        discarding the tangent buys almost nothing and reworking the assembly to run
+        without it would put the far more valuable part at risk for that.
+        """
+
+        if self.formulation == "lagrange":
+            raise NotImplementedError(
+                f"Constraint '{self.name}': formulation=lagrange cannot be integrated explicitly. "
+                "Its multipliers are unknowns of the global system, and an explicit increment "
+                "solves no system: the multiplier degrees of freedom carry no inertia and would "
+                "never be updated. Use formulation=penalty."
+            )
+        if self.useAugmentedLagrange:
+            raise NotImplementedError(
+                f"Constraint '{self.name}': augmentedLagrange cannot be integrated explicitly. "
+                "The augmented update runs on a converged equilibrium, which an explicit "
+                "increment does not produce, so it would never run and the constraint would "
+                "quietly reduce to the pure penalty form. Set augmentedLagrange=False and accept "
+                "the penalty error, or run implicitly."
+            )
+
+        super().applyConstraintExplicit(U_np, dU, PExt, timeStep)
+
+    def updateConnectivity(self, model: FEModel) -> bool:
+        """Mark the frozen geometry for rebuild; the rebuild itself happens on next use.
+
+        This is the hook through which the SOLVER, not the constraint, decides how often
+        the segmentation runs -- and the two solver families need very different answers.
+        An implicit solver calls this once per increment, which reproduces exactly the
+        behaviour this constraint had when it detected a new increment itself. An explicit
+        dynamic solver calls it only every ``contact-update-frequency`` increments, because
+        a segmentation per time step is not affordable: it is 93-98 % of this constraint's
+        cost, some 26 ms per rebuild on a small linear interface and ten times that on a
+        quadratic one, against time steps counted in millions.
+
+        The rebuild is deferred rather than done here because it needs the solution vector
+        restricted to this constraint's degrees of freedom, which is what
+        :meth:`applyConstraint` is handed and this method is not. Deferring also means a
+        tick costs nothing if the constraint is never assembled afterwards.
+
+        Returns ``False``: this constraint's DOF footprint never changes, so the solver
+        need not rebuild the equation system on its account. The segmentation changes which
+        nodes are COUPLED, but they are all in :attr:`nodes` from the outset either way.
+        """
+
+        self._geometryStale = True
+        return False
+
     def _refreshFrozenGeometry(self, step_key: tuple, U_np: np.ndarray, dU: np.ndarray, timeStep: TimeStep):
         """Re-freeze the geometry at the start of an increment, or count an iteration within one.
 
@@ -2146,7 +2231,17 @@ class Constraint(ConstraintBase):
         """
         nSlave = self.nNonMortarNodes
 
-        if step_key != self.lastTimeStepKey or not hasattr(self, "currentNormals"):
+        # TWO conditions, deliberately separate. The per-increment bookkeeping below
+        # follows the increment, as it always did. The GEOMETRY follows the solver's
+        # connectivity tick instead, so that an explicit solver can throttle the
+        # segmentation without also freezing the active-set bookkeeping, and an
+        # implicit solver -- which ticks once per increment -- sees the two coincide
+        # exactly as before. ``not hasattr`` is the safety net for a constraint that
+        # is assembled before any solver ticked it.
+        newIncrement = step_key != self.lastTimeStepKey
+        rebuildGeometry = self._geometryStale or not hasattr(self, "currentNormals")
+
+        if newIncrement:
             # The previous increment has converged and U_np - dU is its result.
             # Before anything is reset, ask whether its active set reproduces
             # itself on that result - the one moment where that is checkable.
@@ -2168,90 +2263,6 @@ class Constraint(ConstraintBase):
             # visited this increment, and the immediately previous one.
             self._seen_states = set()
             self._last_state = None
-            # Last converged state - see the reference-configuration note above.
-            U_ref = U_np - dU
-            self.currentNormals = self.computeNormals(U_ref)
-            D_full, C_full = self.computeMortarCouplingMatrices(U_ref)
-            # The FULL (element-locally sparse) D matrix is used for forces,
-            # stiffness and weak gap. With the basis transformation T_e the
-            # biorthogonality holds w.r.t. N_tilde, so D is not diagonal for
-            # quadratic elements - lumping it would destroy the consistency of
-            # the contact force distribution (a constant pressure could not be
-            # transmitted exactly, i.e. the patch test would fail). This is
-            # algebraically equivalent to the transformed formulation of Popp,
-            # Wohlmuth, Gee & Wall (2012) of the condensed system.
-            # Translational invariance of the weak gap is guaranteed by the
-            # row-sum identity sum_K D_IK = sum_J C_IJ (same-domain integration).
-            self.currentD = D_full
-            self.currentC = C_full
-            # Positive by construction: sum_K D_IK = int(Phi_I) = int(N_tilde_I) > 0
-            self.currentNodalWeights = np.asarray(D_full.sum(axis=1)).ravel()
-            # The sign-consistent contact measures below carry a negative D_II
-            # correctly, but the weighted gap loses its reading as a mean opening
-            # there - so it is worth saying out loud that it happened.
-            # Only for weights that are meaningfully negative, though: a node far
-            # outside the covered region integrates to a value that is zero up to
-            # round-off, and whether that lands at +1e-19 or -1e-19 says nothing.
-            # Measured range of the real cases: -0.031 (CONQUAD9 at 70 % coverage,
-            # 06_active_set_pdass) down to -0.60 (sliver fallback,
-            # hertz_hex20_medium), so a relative threshold of 1e-6 separates them
-            # from the dust by orders of magnitude.
-            weights = self.currentNodalWeights
-            weight_scale = np.max(np.abs(weights)) if len(weights) else 0.0
-            # Threshold below which a nodal weight counts as "no weight at all" and
-            # the division 1/D_II is suppressed. RELATIVE, for the same reason as in
-            # _nonzeroRows: D_II = int(Phi_I) carries the unit of an area, so an
-            # absolute bound only ever fits one system of units. It also has to be
-            # generous rather than tiny: at D_II = 1e-25 an absolute bound of 1e-30
-            # would still divide, g_sep = g_weak/D_II would explode by 25 orders, and
-            # the sign of that garbage would decide the branch of the NCP indicator -
-            # a node can be switched ACTIVE by pure round-off that way, with a
-            # constraint row that means nothing. Relative to the largest weight of the
-            # interface, 1e-12 is far below any weight a covered node can have (the
-            # smallest measured over the test suite is ~1e-3 of the largest) and far
-            # above the dust of an uncovered one.
-            self.currentWeightTolerance = 1e-12 * weight_scale
-            # Noise floor of the WEIGHTED GAP, by the same reasoning and with the same relative
-            # factor. The weighted gap is an integral of a length against a nodal basis function, so
-            # its own scale is the interface diameter times the largest nodal weight, and the
-            # rounding of the coordinate differences and the segment quadrature that produce it
-            # lands a few hundred times below that product. Anything at or beneath this level is not
-            # a small gap, it is the absence of one.
-            #
-            # The penalty branch needs this where the multiplier branch does not. There the contact
-            # pressure is an unknown of the system and a node that touches nothing simply solves to
-            # zero; here the pressure is MANUFACTURED from the gap as kappa*g, so at kappa = 1e6 a
-            # gap of 5e-16 becomes a pressure of 5e-10 and a bare `p > 0` test reads it as contact.
-            # Measured on MortarContactPenaltyHexa20: without the floor, 2 to 9 of 21 nodes are
-            # declared active in the load-free increment 0, the set flickers from one augmentation
-            # to the next, and the outer loop compares noise against noise until it exhausts its
-            # iteration cap. The separation is not marginal - the noise sits at 5e-16 against a
-            # threshold of 1e-13, while the first genuinely loaded increment carries 5e-06.
-            self.currentGapTolerance = 1e-12 * weight_scale * self._interfaceDiameter
-            if weight_scale > 0.0:
-                significant = np.flatnonzero(weights < -1e-6 * weight_scale)
-                if len(significant):
-                    worst = np.min(weights) / weight_scale
-                    self._warnOnce(
-                        "negative_nodal_weight",
-                        f"{len(significant)} slave node(s) with a negative nodal mortar weight "
-                        f"D_II (worst: {worst:.3e} of the largest weight), first in increment "
-                        f"{timeStep.number}. The active-set indicator handles the sign, but the "
-                        f"weighted gap is no longer a mean opening at those nodes. Usual causes: a "
-                        f"partially covered CONQUAD9, or a sliver overlap that triggered the "
-                        f"reference-element fallback.",
-                    )
-            # Precompute the sparsity patterns AND the row values once per increment.
-            # The geometry is frozen for the increment, so both are constant while
-            # applyConstraint runs once per Newton iteration.
-            self.currentDNonzero, self.currentDRow = _nonzeroRows(D_full, nSlave)
-            self.currentCNonzero, self.currentCRow = _nonzeroRows(C_full, nSlave)
-
-            # The penalty parameter needs the nodal weights, so it is derived here
-            # rather than at the top of the assembly like c_n.
-            if self.formulation == "penalty" and self._derive_kappa:
-                self._resolveKappa()
-
             # Restart the augmented Lagrangian for this increment ATTEMPT from the
             # last CONVERGED pressure estimate. Warm starting is what makes the outer
             # loop cheap after the first increment; resetting on a cutback re-attempt
@@ -2261,6 +2272,98 @@ class Constraint(ConstraintBase):
             self.augmentedMultipliers[:] = self.augmentedMultipliersConverged
         else:
             self.currentIteration += 1
+
+        if not rebuildGeometry:
+            return
+
+        # Everything below is the frozen geometry and the quantities derived from it.
+        # It is the expensive part -- 93 to 98 % of this constraint's cost -- and runs
+        # only when the solver's connectivity tick has marked it stale.
+        self._geometryStale = False
+        # Last converged state - see the reference-configuration note above.
+        U_ref = U_np - dU
+        self.currentNormals = self.computeNormals(U_ref)
+        D_full, C_full = self.computeMortarCouplingMatrices(U_ref)
+        # The FULL (element-locally sparse) D matrix is used for forces,
+        # stiffness and weak gap. With the basis transformation T_e the
+        # biorthogonality holds w.r.t. N_tilde, so D is not diagonal for
+        # quadratic elements - lumping it would destroy the consistency of
+        # the contact force distribution (a constant pressure could not be
+        # transmitted exactly, i.e. the patch test would fail). This is
+        # algebraically equivalent to the transformed formulation of Popp,
+        # Wohlmuth, Gee & Wall (2012) of the condensed system.
+        # Translational invariance of the weak gap is guaranteed by the
+        # row-sum identity sum_K D_IK = sum_J C_IJ (same-domain integration).
+        self.currentD = D_full
+        self.currentC = C_full
+        # Positive by construction: sum_K D_IK = int(Phi_I) = int(N_tilde_I) > 0
+        self.currentNodalWeights = np.asarray(D_full.sum(axis=1)).ravel()
+        # The sign-consistent contact measures below carry a negative D_II
+        # correctly, but the weighted gap loses its reading as a mean opening
+        # there - so it is worth saying out loud that it happened.
+        # Only for weights that are meaningfully negative, though: a node far
+        # outside the covered region integrates to a value that is zero up to
+        # round-off, and whether that lands at +1e-19 or -1e-19 says nothing.
+        # Measured range of the real cases: -0.031 (CONQUAD9 at 70 % coverage,
+        # 06_active_set_pdass) down to -0.60 (sliver fallback,
+        # hertz_hex20_medium), so a relative threshold of 1e-6 separates them
+        # from the dust by orders of magnitude.
+        weights = self.currentNodalWeights
+        weight_scale = np.max(np.abs(weights)) if len(weights) else 0.0
+        # Threshold below which a nodal weight counts as "no weight at all" and
+        # the division 1/D_II is suppressed. RELATIVE, for the same reason as in
+        # _nonzeroRows: D_II = int(Phi_I) carries the unit of an area, so an
+        # absolute bound only ever fits one system of units. It also has to be
+        # generous rather than tiny: at D_II = 1e-25 an absolute bound of 1e-30
+        # would still divide, g_sep = g_weak/D_II would explode by 25 orders, and
+        # the sign of that garbage would decide the branch of the NCP indicator -
+        # a node can be switched ACTIVE by pure round-off that way, with a
+        # constraint row that means nothing. Relative to the largest weight of the
+        # interface, 1e-12 is far below any weight a covered node can have (the
+        # smallest measured over the test suite is ~1e-3 of the largest) and far
+        # above the dust of an uncovered one.
+        self.currentWeightTolerance = 1e-12 * weight_scale
+        # Noise floor of the WEIGHTED GAP, by the same reasoning and with the same relative
+        # factor. The weighted gap is an integral of a length against a nodal basis function, so
+        # its own scale is the interface diameter times the largest nodal weight, and the
+        # rounding of the coordinate differences and the segment quadrature that produce it
+        # lands a few hundred times below that product. Anything at or beneath this level is not
+        # a small gap, it is the absence of one.
+        #
+        # The penalty branch needs this where the multiplier branch does not. There the contact
+        # pressure is an unknown of the system and a node that touches nothing simply solves to
+        # zero; here the pressure is MANUFACTURED from the gap as kappa*g, so at kappa = 1e6 a
+        # gap of 5e-16 becomes a pressure of 5e-10 and a bare `p > 0` test reads it as contact.
+        # Measured on MortarContactPenaltyHexa20: without the floor, 2 to 9 of 21 nodes are
+        # declared active in the load-free increment 0, the set flickers from one augmentation
+        # to the next, and the outer loop compares noise against noise until it exhausts its
+        # iteration cap. The separation is not marginal - the noise sits at 5e-16 against a
+        # threshold of 1e-13, while the first genuinely loaded increment carries 5e-06.
+        self.currentGapTolerance = 1e-12 * weight_scale * self._interfaceDiameter
+        if weight_scale > 0.0:
+            significant = np.flatnonzero(weights < -1e-6 * weight_scale)
+            if len(significant):
+                worst = np.min(weights) / weight_scale
+                self._warnOnce(
+                    "negative_nodal_weight",
+                    f"{len(significant)} slave node(s) with a negative nodal mortar weight "
+                    f"D_II (worst: {worst:.3e} of the largest weight), first in increment "
+                    f"{timeStep.number}. The active-set indicator handles the sign, but the "
+                    f"weighted gap is no longer a mean opening at those nodes. Usual causes: a "
+                    f"partially covered CONQUAD9, or a sliver overlap that triggered the "
+                    f"reference-element fallback.",
+                )
+        # Precompute the sparsity patterns AND the row values once per increment.
+        # The geometry is frozen for the increment, so both are constant while
+        # applyConstraint runs once per Newton iteration.
+        self.currentDNonzero, self.currentDRow = _nonzeroRows(D_full, nSlave)
+        self.currentCNonzero, self.currentCRow = _nonzeroRows(C_full, nSlave)
+
+        # The penalty parameter needs the nodal weights, so it is derived here
+        # rather than at the top of the assembly like c_n.
+        if self.formulation == "penalty" and self._derive_kappa:
+            self._resolveKappa()
+
 
     def _assembleCouplingMatricesFromSegments(
         self, seg_records, seg_masters, slave_els, current_coords, n_slave, n_master
