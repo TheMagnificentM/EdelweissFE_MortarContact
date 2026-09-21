@@ -1,0 +1,115 @@
+** Explicit-dynamic (NED) mortar contact: a small block pushed against a larger one.
+**
+** The mortar counterpart of NEDContact, and it pins the one thing that deck cannot: that the
+** SEGMENTATION follows the solver's connectivity tick rather than the increment counter. Rebuilding
+** it per increment is right under an implicit solver and ruinous here, where every time step IS an
+** increment -- the segmentation, the coupling matrices and the nodal normals are 93 to 98 % of this
+** constraint's cost.
+**
+** Measured on this deck, before and after that change:
+**
+**   time steps (= applyConstraint calls)        314        314
+**   segmentations                               314         32     <- contact-update-frequency=10
+**   dispLowerMax                          1.20688e-2  1.20520e-2
+**
+** The 0.14 % difference is the staggering the throttle buys: the geometry now belongs to a
+** configuration up to ten steps old. That is an error of the update interval, not of the
+** formulation, and it shrinks with contact-update-frequency.
+**
+** THE DECISIVE CHECK is dispLowerMax, for the same reason as in NEDContact: nothing but the contact
+** loads the lower block, so it is identically zero unless the constraint's forces actually reach the
+** equations. A run that merely completes proves nothing.
+**
+** ONLY formulation=penalty can be integrated explicitly. lagrange needs its multipliers as unknowns
+** of a system no explicit increment solves; augmentedLagrange needs a converged equilibrium to
+** augment on. Both are refused with an explanation rather than silently degraded -- see
+** test_mortarcontact.py::TestExplicitDynamics.
+**
+** PENALTY STIFFNESS AND STABILITY. penaltyStiffness is bounded from above here in a way it is not
+** implicitly: the critical time step is derived from the MESH and does not know about the contact
+** spring, so too stiff a value simply violates the stability limit. Measured on this model, with
+** everything else held fixed:
+**
+**   kappa   5e+6    dispLowerMax 1.0e+188   <- unstable
+**   kappa   1.25e+6              1.31e-2
+**   kappa   5e+5                 1.09e-2    <- used here
+**   kappa   2e+5                 7.56e-3
+**   kappa   5e+4                 2.95e-3
+**
+** 5e5 sits an order of magnitude below the stability limit of this mesh. Note that kappa multiplies
+** the WEIGHTED gap and is therefore not the pointwise penalty of NEDContact: the comparable
+** quantity is kappa * D_mean.
+
+*material, name=LinearElastic, id=linearelastic, provider=edelweiss
+**E       nu     density
+1.8e4,    0.3,   1.0
+
+*job, name=nedmortarjob, domain=3d
+
+*solver, solver=NED, name=theSolver
+second-order-fields="displacement"
+courant-number=0.8
+output-frequency=50
+contact-update-frequency=10
+
+*modelGenerator, generator=boxGen, name=lower
+nX      =3
+nY      =3
+nZ      =3
+x0      =0
+y0      =0
+z0      =0
+lX      =2
+lY      =2
+lZ      =1
+elProvider =edelweiss
+elType  =C3D8
+
+*modelGenerator, generator=boxGen, name=upper
+nX      =2
+nY      =2
+nZ      =3
+x0      =0.3
+y0      =1.1
+z0      =1.05
+lX      =0.6
+lY      =0.6
+lZ      =1
+elProvider =edelweiss
+elType  =C3D8
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen1
+surface = upper_back
+name    = nonMortarSurf
+facets  = wholeFace
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen2
+surface = lower_front
+name    = mortarSurf
+facets  = wholeFace
+
+*section, name=section1, material=linearelastic, type=solid
+lower_all
+upper_all
+
+*constraint, name=contact, type=mortarcontact
+nonMortarSurface=nonMortarSurf_facets
+mortarSurface=mortarSurf_facets
+field=displacement
+formulation=penalty
+penaltyStiffness=5e5
+
+*fieldOutput
+>>perNode, elSet=lower_all, field=displacement, result=U, name=dispLower
+>>perNode, elSet=upper_all, field=displacement, result=U, name=dispUpper
+>>perNode, name=dispLowerMax, elSet=lower_all, field=displacement, result=U, f(x)='np.max(np.abs(x))', saveHistory=True
+>>perNode, name=RFLower, nSet=lower_back, field=displacement, result=P, f(x)='np.sum(x[:,2])', saveHistory=True
+
+*output, type=monitor, name=monitor
+fieldOutput=dispLowerMax
+fieldOutput=RFLower
+
+*step, type=adaptiveForExplicitSimulations, solver=theSolver
+maxInc=1, minInc=1e-12, maxNumInc=2000, maxIter=25, stepLength=0.5
+>>dirichlet, name=fix, nSet=lower_back, field=displacement, 1=0.0, 2=0.0, 3=0.0
+>>dirichlet, name=push, nSet=upper_front, field=displacement, 3=-0.1

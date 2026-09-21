@@ -879,5 +879,126 @@ class TestActiveSet(unittest.TestCase):
             )
 
 
+class TestExplicitDynamics(unittest.TestCase):
+    """What changes, and what must not, when this constraint is integrated explicitly.
+
+    Two separate concerns. One is REFUSAL: of the three ways this constraint can enforce its
+    condition, only the pure penalty survives an explicit increment, and the other two have to say
+    so rather than run and mean something else. The other is THROTTLING: the segmentation is 93 to
+    98 % of this constraint's cost, so who decides how often it runs is the difference between a
+    tractable explicit analysis and an impossible one.
+    """
+
+    def _penetratingModel(self):
+        """Two blocks overlapping slightly, so that the contact is active from the first call."""
+
+        return _TwoBlockModel.build(gap=-1e-3)
+
+    def test_lagrange_is_refused_explicitly(self):
+        """The multipliers are unknowns of a system an explicit increment never solves.
+
+        They would also carry no inertia, so the explicit update would never move them: the
+        constraint would look active in every output and enforce nothing at all.
+        """
+
+        model = self._penetratingModel()
+        constraint = _TwoBlockModel.constraint(model, formulation="lagrange")
+        nDof = constraint.nDof
+        with self.assertRaises(NotImplementedError) as raised:
+            constraint.applyConstraintExplicit(
+                np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), _frozenTimeStep()
+            )
+        self.assertIn("lagrange", str(raised.exception))
+
+    def test_augmented_lagrange_is_refused_explicitly(self):
+        """The dangerous one: it would not fail, it would quietly become a pure penalty.
+
+        ``augmentConstraint`` is called by the implicit solvers and by nobody else, so under an
+        explicit solver the outer update simply never runs. Without this refusal a deck asking for
+        an augmented-Lagrangian result would receive a penalty one and report nothing.
+        """
+
+        model = self._penetratingModel()
+        constraint = _TwoBlockModel.constraint(
+            model, formulation="penalty", penaltyStiffness=1.0e6, augmentedLagrange=True
+        )
+        nDof = constraint.nDof
+        with self.assertRaises(NotImplementedError) as raised:
+            constraint.applyConstraintExplicit(
+                np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), _frozenTimeStep()
+            )
+        self.assertIn("augmentedLagrange", str(raised.exception))
+
+    def test_pure_penalty_is_accepted_and_transmits_force(self):
+        """The variant that does work, checked on the force rather than on the absence of a raise."""
+
+        model = self._penetratingModel()
+        constraint = _TwoBlockModel.constraint(model, formulation="penalty", penaltyStiffness=1.0e6)
+        nDof = constraint.nDof
+        PExt = np.zeros(nDof)
+        constraint.applyConstraintExplicit(np.zeros(nDof), np.zeros(nDof), PExt, _frozenTimeStep())
+        self.assertGreater(
+            np.max(np.abs(PExt)), 0.0, "penetrating blocks produced no contact force at all"
+        )
+
+    def test_geometry_is_rebuilt_only_when_the_solver_ticks(self):
+        """The throttle itself: a new increment alone must NOT re-segment.
+
+        This is the whole point of routing the rebuild through ``updateConnectivity``. An implicit
+        solver ticks once per increment, so for it the two coincide and nothing changes. An explicit
+        solver ticks every ``contact-update-frequency`` increments, and every increment in between
+        has to reuse the geometry it already has -- otherwise the segmentation runs per time step,
+        which is what makes an explicit mortar analysis unaffordable.
+        """
+
+        model = self._penetratingModel()
+        constraint = _TwoBlockModel.constraint(model, formulation="penalty", penaltyStiffness=1.0e6)
+        nDof = constraint.nDof
+
+        rebuilds = []
+        original = constraint.computeMortarCouplingMatrices
+
+        def counting(U_np=None):
+            rebuilds.append(True)
+            return original(U_np)
+
+        constraint.computeMortarCouplingMatrices = counting
+
+        def assemble(incrementNumber):
+            constraint.applyConstraint(
+                np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), np.zeros((nDof, nDof)),
+                _frozenTimeStep(incrementNumber),
+            )
+
+        # First assembly: no solver ticked, so the constraint builds its own geometry.
+        assemble(1)
+        self.assertEqual(len(rebuilds), 1, "the first assembly must build the geometry")
+
+        # Three further increments without a tick: the geometry is reused.
+        for increment in (2, 3, 4):
+            assemble(increment)
+        self.assertEqual(
+            len(rebuilds), 1, f"a new increment alone re-segmented: {len(rebuilds)} rebuilds after 4 increments"
+        )
+
+        # The solver ticks; the next assembly rebuilds, and only that one.
+        constraint.updateConnectivity(model)
+        assemble(5)
+        assemble(6)
+        self.assertEqual(len(rebuilds), 2, "a tick must cause exactly one rebuild")
+
+    def test_the_connectivity_tick_reports_no_dof_change(self):
+        """The tick marks the geometry stale; it must not ask for an equation-system rebuild.
+
+        This constraint's DOF footprint is fixed at construction -- every node of both surfaces is in
+        :attr:`nodes` from the outset, whether or not the segmentation currently couples it. Reporting
+        a change would make the solver rebuild the equation system on every tick for nothing.
+        """
+
+        model = self._penetratingModel()
+        constraint = _TwoBlockModel.constraint(model, formulation="penalty", penaltyStiffness=1.0e6)
+        self.assertFalse(constraint.updateConnectivity(model))
+
+
 if __name__ == "__main__":
     unittest.main()

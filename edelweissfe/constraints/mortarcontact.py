@@ -2157,6 +2157,15 @@ class Constraint(ConstraintBase):
         penalty one, which is precisely the kind of quiet wrong answer that is worth an
         exception.
 
+        PENALTY STIFFNESS IS BOUNDED FROM ABOVE HERE, in a way it is not implicitly, and nothing
+        in this code enforces the bound. An explicit solver derives its critical time step from
+        the MESH; the contact spring is not part of that estimate, so a ``penaltyStiffness`` whose
+        own frequency exceeds the stability limit simply makes the integration diverge. Measured on
+        ``testfiles/edelweiss-only/NEDMortarContact`` with everything else held fixed, the run is
+        stable at kappa = 1.25e6 and blows up to 1e188 at 5e6. Choose the stiffness against the
+        mesh, verify it on the model at hand, and do not carry a value over from an implicit
+        analysis -- there it is limited by conditioning, which is a far weaker constraint.
+
         The tangent is NOT skipped here, unlike the node-to-surface constraint's override:
         measured on this constraint, residual and tangent together are 2 to 7 % of its
         cost while the frozen geometry is the remaining 93 to 98 %, so building and
@@ -2166,14 +2175,14 @@ class Constraint(ConstraintBase):
 
         if self.formulation == "lagrange":
             raise NotImplementedError(
-                f"Constraint '{self.name}': formulation=lagrange cannot be integrated explicitly. "
+                f"Constraint '{self._name}': formulation=lagrange cannot be integrated explicitly. "
                 "Its multipliers are unknowns of the global system, and an explicit increment "
                 "solves no system: the multiplier degrees of freedom carry no inertia and would "
                 "never be updated. Use formulation=penalty."
             )
         if self.useAugmentedLagrange:
             raise NotImplementedError(
-                f"Constraint '{self.name}': augmentedLagrange cannot be integrated explicitly. "
+                f"Constraint '{self._name}': augmentedLagrange cannot be integrated explicitly. "
                 "The augmented update runs on a converged equilibrium, which an explicit "
                 "increment does not produce, so it would never run and the constraint would "
                 "quietly reduce to the pure penalty form. Set augmentedLagrange=False and accept "
