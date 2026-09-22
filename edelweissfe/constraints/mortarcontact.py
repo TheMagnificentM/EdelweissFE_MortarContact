@@ -790,6 +790,12 @@ class Constraint(ConstraintBase):
         # dynamics, where a rebuild per time step would be unaffordable. Starts True so
         # that the first assembly builds it even if no solver ticked first.
         self._geometryStale = True
+        # Explicit dynamics: set on the first call through applyConstraintExplicit, which no
+        # implicit solver ever makes. The lumped mass arrives separately, through
+        # computeCriticalTimeStepForExplicitDynamics, before the increment loop.
+        self._explicit = False
+        self._explicitLumpedMass = None
+        self._explicitStabilityFactor = None
         self.currentIteration = 0
         # Termination + anti-cycling state of the semi-smooth (PDASS) iteration,
         # reset per increment in applyConstraint: the set is frozen for the rest
@@ -1151,6 +1157,49 @@ class Constraint(ConstraintBase):
         to the augmentation tolerance whatever kappa is); it only sets how fast the
         outer loop converges. The rule therefore has to be reasonable, not right.
         """
+        # EXPLICIT DYNAMICS takes a different rule, because there the stiffness is bounded from
+        # above by something the implicit rule knows nothing about: the stability limit of the
+        # time integrator. The rule below chooses the largest stiffness that the current time
+        # increment can carry, which is the same idea LS-DYNA's SOFT=1 contact uses -- a stiffness
+        # from the nodal masses and the time step rather than from the material -- except that
+        # here it follows from the eigenvalue bound of Kwon et al. (2024), Eqs. (20)-(22), rather
+        # than from a rule of thumb:
+        #
+        #     omega^2 = kappa * R <= lambda_max = 4/dt^2   =>   kappa <= 4/(dt^2 R)
+        #
+        # Re-derived at EVERY geometry rebuild rather than once: R carries the segmentation, which
+        # changes as the contact evolves, and a stiffness that was stable for the first overlap is
+        # not thereby stable for a later one.
+        if self._explicit and self._explicitLumpedMass is not None:
+            factor = self._stabilityFactor(self._explicitLumpedMass)
+            dt = self._explicitTimeIncrement
+            if factor > 0.0 and dt > 0.0:
+                kappaMax = 4.0 / (dt * dt * factor)
+                # Half the limit. The bound holds for the geometry it was computed on, and the
+                # geometry is frozen only until the next connectivity tick -- between two ticks the
+                # overlap moves, and R with it. A factor of two in the stiffness is a factor of
+                # sqrt(2) in the frequency, which is the margin that buys.
+                previous = getattr(self, "kappa", None)
+                self.kappa = 0.5 * kappaMax
+                if previous is None or not np.isclose(previous, self.kappa, rtol=0.25):
+                    self._warnOnce(
+                        "kappa_derived_explicit",
+                        f"'penaltyStiffness' was not given and this is an explicit analysis, so "
+                        f"kappa has been derived from the STABILITY limit rather than from the "
+                        f"material: kappa = {self.kappa:.4g} = 0.5 * 4/(dt^2 * R) with "
+                        f"dt = {dt:.4g} and R = {factor:.4g}. A larger value would need a smaller "
+                        f"time increment; set 'penaltyStiffness' explicitly to choose that "
+                        f"trade-off yourself, and watch the reported penetration.",
+                    )
+                return
+            self._warnOnce(
+                "kappa_not_derivable_explicit",
+                "the stability limit needed to derive the penalty parameter for this explicit "
+                "analysis is not available (no covered interface, or no lumped mass on the "
+                "contact nodes), so the implicit rule below is used instead. That rule knows "
+                "nothing about the stable time increment -- check the result for instability.",
+            )
+
         self._derive_kappa = False
 
         weights = self.currentNodalWeights
@@ -2129,6 +2178,82 @@ class Constraint(ConstraintBase):
                     f"because every non-mortar facet is then fully covered.",
                 )
 
+    def _stabilityFactor(self, lumpedMass: np.ndarray) -> float:
+        """The stiffness-independent part R of this constraint's stability bound.
+
+        The penalty contribution of one slave node is RANK ONE, ``K_I = kappa * v_I v_I^T`` with
+        ``v_I = w_I (x) n_I`` (see applyConstraint), so the contact stiffness assembles as
+        ``K = kappa * sum_I v_I v_I^T``. Gershgorin's theorem bounds the largest eigenvalue of
+        ``M^-1 K`` by the largest scaled absolute row sum, which for that form is
+
+            omega^2 <= kappa * max_a  (1/m_a) * sum_I |v_I,a| * ||v_I||_1  =:  kappa * R
+
+        R is returned. It carries the geometry and the inertia and not the stiffness, which is
+        what makes it usable in both directions: with kappa known it gives the stable time step
+        ``dt <= 2/sqrt(kappa*R)``, and with the time step known it gives the largest stable
+        stiffness ``kappa <= 4/(dt^2 R)``. Both follow from the central-difference stability
+        limit ``dt_cr = 2/sqrt(lambda_max)`` of Kwon, Kim, Cho & González (2024), Eqs. (20)-(21),
+        whose stability-assured condition (their Eq. 22) is exactly ``omega^2 <= lambda_max``.
+
+        Gershgorin OVERestimates the eigenvalue, so the bound is conservative: it may ask for a
+        slightly smaller time step, or a slightly softer stiffness, than strictly necessary. That
+        is the right direction to err in, and the alternative -- the exact rank-one eigenvalue
+        ``kappa * v_I^T M^-1 v_I`` -- is exact for one node in isolation but UNDERestimates as
+        soon as two nodes share a degree of freedom, which is the normal case.
+
+        Every non-mortar node is counted, not only the currently active ones: the active set
+        changes from one increment to the next, and a bound that only held for the set that
+        happened to be active when it was computed would not be a bound.
+        """
+
+        if not hasattr(self, "currentNormals"):
+            return 0.0
+
+        nSlave = self.nNonMortarNodes
+        sf = self.sizeField
+        dim = self.model.domainSize
+        offsets = np.arange(dim)
+        rowSums = np.zeros(len(lumpedMass))
+
+        for I in range(nSlave):
+            nzD, nzC = self.currentDNonzero[I], self.currentCNonzero[I]
+            if len(nzD) == 0 and len(nzC) == 0:
+                continue
+            nodeIds = np.concatenate((nzD, nSlave + np.asarray(nzC))).astype(np.intp)
+            w = np.concatenate((self.currentDRow[I], -self.currentCRow[I]))
+            idcs = (sf * nodeIds[:, None] + offsets).ravel()
+            v = np.abs((w[:, None] * self.currentNormals[I][None, :]).ravel())
+            rowSums[idcs] += v * float(np.sum(v))
+
+        mass = np.asarray(lumpedMass, dtype=float)
+        touched = rowSums > 0.0
+        if not np.any(touched) or np.any(mass[touched] <= 0.0):
+            return 0.0
+        return float(np.max(rowSums[touched] / mass[touched]))
+
+    def computeCriticalTimeStepForExplicitDynamics(self, lumpedMass: np.ndarray) -> float:
+        """The stable time increment this constraint's penalty stiffness permits.
+
+        Also the point at which the lumped mass reaches this constraint: the solver assembles it
+        before it asks for the time step, and nothing else hands it over. It is kept for the
+        stiffness derivation in :meth:`_resolveKappa`, which needs the same inertia.
+
+        Returns ``inf`` until the geometry exists -- on the call before the increment loop it does
+        not yet, since the segmentation needs a solution vector this hook is not given. The real
+        bound is applied from the first assembly onwards, where the stiffness is checked against
+        it (a user-given value) or derived from it (the default).
+        """
+
+        self._explicitLumpedMass = np.asarray(lumpedMass, dtype=float).copy()
+
+        if self.formulation != "penalty" or not hasattr(self, "currentNormals"):
+            return np.inf
+
+        factor = self._stabilityFactor(self._explicitLumpedMass)
+        if factor <= 0.0:
+            return np.inf
+        return 2.0 / np.sqrt(self.kappa * factor)
+
     def applyConstraintExplicit(
         self,
         U_np: np.ndarray,
@@ -2188,6 +2313,11 @@ class Constraint(ConstraintBase):
                 "quietly reduce to the pure penalty form. Set augmentedLagrange=False and accept "
                 "the penalty error, or run implicitly."
             )
+
+        # No implicit solver calls this method, so it is also where the constraint learns that
+        # it is being integrated explicitly -- which changes how the penalty stiffness is chosen.
+        self._explicit = True
+        self._explicitTimeIncrement = timeStep.timeIncrement
 
         super().applyConstraintExplicit(U_np, dU, PExt, timeStep)
 
@@ -2372,6 +2502,27 @@ class Constraint(ConstraintBase):
         # rather than at the top of the assembly like c_n.
         if self.formulation == "penalty" and self._derive_kappa:
             self._resolveKappa()
+        elif self.formulation == "penalty" and self._explicit and self._explicitLumpedMass is not None:
+            # A stiffness the user chose is honoured, but it is still measured against the
+            # stability limit of the integrator -- silently integrating past that limit produces
+            # a run that completes and means nothing. Reported rather than refused, because the
+            # Gershgorin bound behind it is conservative and would otherwise block models that
+            # are in fact stable.
+            factor = self._stabilityFactor(self._explicitLumpedMass)
+            dt = getattr(self, "_explicitTimeIncrement", 0.0)
+            if factor > 0.0 and dt > 0.0:
+                dtStable = 2.0 / np.sqrt(self.kappa * factor)
+                if dt > dtStable:
+                    self._warnOnce(
+                        "kappa_above_stability_limit",
+                        f"penaltyStiffness = {self.kappa:.4g} needs a time increment of at most "
+                        f"{dtStable:.4g} to stay stable, and this analysis runs at {dt:.4g} -- a "
+                        f"factor of {dt / dtStable:.2f} above it. Either lower it to at most "
+                        f"{4.0 / (dt * dt * factor):.4g}, lower 'courant-number' by the same "
+                        f"factor, or leave 'penaltyStiffness' unset and let it be derived from the "
+                        f"stability limit. The bound is a conservative (Gershgorin) estimate, so a "
+                        f"small exceedance may still run -- but it will not be trustworthy.",
+                    )
 
 
     def _assembleCouplingMatricesFromSegments(

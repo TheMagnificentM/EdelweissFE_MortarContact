@@ -280,6 +280,35 @@ class ConstraintBase(OptionSchemaProvider, ABC, VIJEntityBase):
         K = self.shapeVIJContribution(scratch)
         self.applyConstraint(U_np, dU, PExt, K, timeStep)
 
+    def computeCriticalTimeStepForExplicitDynamics(self, lumpedMass: np.ndarray) -> float:
+        """This constraint's own stability limit on the explicit time step.
+
+        An explicit solver derives its critical time step from the elements, whose wave speed
+        and characteristic length give the CFL bound of the MESH. A constraint that acts through
+        a stiffness -- every penalty-type contact -- adds its own frequency on top of that, and
+        it is not in the mesh's estimate: with a stiff enough penalty the integration simply
+        leaves the stability limit. This hook is how a constraint reports the bound it imposes,
+        so that the solver can take it into account.
+
+        The default is ``inf``: a constraint that adds no stiffness, or one that has not been
+        taught to estimate its own bound, constrains nothing and leaves the mesh's limit intact.
+        That keeps every existing constraint behaving exactly as before.
+
+        Parameters
+        ----------
+        lumpedMass
+            The lumped mass of this constraint's degrees of freedom, in its own ordering. The
+            *unfolded* mass: the true nodal inertia, before any multi-point-constraint folding,
+            since that is what the constrained degrees of freedom actually carry.
+
+        Returns
+        -------
+        float
+            The largest stable time increment this constraint permits, or ``inf``.
+        """
+
+        return np.inf
+
     def requiresCorrectionBeforeConvergence(self) -> bool:
         """May the increment be declared converged on the state as it stands?
 

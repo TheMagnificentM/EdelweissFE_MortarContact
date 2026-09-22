@@ -987,6 +987,121 @@ class TestExplicitDynamics(unittest.TestCase):
         assemble(6)
         self.assertEqual(len(rebuilds), 2, "a tick must cause exactly one rebuild")
 
+
+    def _explicitConstraint(self, model, lumpedMassPerDof=1.0, **options):
+        """A penalty constraint set up as an explicit solver would leave it.
+
+        The solver hands the lumped mass over through
+        ``computeCriticalTimeStepForExplicitDynamics`` before the increment loop and marks the
+        run explicit on the first assembly; both are done here by hand so the stability logic can
+        be tested without a solver.
+        """
+
+        constraint = _TwoBlockModel.constraint(model, formulation="penalty", **options)
+        mass = np.full(constraint.nDof, lumpedMassPerDof)
+        constraint.computeCriticalTimeStepForExplicitDynamics(mass)
+        return constraint, mass
+
+    def _assembleOnce(self, constraint, timeIncrement, increment=1):
+        nDof = constraint.nDof
+        constraint._explicit = True
+        constraint._explicitTimeIncrement = timeIncrement
+        constraint.applyConstraint(
+            np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), np.zeros((nDof, nDof)),
+            _frozenTimeStep(increment),
+        )
+
+    def test_the_stability_bound_is_infinite_before_the_geometry_exists(self):
+        """Asked before the first assembly it cannot answer, and must not pretend to.
+
+        The segmentation needs a solution vector that this hook is not given, so on the call the
+        solver makes before its increment loop there is nothing to bound yet. Returning anything
+        finite there would cap the time step on no evidence.
+        """
+
+        model = self._penetratingModel()
+        constraint, mass = self._explicitConstraint(model, penaltyStiffness=1.0e6)
+        self.assertEqual(constraint.computeCriticalTimeStepForExplicitDynamics(mass), np.inf)
+
+    def test_the_stability_bound_scales_as_one_over_the_square_root_of_the_stiffness(self):
+        """dt <= 2/sqrt(kappa*R): quadrupling the stiffness must halve the stable increment.
+
+        R carries the geometry and the inertia and not the stiffness, so this scaling is the
+        defining property of the bound rather than an incidental one -- and it is checkable
+        without knowing R at all.
+        """
+
+        bounds = {}
+        for kappa in (1.0e6, 4.0e6):
+            model = self._penetratingModel()
+            constraint, mass = self._explicitConstraint(model, penaltyStiffness=kappa)
+            self._assembleOnce(constraint, timeIncrement=1.0e-6)
+            bounds[kappa] = constraint.computeCriticalTimeStepForExplicitDynamics(mass)
+            self.assertTrue(np.isfinite(bounds[kappa]), "no bound was produced once the geometry exists")
+        self.assertAlmostEqual(
+            bounds[1.0e6] / bounds[4.0e6], 2.0, places=10,
+            msg=f"quadrupling kappa changed the bound by {bounds[1.0e6] / bounds[4.0e6]}, not 2",
+        )
+
+    def test_a_derived_stiffness_satisfies_its_own_stability_bound(self):
+        """The property the whole mechanism exists for, checked end to end.
+
+        With no ``penaltyStiffness`` given, the stiffness is derived from the stability limit of
+        the time increment in use. The test of that derivation is not what number it produces but
+        whether the number it produces is one the increment can carry: the bound it then reports
+        must not be smaller than the increment it was derived for.
+        """
+
+        timeIncrement = 1.0e-6
+        model = self._penetratingModel()
+        constraint, mass = self._explicitConstraint(model)
+        self.assertTrue(constraint._derive_kappa, "the fixture was expected to leave kappa underived")
+
+        self._assembleOnce(constraint, timeIncrement)
+
+        bound = constraint.computeCriticalTimeStepForExplicitDynamics(mass)
+        self.assertGreaterEqual(
+            bound, timeIncrement,
+            f"the derived kappa = {constraint.kappa:.4g} permits only {bound:.4g}, "
+            f"below the increment {timeIncrement:.4g} it was derived for",
+        )
+        # Derived at half the limit, so the bound should sit near sqrt(2) above the increment
+        # rather than far above it -- a stiffness far below the limit would be needlessly soft.
+        self.assertLess(
+            bound, 4.0 * timeIncrement,
+            f"the derived kappa = {constraint.kappa:.4g} is far softer than the increment requires",
+        )
+
+    def test_a_softer_stiffness_is_derived_for_a_larger_time_increment(self):
+        """The derivation must follow the increment, since that is what it is derived from."""
+
+        stiffnesses = {}
+        for timeIncrement in (1.0e-6, 4.0e-6):
+            model = self._penetratingModel()
+            constraint, _ = self._explicitConstraint(model)
+            self._assembleOnce(constraint, timeIncrement)
+            stiffnesses[timeIncrement] = constraint.kappa
+        self.assertAlmostEqual(
+            stiffnesses[1.0e-6] / stiffnesses[4.0e-6], 16.0, places=6,
+            msg="kappa ~ 1/dt^2 was expected, since omega^2 = kappa*R <= 4/dt^2",
+        )
+
+    def test_other_constraints_keep_the_meshs_time_step(self):
+        """The hook is additive: anything that does not implement it must not constrain anything.
+
+        This is what keeps every constraint in the package -- the other contact formulations
+        above all -- behaving exactly as it did before the hook existed.
+        """
+
+        from edelweissfe.constraints.base.constraintbase import ConstraintBase
+
+        model = self._penetratingModel()
+        constraint = _TwoBlockModel.constraint(model, formulation="penalty", penaltyStiffness=1.0e6)
+        self.assertEqual(
+            ConstraintBase.computeCriticalTimeStepForExplicitDynamics(constraint, np.ones(constraint.nDof)),
+            np.inf,
+        )
+
     def test_the_connectivity_tick_reports_no_dof_change(self):
         """The tick marks the geometry stale; it must not ask for an equation-system rebuild.
 
