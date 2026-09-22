@@ -563,6 +563,10 @@ Choosing the parameters
   number is reported. With ``augmentedLagrange`` enabled the converged result does not depend on it
   at all; it then only sets how fast the outer loop converges.
 
+  **Under explicit dynamics it is bounded from above** and is derived from a different rule
+  entirely, because there the stiffness competes with the stability limit of the time integrator
+  rather than with the conditioning of a linear solve. See the next section.
+
 * ``augmentationTolerance`` and ``maxAugmentations`` bound the outer loop. The tolerance is a
   RELATIVE change of the pressure estimate from one augmentation to the next, which makes it
   independent of the unit the model is measured in. Reaching the cap is reported; it means the
@@ -597,13 +601,23 @@ Choosing the parameters
 Inside the solver
 ~~~~~~~~~~~~~~~~~
 
-**The geometry is frozen once per increment.** The segmentation, the coupling matrices and the
-nodal normals are evaluated once, from the last CONVERGED configuration, and held fixed for the
-Newton iterations of that increment. The reference is deliberately the converged state and not the
-incoming iterate: solvers extrapolate the previous increment before the first assembly, and
-freezing at that predictor would make the converged contact solution depend on a solver switch that
-must not influence it. A cutback re-attempt resets the frozen state along with everything else,
-since the geometry of a diverged attempt belongs to that attempt.
+**The geometry is frozen, and the SOLVER decides how often it is rebuilt.** The segmentation, the
+coupling matrices and the nodal normals are evaluated from the last CONVERGED configuration and
+held fixed until the solver's connectivity tick -- ``updateConnectivity`` -- asks for them again.
+Under an implicit solver that tick comes once per increment, which is the behaviour described
+here throughout. Under explicit dynamics it comes every ``contact-update-frequency`` increments
+instead, for reasons given in the next section.
+
+The reference is deliberately the converged state and not the incoming iterate: solvers
+extrapolate the previous increment before the first assembly, and freezing at that predictor would
+make the converged contact solution depend on a solver switch that must not influence it. A
+cutback re-attempt resets the frozen state along with everything else, since the geometry of a
+diverged attempt belongs to that attempt.
+
+Routing the rebuild through the tick rather than through a new increment number is what separates
+the two cadences. The per-increment bookkeeping -- the active set, the augmentation counter, the
+iteration count -- still follows the increment, so wherever the solver ticks once per increment the
+two coincide exactly and nothing about the implicit behaviour changes.
 
 What this costs is the subject of the section on the tangent above. What it buys is that the
 contact contribution of one increment is a smooth function of the displacements, with no
@@ -636,6 +650,147 @@ for every other constraint:
 system, they appear in restart state, and they are part of what the regression runner compares
 against its reference -- which is why a ``formulation=lagrange`` deck checks the contact pressures
 and not only the displacements.
+
+
+Explicit dynamics with the mortar
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Only ``formulation=penalty`` survives an explicit increment, and the other two are refused rather
+than quietly reinterpreted.
+
+* ``lagrange`` needs its multipliers as unknowns of a system an explicit increment never solves.
+  They would also carry no inertia, so the explicit update would never move them: the constraint
+  would appear active in every output and enforce nothing. The explicit dynamic solver already
+  refuses any constraint carrying its own scalar variables, and the constraint repeats the refusal
+  at its own explicit entry point.
+* ``augmentedLagrange`` is the dangerous one. Its outer update runs from ``augmentConstraint``,
+  which only the implicit solvers call, so under an explicit solver it would simply never run --
+  and the constraint would degrade to the pure penalty form without failing and without saying so.
+  It is refused for that reason.
+
+**The segmentation is throttled, not run per time step.** Every explicit time step is an increment,
+and rebuilding the geometry at each of them is not affordable: measured on the constraint, the
+segmentation and the nodal normals are 93 to 98 % of its cost -- 26 ms per rebuild on a small
+linear interface and 246 ms on a quadratic one -- against time steps counted in millions. The
+rebuild therefore follows ``updateConnectivity``, which the explicit solver ticks every
+``contact-update-frequency`` increments. On ``testfiles/edelweiss-only/NEDMortarContact``, 314 time
+steps at a frequency of 10 produce 32 segmentations rather than 314, and change the result by
+0.14 % -- the staggering the throttle buys, an error of the update interval rather than of the
+formulation.
+
+What makes the throttle defensible is the same argument the node-to-surface constraint's search
+rests on: between two rebuilds a slave node moves :math:`\lVert v \rVert \, \Delta t \, f`, orders
+of magnitude below a facet dimension.
+
+.. _mortar-explicit-stability:
+
+The stability limit on the penalty stiffness
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+An explicit solver derives its critical time step from the elements -- a wave speed and a
+characteristic length per element, the CFL condition of the MESH. A penalty contact adds its own
+frequency on top of that, and it is *not* in that estimate; the solver's own documentation says as
+much. A stiffness chosen for accuracy can therefore put the integration past the stability limit
+with nothing to report it. Measured on ``NEDMortarContact`` with everything else held fixed:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 30
+
+   * - :math:`\kappa`
+     - final ``dispLowerMax``
+   * - :math:`5 \cdot 10^{6}`
+     - :math:`1.0 \cdot 10^{188}` -- unstable
+   * - :math:`1.25 \cdot 10^{6}`
+     - :math:`1.31 \cdot 10^{-2}`
+   * - :math:`5 \cdot 10^{5}`
+     - :math:`1.09 \cdot 10^{-2}`
+   * - :math:`5 \cdot 10^{4}`
+     - :math:`2.95 \cdot 10^{-3}`
+
+The bound the constraint now imposes follows from the structure of its own stiffness. The penalty
+contribution of one non-mortar node is RANK ONE,
+
+.. math::
+
+   \boldsymbol{K}_I = \kappa\, \boldsymbol{v}_I \boldsymbol{v}_I^{\mathsf T},
+   \qquad \boldsymbol{v}_I = \boldsymbol{w}_I \otimes \boldsymbol{n}_I ,
+
+so the assembled contact stiffness is :math:`\boldsymbol{K} = \kappa \sum_I \boldsymbol{v}_I
+\boldsymbol{v}_I^{\mathsf T}`, and Gershgorin's theorem bounds the largest eigenvalue of
+:math:`\boldsymbol{M}^{-1}\boldsymbol{K}` by the largest scaled absolute row sum:
+
+.. math::
+   :label: mortar-stability-factor
+
+   \omega^2 \;\le\; \kappa \, \underbrace{\max_a \frac{1}{m_a}
+   \sum_I \lvert v_{I,a} \rvert \, \lVert \boldsymbol{v}_I \rVert_1}_{=:\, R}
+
+:math:`R` carries the geometry and the inertia and not the stiffness, which is what makes it usable
+in both directions. With the central-difference stability limit :math:`\Delta t_{cr} =
+2/\sqrt{\lambda_{\max}}` and the stability-assured condition :math:`\omega^2 \le \lambda_{\max}` of
+Kwon et al. (Eqs. 20--22 of the reference below),
+
+.. math::
+
+   \Delta t \;\le\; \frac{2}{\sqrt{\kappa R}}
+   \qquad\Longleftrightarrow\qquad
+   \kappa \;\le\; \frac{4}{\Delta t^{2} R}
+
+Gershgorin OVERestimates the eigenvalue, so the bound is conservative -- it may ask for a slightly
+smaller time step, or a slightly softer stiffness, than strictly necessary. That is the right
+direction to err in. The exact rank-one eigenvalue :math:`\kappa \, \boldsymbol{v}_I^{\mathsf T}
+\boldsymbol{M}^{-1} \boldsymbol{v}_I` would be exact for one node in isolation and UNDERestimate as
+soon as two nodes share a degree of freedom, which is the normal case. Every non-mortar node is
+counted, not only the currently active ones: the active set changes from increment to increment,
+and a bound that held only for the set that happened to be active when it was computed would not be
+a bound.
+
+**What the constraint does with it.** Two cases, and neither of them is silent:
+
+* ``penaltyStiffness`` **not given.** It is derived from the stability limit rather than from the
+  material, at half of :math:`4/(\Delta t^2 R)` -- the factor of two in the stiffness is a factor
+  of :math:`\sqrt 2` in the frequency, and it is the margin for the geometry moving between two
+  connectivity ticks. Re-derived at every rebuild, since :math:`R` follows the segmentation. This
+  is the same idea as the ``SOFT=1`` contact of LS-DYNA, which takes its stiffness from the nodal
+  masses and the time step rather than from the material constants, except that here it follows
+  from the eigenvalue bound above rather than from a rule of thumb. On ``NEDMortarContact`` it
+  lands at :math:`6.8 \cdot 10^{5}`, against the :math:`5 \cdot 10^{5}` that was found by hand.
+* ``penaltyStiffness`` **given.** The value is honoured, and measured against the bound. An
+  exceedance is reported together with the time increment that would carry it and the stiffness
+  that this increment would. Reported rather than refused, because the bound is conservative and
+  refusing would block models that are in fact stable.
+
+The reported bound is also returned to the solver through
+``ConstraintBase.computeCriticalTimeStepForExplicitDynamics``, which is new and defaults to
+infinity, so that a solver can take the minimum over its constraints as it does over its elements.
+Every other constraint inherits that default and is unaffected; the other penalty contact
+formulations of EdelweissFE carry the same hazard and have deliberately not been changed.
+
+**What is not done here, and would be the next step.** The bipenalty method removes the trade-off
+instead of managing it: a MASS penalty alongside the stiffness penalty, at the critical penalty
+ratio, leaves the largest eigenvalue -- and therefore the critical time step -- unchanged for any
+stiffness. With :math:`\lambda_{\max} = 4/\Delta t_{cr}^2` already available from the element bound,
+the parameter choice would be one line, :math:`\varepsilon_m = \varepsilon_k \Delta t_{cr}^2/4`. The
+work is elsewhere: the mass penalty has to reach the solver's lumped mass, it depends on the active
+set and therefore changes during the run, and it increases penetration, so the ratio cannot simply
+be pushed. Neither Abaqus/Explicit nor LS-DYNA uses it; both take one of the two routes above.
+
+.. rubric:: References for this section
+
+* Y.-J. Kwon, J.-G. Kim, S. S. Cho, J. A. González: *A General Bipenalty Formulation for Explicit
+  Contact-Impact Analysis With a Parameter Selection Criterion.* International Journal for
+  Numerical Methods in Engineering 126 (2025) e7614. The stability-assured condition used above is
+  their Eqs. (20)--(22); their Table 1 is why the criterion is taken from this work rather than
+  from the earlier one-dimensional ones, which have no three-dimensional form.
+* J. E. Hetherington, A. Rodríguez-Ferran, H. Askes: *A new bipenalty formulation for ensuring time
+  step stability in time domain computational dynamics.* International Journal for Numerical
+  Methods in Engineering 90 (2012) 269--286. The critical penalty ratio, defined through the
+  maximum eigenvalue of the unpenalized system.
+* LS-DYNA support documentation, *SOFT option* and *Contact stiffness calculation*,
+  https://www.dynasupport.com/howtos/contact/soft-option -- the ``SOFT=1`` stiffness, taken from
+  the nodal masses and the global time step, which is the practical precedent for the derivation
+  above.
 
 
 What is verified, and how
@@ -702,6 +857,22 @@ elements reach 6.6 % on the medium mesh and are still converging at 4.3 % on the
 These curved cases are not part of the shipped test suite. They take 8 s and 89 s respectively,
 which is out of proportion to a suite that runs in about a minute, and reproducing them needs a
 parabolically warped mesh that no model generator provides.
+
+**Under explicit dynamics**, ``NEDMortarContact`` is the shipped deck. Its decisive quantity is
+``dispLowerMax``: nothing but the contact loads the lower block, so it is identically zero unless
+the constraint's forces reach the equations, and a run that merely completes proves nothing. The
+throttle is measured on the same deck, before and against after: 314 time steps produce 314
+segmentations without it and 32 with it at ``contact-update-frequency = 10``, changing the result
+from 1.20688e-2 to 1.20520e-2, or 0.14 %.
+
+The stability bound is covered by unit tests rather than by a deck, in
+``edelweissfe/constraints/test_mortarcontact.py``. Two of them state the properties that make the
+bound a bound rather than a number: that :math:`\Delta t \le 2/\sqrt{\kappa R}` holds, checked by
+quadrupling the stiffness and requiring the reported limit to halve exactly; and that a stiffness
+derived for a given increment satisfies the bound it was derived for, which is the property the
+whole mechanism exists to guarantee. A third checks that :math:`\kappa` follows
+:math:`1/\Delta t^2`, and a fourth that a constraint which does not implement the hook leaves the
+mesh's time step untouched.
 
 
 Known limitations

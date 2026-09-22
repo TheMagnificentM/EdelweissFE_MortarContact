@@ -346,6 +346,20 @@ class PrettyPrintDirective(CodeBlock):
             return self._render_inputlanguage([member_data], caption)
 
 
+# -- LaTeX / PDF output ------------------------------------------------------
+# The HTML builder passes these through as characters; pdflatex does not know them and
+# stops with "Unicode character not set up for use with LaTeX". linsolvers.rst uses both
+# in its capability tables, which is enough to make `-b latex` produce no PDF at all.
+# Declared here rather than replaced in the sources, so the tables stay readable as text.
+latex_elements = {
+    "preamble": r"""
+\usepackage{amssymb}
+\DeclareUnicodeCharacter{2713}{\ensuremath{\checkmark}}
+\DeclareUnicodeCharacter{2717}{\ensuremath{\times}}
+""",
+}
+
+
 def doi_role(name, rawtext, text, lineno, inliner, options={}, content=[]):
     # rendered = nodes.Text(text)
     uri = "http://dx.doi.org/" + text
