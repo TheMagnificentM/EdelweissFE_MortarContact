@@ -767,15 +767,6 @@ infinity, so that a solver can take the minimum over its constraints as it does 
 Every other constraint inherits that default and is unaffected; the other penalty contact
 formulations of EdelweissFE carry the same hazard and have deliberately not been changed.
 
-**What is not done here, and would be the next step.** The bipenalty method removes the trade-off
-instead of managing it: a MASS penalty alongside the stiffness penalty, at the critical penalty
-ratio, leaves the largest eigenvalue -- and therefore the critical time step -- unchanged for any
-stiffness. With :math:`\lambda_{\max} = 4/\Delta t_{cr}^2` already available from the element bound,
-the parameter choice would be one line, :math:`\varepsilon_m = \varepsilon_k \Delta t_{cr}^2/4`. The
-work is elsewhere: the mass penalty has to reach the solver's lumped mass, it depends on the active
-set and therefore changes during the run, and it increases penetration, so the ratio cannot simply
-be pushed. Neither Abaqus/Explicit nor LS-DYNA uses it; both take one of the two routes above.
-
 .. rubric:: References for this section
 
 * Y.-J. Kwon, J.-G. Kim, S. S. Cho, J. A. González: *A General Bipenalty Formulation for Explicit
@@ -783,10 +774,6 @@ be pushed. Neither Abaqus/Explicit nor LS-DYNA uses it; both take one of the two
   Numerical Methods in Engineering 126 (2025) e7614. The stability-assured condition used above is
   their Eqs. (20)--(22); their Table 1 is why the criterion is taken from this work rather than
   from the earlier one-dimensional ones, which have no three-dimensional form.
-* J. E. Hetherington, A. Rodríguez-Ferran, H. Askes: *A new bipenalty formulation for ensuring time
-  step stability in time domain computational dynamics.* International Journal for Numerical
-  Methods in Engineering 90 (2012) 269--286. The critical penalty ratio, defined through the
-  maximum eigenvalue of the unpenalized system.
 * LS-DYNA support documentation, *SOFT option* and *Contact stiffness calculation*,
   https://www.dynasupport.com/howtos/contact/soft-option -- the ``SOFT=1`` stiffness, taken from
   the nodal masses and the global time step, which is the practical precedent for the derivation
