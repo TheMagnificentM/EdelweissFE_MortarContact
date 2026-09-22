@@ -511,17 +511,44 @@ the current state,
 
 .. math::
 
-    \lambda_I = \max\left(0, \; z_I + \kappa \, g^{\text{pen}}_I\right) \operatorname{sgn} D_{II} ,
+    \lambda_I = \max\left(0, \; z_I + \kappa_I \, g^{\text{pen}}_I\right) \operatorname{sgn} D_{II} ,
     \qquad g^{\text{pen}}_I = -g_I \operatorname{sgn} D_{II} ,
+    \qquad \kappa_I = \frac{\varepsilon_N}{|D_{II}|} ,
 
 with :math:`z_I` the augmentation estimate, zero for pure penalty. The tangent is then the rank-one
-:math:`K_{ab} \mathrel{+}= \kappa \, v_a v_b`, symmetric and positive semi-definite, and the system
+:math:`K_{ab} \mathrel{+}= \kappa_I \, v_a v_b`, symmetric and positive semi-definite, and the system
 keeps the size and the definiteness it had without contact.
 
-Note where the nodal weight does NOT appear: the penalty law multiplies the WEIGHTED gap, so no
-division by :math:`D_{II}` occurs anywhere in it. That is deliberate. In the alternative form
-:math:`\lambda = \varepsilon \, g_I / D_{II}` the weight sits in the denominator of the contact
-pressure, and it cannot be assumed to stay away from zero.
+**The stiffness is node-wise, and it has to be.** Since :math:`g^{\text{pen}}_I = |D_{II}| \,
+\delta_I` with :math:`\delta_I` the pointwise penetration, the law above is exactly
+:math:`\lambda_I = \varepsilon_N \delta_I`: a pressure per unit opening, the same quantity and the
+same unit as the ``penalty`` of :doc:`the node- and segment-based penalty constraints
+</documentation/contacttheory>`, so a value can be carried between them.
+
+A *single* :math:`\kappa` multiplying the weighted gap -- which is what this constraint used until
+the nodal weight was moved into the stiffness -- gives every node the pointwise stiffness
+:math:`\varepsilon_I = \kappa D_{II}`, i.e. a stiffness proportional to its own tributary area. On a
+plain :math:`4\times4` conforming interface that is a factor of four between a corner node and an
+interior one, so a uniform pressure cannot produce a uniform penetration, the interface does not
+stay plane, and **the contact patch test fails at every finite stiffness, on a conforming mesh**.
+Measured on the two-block patch test, the relation :math:`\delta_I = \lambda_I/(\kappa D_{II})`
+held to :math:`2\cdot10^{-16}`; with the normalisation in place the relative pressure spread of the
+same model falls from :math:`7.3\cdot10^{-1}` to :math:`1.7\cdot10^{-12}` on a *non-conforming*
+mesh, with a pure penalty and no augmentation.
+
+The scale factor is the :math:`\zeta_A` of Yang, Laursen & Meng (2005), their Eqs. (36) and (37),
+which is :math:`1/\sum_D n_{AD} = 1/D_{AA}` and is introduced there, in their words, "to cause the
+gap function :math:`g_A` to have the proper units of length, which is of crucial importance when
+implementing penalty methods in particular". Their Section 8.1 passes the patch test on
+non-conforming meshes to machine precision with a penalty.
+
+**The robustness objection is handled rather than avoided.** :math:`D_{II}` cannot be assumed to
+stay away from zero -- a partially covered CONQUAD9, a CONQUAD8 corner at :math:`\alpha = 1/3` and
+the sliver fallback all produce negative or near-zero weights -- which is why the *gap* is still
+carried in its weighted form everywhere and only the *stiffness* is divided. A node whose weight
+falls below the relative floor of :attr:`currentWeightTolerance` receives no penalty spring at all
+instead of an unbounded one, which is also the physically right answer: a node with no coverage
+transmits no force.
 
 
 Use and verification
@@ -538,11 +565,14 @@ Choosing the parameters
   satisfies the condition exactly and is the reference; its cost is a saddle-point system with one
   extra unknown per non-mortar node. ``penalty`` keeps the system size and definiteness but
   satisfies the condition only approximately: measured on the quadratic patch test, the error in
-  the displacement field is 1.5e-04 at :math:`\kappa = 10^6` and falls by exactly one decade per
-  decade of stiffness -- 1.5e-05, then 1.5e-06 -- while the contact pressure spreads across the
-  interface instead of staying constant. Switching ``augmentedLagrange`` on at the same stiffness
-  brings that error to 3e-11, four orders better, and removes the dependence on the stiffness
-  altogether. There is little reason to run pure penalty except to see what the augmentation buys.
+  the displacement field is 1.5e-04 at :math:`\varepsilon_N = 10^6` and falls by exactly one decade
+  per decade of stiffness -- 1.5e-05, then 1.5e-06. That error is pure interface compliance and
+  uniform over the interface; the contact *pressure* stays constant, which is what makes the patch
+  test pass at any finite stiffness (it did not before the nodal weight was moved into the
+  stiffness -- see **Penalty form** above). Switching ``augmentedLagrange`` on at the same stiffness
+  brings the displacement error to 3e-11, four orders better, and removes the dependence on the
+  stiffness altogether. Pure penalty is now a reasonable choice where the compliance is acceptable,
+  and it is the only one an explicit solver can integrate.
 
 * ``cn`` enters the activation test only. It is purely algorithmic -- the opening vanishes at an
   active node on convergence, so the converged solution is the same for every admissible value --
@@ -554,11 +584,17 @@ Choosing the parameters
   smallest Young's modulus among the materials adjacent to the two surfaces, which sits inside that
   band for a model whose lengths are of order one, and the derived value is reported once.
 
-* ``penaltyStiffness`` carries a unit that is NOT the one a pointwise penalty formulation has. The
-  gap it multiplies is the weighted gap and carries length times area, so a value taken from a rule
-  of thumb for a classical penalty parameter is wrong by the size of a face. Left at 0 it is derived
-  as the smallest adjacent Young's modulus divided by the characteristic face size and the mean
-  nodal weight -- a contact stiffness per unit area of one adjacent element layer. That derivation
+* ``penaltyStiffness`` is :math:`\varepsilon_N`, a pointwise contact stiffness per unit area -- a
+  pressure per unit opening. It is the same quantity as the ``penalty`` of
+  ``nodeToDeformableSurfacePenalty`` and ``surfaceToDeformableSurfacePenalty``, so a value may be
+  carried between them and a rule of thumb for a classical penalty parameter applies unchanged.
+  (It did not always: before the nodal weight was moved into the stiffness this option multiplied
+  the weighted gap and carried length times area, so values from decks older than that change are
+  too large by the size of a face, roughly :math:`1/D_\text{mean}`.) Left at 0 it is derived
+  as a hundred times the smallest adjacent Young's modulus divided by the characteristic face
+  size, :math:`\varepsilon_N = 100\,E/h`. No nodal weight enters that rule any more, and none
+  should: a *mean* weight cannot stand in for weights that differ by a factor of four across the
+  interface, and using one is what made the patch test fail. That derivation
   is an engineering rule of this implementation rather than an established value, and the derived
   number is reported. With ``augmentedLagrange`` enabled the converged result does not depend on it
   at all; it then only sets how fast the outer loop converges.
@@ -697,34 +733,44 @@ with nothing to report it. Measured on ``NEDMortarContact`` with everything else
    :header-rows: 1
    :widths: 30 30
 
-   * - :math:`\kappa`
+   * - :math:`\varepsilon_N`
      - final ``dispLowerMax``
-   * - :math:`5 \cdot 10^{6}`
-     - :math:`1.0 \cdot 10^{188}` -- unstable
-   * - :math:`1.25 \cdot 10^{6}`
-     - :math:`1.31 \cdot 10^{-2}`
-   * - :math:`5 \cdot 10^{5}`
-     - :math:`1.09 \cdot 10^{-2}`
-   * - :math:`5 \cdot 10^{4}`
-     - :math:`2.95 \cdot 10^{-3}`
+   * - :math:`1.6 \cdot 10^{5}`
+     - :math:`7.78 \cdot 10^{-1}` -- unstable
+   * - :math:`1.2 \cdot 10^{5}`
+     - :math:`1.57 \cdot 10^{-2}` -- the constraint warns here, one step early
+   * - :math:`8 \cdot 10^{4}`
+     - :math:`1.29 \cdot 10^{-2}`
+   * - :math:`2 \cdot 10^{4}`
+     - :math:`9.24 \cdot 10^{-3}`
+   * - :math:`5 \cdot 10^{3}`
+     - :math:`4.38 \cdot 10^{-3}`
 
 The bound the constraint now imposes follows from the structure of its own stiffness. The penalty
 contribution of one non-mortar node is RANK ONE,
 
 .. math::
 
-   \boldsymbol{K}_I = \kappa\, \boldsymbol{v}_I \boldsymbol{v}_I^{\mathsf T},
+   \boldsymbol{K}_I = \kappa_I\, \boldsymbol{v}_I \boldsymbol{v}_I^{\mathsf T},
    \qquad \boldsymbol{v}_I = \boldsymbol{w}_I \otimes \boldsymbol{n}_I ,
+   \qquad \kappa_I = \frac{\varepsilon_N}{\lvert D_{II} \rvert} ,
 
-so the assembled contact stiffness is :math:`\boldsymbol{K} = \kappa \sum_I \boldsymbol{v}_I
-\boldsymbol{v}_I^{\mathsf T}`, and Gershgorin's theorem bounds the largest eigenvalue of
-:math:`\boldsymbol{M}^{-1}\boldsymbol{K}` by the largest scaled absolute row sum:
+so the assembled contact stiffness is :math:`\boldsymbol{K} = \varepsilon_N \sum_I
+\lvert D_{II}\rvert^{-1} \boldsymbol{v}_I \boldsymbol{v}_I^{\mathsf T}`, and Gershgorin's theorem
+bounds the largest eigenvalue of :math:`\boldsymbol{M}^{-1}\boldsymbol{K}` by the largest scaled
+absolute row sum:
 
 .. math::
    :label: mortar-stability-factor
 
-   \omega^2 \;\le\; \kappa \, \underbrace{\max_a \frac{1}{m_a}
-   \sum_I \lvert v_{I,a} \rvert \, \lVert \boldsymbol{v}_I \rVert_1}_{=:\, R}
+   \omega^2 \;\le\; \varepsilon_N \, \underbrace{\max_a \frac{1}{m_a}
+   \sum_I \frac{\lvert v_{I,a} \rvert \, \lVert \boldsymbol{v}_I \rVert_1}
+   {\lvert D_{II} \rvert}}_{=:\, R}
+
+The :math:`1/\lvert D_{II}\rvert` sits inside the sum over the nodes and cannot be pulled out of
+it: the weights differ by a factor of four across an ordinary interface, and a bound taken with a
+mean weight would be wrong by that factor at the stiffest node -- which is precisely the node that
+sets the stable increment.
 
 :math:`R` carries the geometry and the inertia and not the stiffness, which is what makes it usable
 in both directions. With the central-difference stability limit :math:`\Delta t_{cr} =
@@ -733,13 +779,13 @@ Kwon et al. (Eqs. 20--22 of the reference below),
 
 .. math::
 
-   \Delta t \;\le\; \frac{2}{\sqrt{\kappa R}}
+   \Delta t \;\le\; \frac{2}{\sqrt{\varepsilon_N R}}
    \qquad\Longleftrightarrow\qquad
-   \kappa \;\le\; \frac{4}{\Delta t^{2} R}
+   \varepsilon_N \;\le\; \frac{4}{\Delta t^{2} R}
 
 Gershgorin OVERestimates the eigenvalue, so the bound is conservative -- it may ask for a slightly
 smaller time step, or a slightly softer stiffness, than strictly necessary. That is the right
-direction to err in. The exact rank-one eigenvalue :math:`\kappa \, \boldsymbol{v}_I^{\mathsf T}
+direction to err in. The exact rank-one eigenvalue :math:`\kappa_I \, \boldsymbol{v}_I^{\mathsf T}
 \boldsymbol{M}^{-1} \boldsymbol{v}_I` would be exact for one node in isolation and UNDERestimate as
 soon as two nodes share a degree of freedom, which is the normal case. Every non-mortar node is
 counted, not only the currently active ones: the active set changes from increment to increment,
@@ -854,10 +900,10 @@ from 1.20688e-2 to 1.20520e-2, or 0.14 %.
 
 The stability bound is covered by unit tests rather than by a deck, in
 ``edelweissfe/constraints/test_mortarcontact.py``. Two of them state the properties that make the
-bound a bound rather than a number: that :math:`\Delta t \le 2/\sqrt{\kappa R}` holds, checked by
+bound a bound rather than a number: that :math:`\Delta t \le 2/\sqrt{\varepsilon_N R}` holds, checked by
 quadrupling the stiffness and requiring the reported limit to halve exactly; and that a stiffness
 derived for a given increment satisfies the bound it was derived for, which is the property the
-whole mechanism exists to guarantee. A third checks that :math:`\kappa` follows
+whole mechanism exists to guarantee. A third checks that :math:`\varepsilon_N` follows
 :math:`1/\Delta t^2`, and a fourth that a constraint which does not implement the hook leaves the
 mesh's time step untouched.
 

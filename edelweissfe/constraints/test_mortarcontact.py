@@ -905,9 +905,7 @@ class TestExplicitDynamics(unittest.TestCase):
         constraint = _TwoBlockModel.constraint(model, formulation="lagrange")
         nDof = constraint.nDof
         with self.assertRaises(NotImplementedError) as raised:
-            constraint.applyConstraintExplicit(
-                np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), _frozenTimeStep()
-            )
+            constraint.applyConstraintExplicit(np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), _frozenTimeStep())
         self.assertIn("lagrange", str(raised.exception))
 
     def test_augmented_lagrange_is_refused_explicitly(self):
@@ -924,9 +922,7 @@ class TestExplicitDynamics(unittest.TestCase):
         )
         nDof = constraint.nDof
         with self.assertRaises(NotImplementedError) as raised:
-            constraint.applyConstraintExplicit(
-                np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), _frozenTimeStep()
-            )
+            constraint.applyConstraintExplicit(np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), _frozenTimeStep())
         self.assertIn("augmentedLagrange", str(raised.exception))
 
     def test_pure_penalty_is_accepted_and_transmits_force(self):
@@ -937,9 +933,7 @@ class TestExplicitDynamics(unittest.TestCase):
         nDof = constraint.nDof
         PExt = np.zeros(nDof)
         constraint.applyConstraintExplicit(np.zeros(nDof), np.zeros(nDof), PExt, _frozenTimeStep())
-        self.assertGreater(
-            np.max(np.abs(PExt)), 0.0, "penetrating blocks produced no contact force at all"
-        )
+        self.assertGreater(np.max(np.abs(PExt)), 0.0, "penetrating blocks produced no contact force at all")
 
     def test_geometry_is_rebuilt_only_when_the_solver_ticks(self):
         """The throttle itself: a new increment alone must NOT re-segment.
@@ -966,7 +960,10 @@ class TestExplicitDynamics(unittest.TestCase):
 
         def assemble(incrementNumber):
             constraint.applyConstraint(
-                np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), np.zeros((nDof, nDof)),
+                np.zeros(nDof),
+                np.zeros(nDof),
+                np.zeros(nDof),
+                np.zeros((nDof, nDof)),
                 _frozenTimeStep(incrementNumber),
             )
 
@@ -987,7 +984,6 @@ class TestExplicitDynamics(unittest.TestCase):
         assemble(6)
         self.assertEqual(len(rebuilds), 2, "a tick must cause exactly one rebuild")
 
-
     def _explicitConstraint(self, model, lumpedMassPerDof=1.0, **options):
         """A penalty constraint set up as an explicit solver would leave it.
 
@@ -1007,7 +1003,10 @@ class TestExplicitDynamics(unittest.TestCase):
         constraint._explicit = True
         constraint._explicitTimeIncrement = timeIncrement
         constraint.applyConstraint(
-            np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), np.zeros((nDof, nDof)),
+            np.zeros(nDof),
+            np.zeros(nDof),
+            np.zeros(nDof),
+            np.zeros((nDof, nDof)),
             _frozenTimeStep(increment),
         )
 
@@ -1039,7 +1038,9 @@ class TestExplicitDynamics(unittest.TestCase):
             bounds[kappa] = constraint.computeCriticalTimeStepForExplicitDynamics(mass)
             self.assertTrue(np.isfinite(bounds[kappa]), "no bound was produced once the geometry exists")
         self.assertAlmostEqual(
-            bounds[1.0e6] / bounds[4.0e6], 2.0, places=10,
+            bounds[1.0e6] / bounds[4.0e6],
+            2.0,
+            places=10,
             msg=f"quadrupling kappa changed the bound by {bounds[1.0e6] / bounds[4.0e6]}, not 2",
         )
 
@@ -1055,21 +1056,23 @@ class TestExplicitDynamics(unittest.TestCase):
         timeIncrement = 1.0e-6
         model = self._penetratingModel()
         constraint, mass = self._explicitConstraint(model)
-        self.assertTrue(constraint._derive_kappa, "the fixture was expected to leave kappa underived")
+        self.assertTrue(constraint._derive_epsN, "the fixture was expected to leave eps_N underived")
 
         self._assembleOnce(constraint, timeIncrement)
 
         bound = constraint.computeCriticalTimeStepForExplicitDynamics(mass)
         self.assertGreaterEqual(
-            bound, timeIncrement,
-            f"the derived kappa = {constraint.kappa:.4g} permits only {bound:.4g}, "
+            bound,
+            timeIncrement,
+            f"the derived eps_N = {constraint.epsN:.4g} permits only {bound:.4g}, "
             f"below the increment {timeIncrement:.4g} it was derived for",
         )
         # Derived at half the limit, so the bound should sit near sqrt(2) above the increment
         # rather than far above it -- a stiffness far below the limit would be needlessly soft.
         self.assertLess(
-            bound, 4.0 * timeIncrement,
-            f"the derived kappa = {constraint.kappa:.4g} is far softer than the increment requires",
+            bound,
+            4.0 * timeIncrement,
+            f"the derived eps_N = {constraint.epsN:.4g} is far softer than the increment requires",
         )
 
     def test_a_softer_stiffness_is_derived_for_a_larger_time_increment(self):
@@ -1080,10 +1083,12 @@ class TestExplicitDynamics(unittest.TestCase):
             model = self._penetratingModel()
             constraint, _ = self._explicitConstraint(model)
             self._assembleOnce(constraint, timeIncrement)
-            stiffnesses[timeIncrement] = constraint.kappa
+            stiffnesses[timeIncrement] = constraint.epsN
         self.assertAlmostEqual(
-            stiffnesses[1.0e-6] / stiffnesses[4.0e-6], 16.0, places=6,
-            msg="kappa ~ 1/dt^2 was expected, since omega^2 = kappa*R <= 4/dt^2",
+            stiffnesses[1.0e-6] / stiffnesses[4.0e-6],
+            16.0,
+            places=6,
+            msg="eps_N ~ 1/dt^2 was expected, since omega^2 = eps_N*R <= 4/dt^2",
         )
 
     def test_other_constraints_keep_the_meshs_time_step(self):

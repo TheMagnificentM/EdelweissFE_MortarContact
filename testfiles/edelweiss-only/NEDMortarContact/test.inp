@@ -30,15 +30,18 @@
 ** spring, so too stiff a value simply violates the stability limit. Measured on this model, with
 ** everything else held fixed:
 **
-**   kappa   5e+6    dispLowerMax 1.0e+188   <- unstable
-**   kappa   1.25e+6              1.31e-2
-**   kappa   5e+5                 1.09e-2    <- used here
-**   kappa   2e+5                 7.56e-3
-**   kappa   5e+4                 2.95e-3
+**   eps_N   1.6e+5  dispLowerMax 7.78e-1    <- unstable, and the constraint says so
+**   eps_N   1.2e+5               1.57e-2    <- the constraint warns here; still stable
+**   eps_N   8e+4                 1.29e-2
+**   eps_N   2e+4                 9.24e-3    <- used here
+**   eps_N   5e+3                 4.38e-3
 **
-** 5e5 sits an order of magnitude below the stability limit of this mesh. Note that kappa multiplies
-** the WEIGHTED gap and is therefore not the pointwise penalty of NEDContact: the comparable
-** quantity is kappa * D_mean.
+** 2e4 sits a factor of six below the stability limit of this mesh. eps_N is a POINTWISE penalty
+** modulus -- a pressure per unit opening -- so it is the same quantity as the `penalty` of
+** NEDContact and a value can be carried between the two. It was not always: until the nodal
+** weight was moved out of the gap and into the stiffness, this option multiplied the WEIGHTED
+** gap, and the value that produced the run above was kappa = 5e5 (which is this eps_N divided by
+** the mean nodal weight of this interface, 0.04).
 
 *material, name=LinearElastic, id=linearelastic, provider=edelweiss
 **E       nu     density
@@ -97,7 +100,7 @@ nonMortarSurface=nonMortarSurf_facets
 mortarSurface=mortarSurf_facets
 field=displacement
 formulation=penalty
-penaltyStiffness=5e5
+penaltyStiffness=2e4
 
 *fieldOutput
 >>perNode, elSet=lower_all, field=displacement, result=U, name=dispLower

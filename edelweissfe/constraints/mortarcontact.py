@@ -722,8 +722,12 @@ class Constraint(ConstraintBase):
         # Penalty parameter kappa of t_A = kappa*g_A. Like c_n it carries a unit, so
         # a non-positive value means "derive it" - here not at the first assembly but
         # inside the geometry block, because the rule needs the nodal weights.
-        self.kappa = float(kwargs["penaltyStiffness"])
-        self._derive_kappa = self.kappa <= 0.0
+        # eps_N, a POINTWISE penalty modulus: a pressure per unit opening, the same
+        # quantity (and the same unit) as the ``penalty`` of the two node/segment penalty
+        # constraints. It is NOT the kappa of the weighted form -- see _resolveEpsN and
+        # the "Penalty form" section of mortartheory.rst for why that form was left.
+        self.epsN = float(kwargs["penaltyStiffness"])
+        self._derive_epsN = self.epsN <= 0.0
         self.useAugmentedLagrange = bool(kwargs["augmentedLagrange"])
         self.augmentationTolerance = float(kwargs["augmentationTolerance"])
         self.maxAugmentations = int(kwargs["maxAugmentations"])
@@ -1122,17 +1126,17 @@ class Constraint(ConstraintBase):
             f"safe direction.",
         )
 
-    def _resolveKappa(self):
-        """Derive the penalty parameter kappa of t_A = kappa*g_A.
+    def _resolveEpsN(self):
+        """Derive the penalty modulus eps_N of p_I = eps_N * penetration_I.
 
         THIS RULE IS NOT AN ESTABLISHED ONE. The penalty form itself prescribes no way
         of choosing its parameter. What follows is the engineering rule of this
         implementation, reported once so it stays checkable, and overridable with the
         `penaltyStiffness` keyword.
 
-        The rule. kappa multiplies the WEIGHTED gap, so it is not a contact
-        stiffness per unit area - that is eps_N = kappa * D_II (the classical
-        parameter of a pointwise penalty form).
+        The rule. eps_N is a POINTWISE contact stiffness per unit area -- the classical
+        parameter of a penalty form, and the same quantity as the ``penalty`` of the two
+        node/segment penalty constraints, so a value can be carried between them.
         Taking eps_N = E/h would give the interface the stiffness of one adjacent
         element layer, which is the natural scale but too soft in practice: the
         error reduction of the Uzawa loop per augmentation is governed by the
@@ -1143,14 +1147,18 @@ class Constraint(ConstraintBase):
         a relative 1e-6, while 100*E/h needs FOUR (penetration 4.4e-5 -> 3.5e-7 ->
         3.4e-9 -> 3.5e-11). The factor is therefore set to
 
-            eps_N = C * E / h ,   C = 100      ->   kappa = C * E / (h * D_mean)
+            eps_N = C * E / h ,   C = 100
 
         with E the smallest initial Young's modulus adjacent to the interface (same
-        argument as for c_n), D_mean the mean nodal mortar weight and h the
-        characteristic facet size. Both are taken from the mortar weights
-        themselves, which is exactly the quantity the penalty acts on:
-        sum_I D_II = |gamma| is the covered interface measure (row-sum identity),
-        so D_mean = |gamma|/nSlave and h = (|gamma|/nFacets)^(1/(dim-1)).
+        argument as for c_n) and h the characteristic facet size, taken from the mortar
+        weights themselves: sum_I D_II = |gamma| is the covered interface measure
+        (row-sum identity), so h = (|gamma|/nFacets)^(1/(dim-1)).
+
+        NO NODAL WEIGHT ENTERS HERE any more. It used to, as a mean over the interface,
+        because the stiffness was a single kappa multiplying the weighted gap; the weight
+        now sits per node in :meth:`_nodalPenaltyStiffness`, which is the only place it
+        belongs -- a MEAN weight cannot stand in for weights that differ by a factor of
+        four across the interface, and using one is exactly what made the patch test fail.
 
         With the augmented Lagrangian enabled the converged solution does not depend
         on kappa at all (the outer loop drives the constraint violation
@@ -1179,28 +1187,28 @@ class Constraint(ConstraintBase):
                 # geometry is frozen only until the next connectivity tick -- between two ticks the
                 # overlap moves, and R with it. A factor of two in the stiffness is a factor of
                 # sqrt(2) in the frequency, which is the margin that buys.
-                previous = getattr(self, "kappa", None)
-                self.kappa = 0.5 * kappaMax
-                if previous is None or not np.isclose(previous, self.kappa, rtol=0.25):
+                previous = getattr(self, "epsN", None)
+                self.epsN = 0.5 * kappaMax
+                if previous is None or not np.isclose(previous, self.epsN, rtol=0.25):
                     self._warnOnce(
-                        "kappa_derived_explicit",
+                        "epsN_derived_explicit",
                         f"'penaltyStiffness' was not given and this is an explicit analysis, so "
-                        f"kappa has been derived from the STABILITY limit rather than from the "
-                        f"material: kappa = {self.kappa:.4g} = 0.5 * 4/(dt^2 * R) with "
+                        f"eps_N has been derived from the STABILITY limit rather than from the "
+                        f"material: eps_N = {self.epsN:.4g} = 0.5 * 4/(dt^2 * R) with "
                         f"dt = {dt:.4g} and R = {factor:.4g}. A larger value would need a smaller "
                         f"time increment; set 'penaltyStiffness' explicitly to choose that "
                         f"trade-off yourself, and watch the reported penetration.",
                     )
                 return
             self._warnOnce(
-                "kappa_not_derivable_explicit",
+                "epsN_not_derivable_explicit",
                 "the stability limit needed to derive the penalty parameter for this explicit "
                 "analysis is not available (no covered interface, or no lumped mass on the "
                 "contact nodes), so the implicit rule below is used instead. That rule knows "
                 "nothing about the stable time increment -- check the result for instability.",
             )
 
-        self._derive_kappa = False
+        self._derive_epsN = False
 
         weights = self.currentNodalWeights
         total = float(np.sum(weights))
@@ -1208,17 +1216,16 @@ class Constraint(ConstraintBase):
         dim = self.model.domainSize
 
         if total <= 0.0 or nFacets == 0 or self.nNonMortarNodes == 0:
-            self.kappa = 1.0e6
+            self.epsN = 1.0e6
             self._warnOnce(
-                "kappa_not_derivable",
+                "epsN_not_derivable",
                 f"the interface measure needed to derive the penalty parameter is not "
-                f"available (covered measure {total:.3e} over {nFacets} facet(s)), so kappa "
-                f"falls back to {self.kappa:.3e}. That value carries a unit and is almost "
+                f"available (covered measure {total:.3e} over {nFacets} facet(s)), so eps_N "
+                f"falls back to {self.epsN:.3e}. That value carries a unit and is almost "
                 f"certainly wrong for this model - set 'penaltyStiffness' explicitly.",
             )
             return
 
-        d_mean = total / self.nNonMortarNodes
         # dim-1 is the dimension of the interface: a length in 2D, an area in 3D.
         h = (total / nFacets) ** (1.0 / (dim - 1))
         # Stiffness ratio contact/structure, see the docstring. Not a literature
@@ -1228,25 +1235,25 @@ class Constraint(ConstraintBase):
 
         E = self._smallestAdjacentYoungsModulus()
         if E is None:
-            self.kappa = 1.0e6
+            self.epsN = 1.0e6
             self._warnOnce(
-                "kappa_not_derivable_E",
+                "epsN_not_derivable_E",
                 f"no Young's modulus could be determined for the materials adjacent to the "
-                f"contact surfaces, so kappa falls back to {self.kappa:.3e}. That value "
+                f"contact surfaces, so eps_N falls back to {self.epsN:.3e}. That value "
                 f"carries a unit and is only meaningful for a model in MPa - set "
                 f"'penaltyStiffness' explicitly.",
             )
             return
 
-        self.kappa = stiffness_ratio * E / (h * d_mean)
+        self.epsN = stiffness_ratio * E / h
         self._warnOnce(
-            "kappa_derived",
-            f"'penaltyStiffness' was not given and kappa has been derived as "
-            f"{self.kappa:.4g} = {stiffness_ratio:g}*E/(h*D_mean) with E = {E:.4g}, "
-            f"h = {h:.4g} and D_mean = {d_mean:.4g}, i.e. a contact stiffness per unit "
-            f"area of eps_N = {stiffness_ratio:g}*E/h = {stiffness_ratio * E / h:.4g}. This is an "
-            f"engineering rule of this implementation rather than an established value. With augmentedLagrange "
-            f"enabled the converged result does not depend on it.",
+            "epsN_derived",
+            f"'penaltyStiffness' was not given and eps_N has been derived as "
+            f"{self.epsN:.4g} = {stiffness_ratio:g}*E/h with E = {E:.4g} and h = {h:.4g}. "
+            f"It is a pointwise contact stiffness per unit area, i.e. the same quantity as the "
+            f"'penalty' of nodeToDeformableSurfacePenalty. This is an engineering rule of this "
+            f"implementation rather than an established value. With augmentedLagrange enabled "
+            f"the converged result does not depend on it.",
         )
 
     def _checkConvergedActiveSet(self, U_ref: np.ndarray):
@@ -1711,7 +1718,7 @@ class Constraint(ConstraintBase):
 
         The augmented (Uzawa) update,
 
-            p^(k+1)_A = p^k_A + kappa * g_A ,
+            p^(k+1)_A = p^k_A + kappa_A * g_A ,
 
         which is Eq. (18) of Puso, Laursen & Solberg (2008), advanced - as they require -
         only "once convergence of the Newton-Raphson loop is achieved", after which
@@ -1754,7 +1761,10 @@ class Constraint(ConstraintBase):
         # the convergence test below divides one noise by another, and the loop exhausts its cap
         # on an interface that has nothing to correct.
         g_pen = np.where(np.abs(self.currentWeakGap) > self.currentGapTolerance, g_pen, 0.0)
-        z_new = np.maximum(0.0, self.augmentedMultipliers + self.kappa * g_pen)
+        # Node-wise, for the same reason the assembly is: the Uzawa update has to advance the
+        # estimate by the same pressure increment the penalty law would have produced, and that
+        # is eps_N times the POINTWISE opening at this node, not kappa times its weighted one.
+        z_new = np.maximum(0.0, self.augmentedMultipliers + self._nodalPenaltyStiffness() * g_pen)
 
         change = float(np.max(np.abs(z_new - self.augmentedMultipliers))) if len(z_new) else 0.0
         scale = float(np.max(np.abs(z_new))) if len(z_new) else 0.0
@@ -1868,6 +1878,10 @@ class Constraint(ConstraintBase):
         # ----------------------------------------------------------------------
         idx_LM_0 = sf * nNodes
         penalty = self.formulation == "penalty"
+        # One stiffness per non-mortar node, not one for the interface -- see
+        # _nodalPenaltyStiffness. Formed once per assembly rather than per node: it depends
+        # only on the frozen weights and on eps_N, neither of which moves inside this loop.
+        nodalPenalty = self._nodalPenaltyStiffness() if penalty else None
         _dim_offsets = np.arange(dim)
 
         for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
@@ -1930,13 +1944,25 @@ class Constraint(ConstraintBase):
                 # open. g_pen below is that g_A: positive under penetration, and weighted
                 # (length x area), NOT the physical opening.
                 #
-                # NO DIVISION BY D_II HAPPENS HERE, and that is the reason for
-                # following the weighted form of the papers rather than penalizing
-                # the physical opening g_sep: D_II is not guaranteed positive (a
-                # partially covered CONQUAD9, a CONQUAD8 corner at alpha = 1/3, or
-                # the sliver fallback all produce negative or near-zero weights, see
-                # the negative-weight diagnostic above). In a form p = eps*g_sep that
-                # weight sits in the DENOMINATOR of the contact pressure.
+                # THE NODAL WEIGHT IS IN THE STIFFNESS, NOT IN THE GAP. The law enforced
+                # is the pointwise one, p = eps_N * penetration, but it is evaluated on
+                # the weighted gap with the node-wise stiffness kappa_I = eps_N/|D_II| --
+                # the two are identical, since g^pen_I = |D_II| * penetration. Keeping the
+                # WEIGHTED gap as the variable is what preserves the robustness the older
+                # un-normalised form was written for: D_II is not guaranteed positive (a
+                # partially covered CONQUAD9, a CONQUAD8 corner at alpha = 1/3, or the
+                # sliver fallback all produce negative or near-zero weights, see the
+                # negative-weight diagnostic above), and an uncovered node here simply
+                # receives kappa_I = 0 from the floor in _nodalPenaltyStiffness instead of
+                # an unbounded pressure from a division inside the gap.
+                #
+                # A SINGLE kappa FOR ALL NODES IS WRONG, and was the formulation until this
+                # branch: it makes the pointwise stiffness eps_I = kappa*D_II, i.e. it gives
+                # every node a stiffness proportional to its own tributary area. A corner
+                # node of a plain conforming interface is then four times softer than an
+                # interior one, a uniform pressure cannot produce a uniform penetration, and
+                # the contact patch test fails at every finite stiffness. See
+                # _nodalPenaltyStiffness for the measurement and the reference.
                 #
                 # The sign of the gap measure does depend on sgn(D_II) - translating
                 # the master by a*n changes g_weak by D_II*a - so g_pen carries it.
@@ -1961,7 +1987,8 @@ class Constraint(ConstraintBase):
                 # ==============================================================
                 self.currentWeakGap[I] = g_I_weak
                 g_pen = -g_I_weak * sgn_D
-                p_trial = self.augmentedMultipliers[I] + self.kappa * g_pen
+                kappa_I = nodalPenalty[I]
+                p_trial = self.augmentedMultipliers[I] + kappa_I * g_pen
                 # useActiveSet = False pins the branch from outside - the same
                 # switch the Lagrange branch honours. It is what lets a consistency
                 # check perturb the state without the branch flipping underneath it,
@@ -1971,7 +1998,7 @@ class Constraint(ConstraintBase):
                     # zero - see currentGapTolerance. Once the augmentation carries a real pressure the
                     # shift is immaterial: it moves the release point by kappa*currentGapTolerance,
                     # which is 1e-7 against pressures of order 10 in the deck this was measured on.
-                    self.activeSet[I] = bool(p_trial > self.kappa * self.currentGapTolerance)
+                    self.activeSet[I] = bool(p_trial > kappa_I * self.currentGapTolerance)
 
                 if not self.activeSet[I]:
                     self.nodalMultipliers[I] = 0.0
@@ -1983,9 +2010,9 @@ class Constraint(ConstraintBase):
                 # The whole nodal contribution is rank one. With the weights
                 #   w_a = +D_IK on the slave nodes, w_a = -C_IJ on the master nodes,
                 # the weighted gap is g_weak = -sum_a w_a (x_a . n_I), so
-                #   dg_weak/dx_a = -w_a n_I,    dlambda_I/dx_a = +kappa w_a n_I
+                #   dg_weak/dx_a = -w_a n_I,    dlambda_I/dx_a = +kappa_I w_a n_I
                 # (the sgn(D_II) cancels), and with v_a = w_a n_I:
-                #   PExt_a -= lambda_I * v_a,     K_ab += kappa * v_a v_b.
+                #   PExt_a -= lambda_I * v_a,     K_ab += kappa_I * v_a v_b.
                 # K is therefore symmetric positive semi-definite - this is the
                 # first term of the linearised penalty force; the second and
                 # third terms are the linearizations of the nodal normal and of the
@@ -2001,7 +2028,7 @@ class Constraint(ConstraintBase):
                 idcs = (sf * node_ids[:, None] + _dim_offsets).ravel()
                 v = (w[:, None] * n_I[None, :]).ravel()
                 PExt[idcs] -= lambda_I * v
-                K[np.ix_(idcs, idcs)] += self.kappa * np.outer(v, v)
+                K[np.ix_(idcs, idcs)] += kappa_I * np.outer(v, v)
                 continue
 
             self.nodalMultipliers[I] = lambda_I
@@ -2178,20 +2205,78 @@ class Constraint(ConstraintBase):
                     f"because every non-mortar facet is then fully covered.",
                 )
 
+    def _nodalPenaltyStiffness(self) -> np.ndarray:
+        """The stiffness each non-mortar node's penalty spring actually carries.
+
+        THE ONE PLACE THE NORMALISATION OF THE WEIGHTED GAP LIVES. The penalty law of this
+        constraint is a pressure per unit POINTWISE opening,
+
+            p_I = eps_N * (-g_I / D_II) ,
+
+        and since the assembly works with the weighted gap ``g_I`` throughout -- which is
+        the right variable, for the robustness reason below -- the division is folded into
+        a per-node stiffness instead:
+
+            kappa_I = eps_N / |D_II| ,     so that   kappa_I * g^pen_I = eps_N * penetration.
+
+        WHY THIS IS NOT A COSMETIC CHOICE. Without it the whole constraint runs on a single
+        kappa multiplying the weighted gap, which gives every node the pointwise stiffness
+        ``eps_I = kappa * D_II`` -- proportional to its own nodal weight. On a plain 4x4
+        conforming interface that is a factor of FOUR between a corner node and an interior
+        one, so a uniform pressure cannot produce a uniform penetration and the interface
+        does not stay plane: the contact patch test fails at every finite stiffness, on a
+        conforming mesh, for purely discrete reasons. Measured on the 03_TwoBlocksPressure
+        patch test of the contact study, the relation ``penetration_I = p_I/(kappa D_II)``
+        held to 2e-16 -- it is the formulation, not a numerical artefact.
+
+        The scale factor is Yang, Laursen & Meng (2005), Eqs. (36)-(37): their zeta_A is
+        ``1/sum_D n_AD = 1/D_AA``, introduced, in their words, "to cause the gap function
+        g_A to have the proper units of length, which is of crucial importance when
+        implementing penalty methods in particular". Their Section 8.1 passes the patch
+        test on non-conforming meshes to machine precision with a penalty.
+
+        THE ROBUSTNESS OBJECTION IS REAL AND IS HANDLED HERE RATHER THAN AVOIDED. D_II is
+        not guaranteed positive -- a partially covered CONQUAD9, a CONQUAD8 corner at
+        alpha = 1/3 and the sliver fallback all produce negative or near-zero weights -- so
+        putting it in a denominator needs a floor. It gets the same relative floor the
+        physical opening ``g_sep`` already uses (:attr:`currentWeightTolerance`), and a node
+        beneath it carries NO penalty spring at all rather than an enormous one. That is
+        also the physically right answer: a node with no coverage transmits no force, and
+        in the weighted form it received ``kappa * g_I`` with ``g_I -> 0`` anyway.
+
+        Only the MAGNITUDE of the weight enters. The sign is already carried by ``g^pen``
+        and by the assembled multiplier, exactly as before; this changes how hard the
+        spring is, not which way it pushes.
+        """
+
+        weights = np.asarray(self.currentNodalWeights, dtype=float)
+        magnitude = np.abs(weights)
+        covered = magnitude > self.currentWeightTolerance
+        stiffness = np.zeros_like(magnitude)
+        stiffness[covered] = self.epsN / magnitude[covered]
+        return stiffness
+
     def _stabilityFactor(self, lumpedMass: np.ndarray) -> float:
         """The stiffness-independent part R of this constraint's stability bound.
 
-        The penalty contribution of one slave node is RANK ONE, ``K_I = kappa * v_I v_I^T`` with
-        ``v_I = w_I (x) n_I`` (see applyConstraint), so the contact stiffness assembles as
-        ``K = kappa * sum_I v_I v_I^T``. Gershgorin's theorem bounds the largest eigenvalue of
-        ``M^-1 K`` by the largest scaled absolute row sum, which for that form is
+        The penalty contribution of one slave node is RANK ONE, ``K_I = kappa_I * v_I v_I^T``
+        with ``v_I = w_I (x) n_I`` (see applyConstraint) and the NODE-WISE stiffness
+        ``kappa_I = eps_N/|D_II|`` of :meth:`_nodalPenaltyStiffness`, so the contact stiffness
+        assembles as ``K = eps_N * sum_I (1/|D_II|) v_I v_I^T``. Gershgorin's theorem bounds the
+        largest eigenvalue of ``M^-1 K`` by the largest scaled absolute row sum, which for that
+        form is
 
-            omega^2 <= kappa * max_a  (1/m_a) * sum_I |v_I,a| * ||v_I||_1  =:  kappa * R
+            omega^2 <= eps_N * max_a (1/m_a) * sum_I (1/|D_II|) |v_I,a| * ||v_I||_1  =:  eps_N * R
+
+        The ``1/|D_II|`` sits INSIDE the sum over the nodes and cannot be pulled out of it: the
+        weights differ by a factor of four across an ordinary interface, and a bound taken with a
+        mean weight would be wrong by that factor at the stiffest node -- which is precisely the
+        node that sets the stable increment.
 
         R is returned. It carries the geometry and the inertia and not the stiffness, which is
-        what makes it usable in both directions: with kappa known it gives the stable time step
-        ``dt <= 2/sqrt(kappa*R)``, and with the time step known it gives the largest stable
-        stiffness ``kappa <= 4/(dt^2 R)``. Both follow from the central-difference stability
+        what makes it usable in both directions: with eps_N known it gives the stable time step
+        ``dt <= 2/sqrt(eps_N*R)``, and with the time step known it gives the largest stable
+        stiffness ``eps_N <= 4/(dt^2 R)``. Both follow from the central-difference stability
         limit ``dt_cr = 2/sqrt(lambda_max)`` of Kwon, Kim, Cho & González (2024), Eqs. (20)-(21),
         whose stability-assured condition (their Eq. 22) is exactly ``omega^2 <= lambda_max``.
 
@@ -2215,15 +2300,21 @@ class Constraint(ConstraintBase):
         offsets = np.arange(dim)
         rowSums = np.zeros(len(lumpedMass))
 
-        for I in range(nSlave):
+        # The stiffness-free part of kappa_I = eps_N/|D_II|. Taken directly rather than through
+        # _nodalPenaltyStiffness, because this method is also called BEFORE eps_N is known --
+        # that is the direction that derives it -- and must not depend on it.
+        weights = np.abs(np.asarray(self.currentNodalWeights, dtype=float))
+        covered = weights > self.currentWeightTolerance
+
+        for I in range(nSlave):  # noqa: E741 - the non-mortar node index of the formulation
             nzD, nzC = self.currentDNonzero[I], self.currentCNonzero[I]
-            if len(nzD) == 0 and len(nzC) == 0:
+            if (len(nzD) == 0 and len(nzC) == 0) or not covered[I]:
                 continue
             nodeIds = np.concatenate((nzD, nSlave + np.asarray(nzC))).astype(np.intp)
             w = np.concatenate((self.currentDRow[I], -self.currentCRow[I]))
             idcs = (sf * nodeIds[:, None] + offsets).ravel()
             v = np.abs((w[:, None] * self.currentNormals[I][None, :]).ravel())
-            rowSums[idcs] += v * float(np.sum(v))
+            rowSums[idcs] += v * float(np.sum(v)) / weights[I]
 
         mass = np.asarray(lumpedMass, dtype=float)
         touched = rowSums > 0.0
@@ -2236,7 +2327,7 @@ class Constraint(ConstraintBase):
 
         Also the point at which the lumped mass reaches this constraint: the solver assembles it
         before it asks for the time step, and nothing else hands it over. It is kept for the
-        stiffness derivation in :meth:`_resolveKappa`, which needs the same inertia.
+        stiffness derivation in :meth:`_resolveEpsN`, which needs the same inertia.
 
         Returns ``inf`` until the geometry exists -- on the call before the increment loop it does
         not yet, since the segmentation needs a solution vector this hook is not given. The real
@@ -2252,7 +2343,7 @@ class Constraint(ConstraintBase):
         factor = self._stabilityFactor(self._explicitLumpedMass)
         if factor <= 0.0:
             return np.inf
-        return 2.0 / np.sqrt(self.kappa * factor)
+        return 2.0 / np.sqrt(self.epsN * factor)
 
     def applyConstraintExplicit(
         self,
@@ -2282,14 +2373,15 @@ class Constraint(ConstraintBase):
         penalty one, which is precisely the kind of quiet wrong answer that is worth an
         exception.
 
-        PENALTY STIFFNESS IS BOUNDED FROM ABOVE HERE, in a way it is not implicitly, and nothing
-        in this code enforces the bound. An explicit solver derives its critical time step from
-        the MESH; the contact spring is not part of that estimate, so a ``penaltyStiffness`` whose
-        own frequency exceeds the stability limit simply makes the integration diverge. Measured on
-        ``testfiles/edelweiss-only/NEDMortarContact`` with everything else held fixed, the run is
-        stable at kappa = 1.25e6 and blows up to 1e188 at 5e6. Choose the stiffness against the
-        mesh, verify it on the model at hand, and do not carry a value over from an implicit
-        analysis -- there it is limited by conditioning, which is a far weaker constraint.
+        PENALTY STIFFNESS IS BOUNDED FROM ABOVE HERE, in a way it is not implicitly. An explicit
+        solver derives its critical time step from the MESH; the contact spring is not part of that
+        estimate, so an ``penaltyStiffness`` whose own frequency exceeds the stability limit simply
+        makes the integration diverge. The bound is not left to the user: it is checked against
+        eps_N at every geometry rebuild and reported, and derived FROM the limit when no stiffness
+        was given (see _resolveEpsN). Measured on ``testfiles/edelweiss-only/NEDMortarContact`` with
+        everything else held fixed, the run is stable at eps_N = 8e4, warned about at 1.2e5 while
+        still stable, and blown up at 1.6e5. Do not carry a value over from an implicit analysis --
+        there the limit is conditioning, which is far weaker.
 
         The tangent is NOT skipped here, unlike the node-to-surface constraint's override:
         measured on this constraint, residual and tangent together are 2 to 7 % of its
@@ -2500,8 +2592,8 @@ class Constraint(ConstraintBase):
 
         # The penalty parameter needs the nodal weights, so it is derived here
         # rather than at the top of the assembly like c_n.
-        if self.formulation == "penalty" and self._derive_kappa:
-            self._resolveKappa()
+        if self.formulation == "penalty" and self._derive_epsN:
+            self._resolveEpsN()
         elif self.formulation == "penalty" and self._explicit and self._explicitLumpedMass is not None:
             # A stiffness the user chose is honoured, but it is still measured against the
             # stability limit of the integrator -- silently integrating past that limit produces
@@ -2511,11 +2603,11 @@ class Constraint(ConstraintBase):
             factor = self._stabilityFactor(self._explicitLumpedMass)
             dt = getattr(self, "_explicitTimeIncrement", 0.0)
             if factor > 0.0 and dt > 0.0:
-                dtStable = 2.0 / np.sqrt(self.kappa * factor)
+                dtStable = 2.0 / np.sqrt(self.epsN * factor)
                 if dt > dtStable:
                     self._warnOnce(
-                        "kappa_above_stability_limit",
-                        f"penaltyStiffness = {self.kappa:.4g} needs a time increment of at most "
+                        "epsN_above_stability_limit",
+                        f"penaltyStiffness = {self.epsN:.4g} needs a time increment of at most "
                         f"{dtStable:.4g} to stay stable, and this analysis runs at {dt:.4g} -- a "
                         f"factor of {dt / dtStable:.2f} above it. Either lower it to at most "
                         f"{4.0 / (dt * dt * factor):.4g}, lower 'courant-number' by the same "
@@ -2523,7 +2615,6 @@ class Constraint(ConstraintBase):
                         f"stability limit. The bound is a conservative (Gershgorin) estimate, so a "
                         f"small exceedance may still run -- but it will not be trustworthy.",
                     )
-
 
     def _assembleCouplingMatricesFromSegments(
         self, seg_records, seg_masters, slave_els, current_coords, n_slave, n_master
