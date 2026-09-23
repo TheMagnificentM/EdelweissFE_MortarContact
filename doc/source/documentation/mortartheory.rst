@@ -519,22 +519,21 @@ with :math:`z_I` the augmentation estimate, zero for pure penalty. The tangent i
 :math:`K_{ab} \mathrel{+}= \kappa_I \, v_a v_b`, symmetric and positive semi-definite, and the system
 keeps the size and the definiteness it had without contact.
 
-**The stiffness is node-wise, and it has to be.** Since :math:`g^{\text{pen}}_I = |D_{II}| \,
-\delta_I` with :math:`\delta_I` the pointwise penetration, the law above is exactly
+**The law is a pointwise one.** Since :math:`g^{\text{pen}}_I = |D_{II}| \, \delta_I` with
+:math:`\delta_I` the pointwise penetration, the law above is exactly
 :math:`\lambda_I = \varepsilon_N \delta_I`: a pressure per unit opening, the same quantity and the
 same unit as the ``penalty`` of :doc:`the node- and segment-based penalty constraints
 </documentation/contacttheory>`, so a value can be carried between them.
 
-A *single* :math:`\kappa` multiplying the weighted gap -- which is what this constraint used until
-the nodal weight was moved into the stiffness -- gives every node the pointwise stiffness
-:math:`\varepsilon_I = \kappa D_{II}`, i.e. a stiffness proportional to its own tributary area. On a
-plain :math:`4\times4` conforming interface that is a factor of four between a corner node and an
-interior one, so a uniform pressure cannot produce a uniform penetration, the interface does not
-stay plane, and **the contact patch test fails at every finite stiffness, on a conforming mesh**.
-Measured on the two-block patch test, the relation :math:`\delta_I = \lambda_I/(\kappa D_{II})`
-held to :math:`2\cdot10^{-16}`; with the normalisation in place the relative pressure spread of the
-same model falls from :math:`7.3\cdot10^{-1}` to :math:`1.7\cdot10^{-12}` on a *non-conforming*
-mesh, with a pure penalty and no augmentation.
+**Why the stiffness is node-wise.** A single stiffness multiplying the weighted gap would give
+every node the pointwise stiffness :math:`\varepsilon_I = \kappa D_{II}`, i.e. a stiffness
+proportional to its own tributary area -- a factor of four between a corner node and an interior one
+on a plain :math:`4\times4` conforming interface. A uniform pressure could then not produce a
+uniform penetration, the interface would not stay plane, and the contact patch test would fail at
+every finite stiffness, on a conforming mesh. Dividing by :math:`D_{II}` removes exactly that: the
+penetration is :math:`p/\varepsilon_N` at every node, so the pressure a uniform gap produces is
+uniform. Measured on the two-block patch test, the relative pressure spread is
+:math:`1.7\cdot10^{-12}` on a *non-conforming* mesh, with a pure penalty and no augmentation.
 
 The scale factor is the :math:`\zeta_A` of Yang, Laursen & Meng (2005), their Eqs. (36) and (37),
 which is :math:`1/\sum_D n_{AD} = 1/D_{AA}` and is introduced there, in their words, "to cause the
@@ -542,13 +541,14 @@ gap function :math:`g_A` to have the proper units of length, which is of crucial
 implementing penalty methods in particular". Their Section 8.1 passes the patch test on
 non-conforming meshes to machine precision with a penalty.
 
-**The robustness objection is handled rather than avoided.** :math:`D_{II}` cannot be assumed to
-stay away from zero -- a partially covered CONQUAD9, a CONQUAD8 corner at :math:`\alpha = 1/3` and
-the sliver fallback all produce negative or near-zero weights -- which is why the *gap* is still
-carried in its weighted form everywhere and only the *stiffness* is divided. A node whose weight
-falls below the relative floor of :attr:`currentWeightTolerance` receives no penalty spring at all
-instead of an unbounded one, which is also the physically right answer: a node with no coverage
-transmits no force.
+**Why only the stiffness is divided, not the gap.** :math:`D_{II}` cannot be assumed to stay away
+from zero -- a partially covered CONQUAD9, a CONQUAD8 corner at :math:`\alpha = 1/3` and the sliver
+fallback all produce negative or near-zero weights. The *gap* is therefore carried in its weighted
+form everywhere, and the division appears only in the *stiffness*, where it can be floored: a node
+whose weight falls below the relative floor of :attr:`currentWeightTolerance` receives no penalty
+spring at all rather than an unbounded one, which is also the physically right answer, since a node
+with no coverage transmits no force. Only the magnitude of the weight enters
+:math:`\kappa_I`; its sign is carried by :math:`g^{\text{pen}}_I` and by :math:`\lambda_I`.
 
 
 Use and verification
@@ -568,8 +568,7 @@ Choosing the parameters
   the displacement field is 1.5e-04 at :math:`\varepsilon_N = 10^6` and falls by exactly one decade
   per decade of stiffness -- 1.5e-05, then 1.5e-06. That error is pure interface compliance and
   uniform over the interface; the contact *pressure* stays constant, which is what makes the patch
-  test pass at any finite stiffness (it did not before the nodal weight was moved into the
-  stiffness -- see **Penalty form** above). Switching ``augmentedLagrange`` on at the same stiffness
+  test pass at any finite stiffness. Switching ``augmentedLagrange`` on at the same stiffness
   brings the displacement error to 3e-11, four orders better, and removes the dependence on the
   stiffness altogether. Pure penalty is now a reasonable choice where the compliance is acceptable,
   and it is the only one an explicit solver can integrate.
@@ -588,15 +587,12 @@ Choosing the parameters
   pressure per unit opening. It is the same quantity as the ``penalty`` of
   ``nodeToDeformableSurfacePenalty`` and ``surfaceToDeformableSurfacePenalty``, so a value may be
   carried between them and a rule of thumb for a classical penalty parameter applies unchanged.
-  (It did not always: before the nodal weight was moved into the stiffness this option multiplied
-  the weighted gap and carried length times area, so values from decks older than that change are
-  too large by the size of a face, roughly :math:`1/D_\text{mean}`.) Left at 0 it is derived
-  as a hundred times the smallest adjacent Young's modulus divided by the characteristic face
-  size, :math:`\varepsilon_N = 100\,E/h`. No nodal weight enters that rule any more, and none
-  should: a *mean* weight cannot stand in for weights that differ by a factor of four across the
-  interface, and using one is what made the patch test fail. That derivation
-  is an engineering rule of this implementation rather than an established value, and the derived
-  number is reported. With ``augmentedLagrange`` enabled the converged result does not depend on it
+  Left at 0 it is derived as a hundred times the smallest adjacent Young's modulus divided by the
+  characteristic face size, :math:`\varepsilon_N = 100\,E/h`. No nodal weight enters that rule, and
+  none should: the weights differ by a factor of four across an ordinary interface, so a mean weight
+  cannot stand in for them; the per-node normalisation belongs in the stiffness and is applied
+  there. That derivation is an engineering rule of this implementation rather than an established
+  value, and the derived number is reported. With ``augmentedLagrange`` enabled the converged result does not depend on it
   at all; it then only sets how fast the outer loop converges.
 
   **Under explicit dynamics it is bounded from above** and is derived from a different rule
