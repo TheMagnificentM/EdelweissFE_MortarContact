@@ -483,9 +483,12 @@ class TestPenaltyActivation(unittest.TestCase):
             np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), np.zeros((nDof, nDof)), _frozenTimeStep()
         )
 
-    def test_a_load_free_interface_activates_no_node(self):
+    def test_a_load_free_interface_is_closed_but_carries_no_pressure(self):
         """Two surfaces exactly in contact but carrying no load. Their weighted gap is round-off,
-        and round-off is not a gap."""
+        and round-off is neither a gap nor a penetration: the nodes are CLOSED. A closed node keeps
+        its spring in the tangent -- otherwise a body carried by the contact alone has a singular
+        tangent the moment it touches -- but its pressure is exactly zero, not kappa times the
+        rounding of the geometry."""
 
         model = _TwoBlockModel.build(gap=0.0)
         constraint = self._penaltyConstraint(model)
@@ -497,6 +500,29 @@ class TestPenaltyActivation(unittest.TestCase):
             constraint.currentGapTolerance,
             "the fixture does not actually produce a round-off gap -- test is vacuous",
         )
+        self.assertEqual(int(np.sum(constraint.activeSet)), len(constraint.nonMortarNodes))
+        self.assertEqual(float(np.max(np.abs(constraint.nodalMultipliers))), 0.0)
+
+    def test_a_closed_interface_keeps_its_stiffness(self):
+        """The reason the kink is put on the active side: the assembled tangent of a closed,
+        load-free interface is not zero, so the contact still carries a body that rests on it."""
+
+        model = _TwoBlockModel.build(gap=0.0)
+        constraint = self._penaltyConstraint(model)
+        nDof = constraint.nDof
+        K = np.zeros((nDof, nDof))
+        constraint.applyConstraint(np.zeros(nDof), np.zeros(nDof), np.zeros(nDof), K, _frozenTimeStep())
+
+        self.assertGreater(float(np.max(np.abs(K))), 0.0)
+
+    def test_an_open_interface_activates_no_node(self):
+        """The counterpart to the closed case: a genuine opening, orders of magnitude above the
+        noise floor, releases every node."""
+
+        model = _TwoBlockModel.build(gap=0.01)
+        constraint = self._penaltyConstraint(model)
+        self._assembleOnce(constraint)
+
         self.assertEqual(int(np.sum(constraint.activeSet)), 0)
 
     def test_the_outer_loop_stops_at_once_when_there_is_nothing_to_correct(self):
@@ -741,7 +767,10 @@ class TestActiveSet(unittest.TestCase):
             1e-12,
             "the fixture did not actually close the gap -- test is vacuous",
         )
-        self.assertEqual(int(np.sum(constraint.activeSet)), 0, "a vanishing indicator must not activate")
+        # A vanishing indicator is the kink of the complementarity function, where either branch is
+        # admissible; the constraint puts it on the ACTIVE side, so that a body resting on a closed,
+        # unloaded interface does not get a singular tangent (see the activation in applyConstraint).
+        self.assertTrue(np.all(constraint.activeSet), "a closed gap without pressure counts as closed")
 
         self._setNodalPressure(constraint, U, +1.0)
         self._assemble(constraint, U, 2)
@@ -1118,6 +1147,99 @@ class TestExplicitDynamics(unittest.TestCase):
         model = self._penetratingModel()
         constraint = _TwoBlockModel.constraint(model, formulation="penalty", penaltyStiffness=1.0e6)
         self.assertFalse(constraint.updateConnectivity(model))
+
+
+class TestCurvedEdgeAttribution(unittest.TestCase):
+    """A Gauss point belongs to the facet that contains it, not to the facet whose straight
+    sub-cell produced it.
+
+    The segmentation clips the linear sub-cells of quadratic facets. Where two mortar facets share
+    an edge that is CURVED in the surface, the sliver between the chord and the true edge is clipped
+    as part of one facet while it lies in the other; mapped back into the wrong one, its points get
+    natural coordinates outside the reference domain and extrapolated shape functions. The mortar
+    matrix then no longer reproduces the consistent nodal loads of a uniform pressure on the mortar
+    side, which is the patch test condition on that side.
+
+    Fixture: one flat CONQUAD8 non-mortar facet on the unit square, opposed by two CONQUAD8 mortar
+    facets that tile the same square along a shared edge whose mid-side node is moved 0.15 off the
+    chord. Both surfaces cover exactly the same area, so every discrepancy is attribution or
+    quadrature.
+    """
+
+    @staticmethod
+    def build(bulge: float = 0.15) -> FEModel:
+        from edelweissfe.config.elementlibrary import getElementClass
+        from edelweissfe.variables.fieldvariable import FieldVariable
+
+        model = FEModel(3)
+        elementClass = getElementClass("CONQUAD8", "edelweiss")
+        pool = {}
+
+        def node(x):
+            key = tuple(np.round(x, 12))
+            if key not in pool:
+                n = Node(1000 + len(model.nodes), np.array(x, dtype=float))
+                n.fields["displacement"] = FieldVariable(n, "displacement")
+                model.nodes[n.label] = n
+                pool[key] = n
+            return pool[key]
+
+        def facet(label, points):
+            element = elementClass("CONQUAD8", label)
+            element.setNodes([node(p) for p in points])
+            model.elements[label] = element
+            return element
+
+        nonMortar = facet(
+            1, [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0.5, 0, 0], [1, 0.5, 0], [0.5, 1, 0], [0, 0.5, 0]]
+        )
+        pool.clear()  # the two surfaces do not share nodes
+        c = 0.5 + bulge
+        left = facet(
+            2, [[0, 0, 0], [0.5, 0, 0], [0.5, 1, 0], [0, 1, 0], [0.25, 0, 0], [c, 0.5, 0], [0.25, 1, 0], [0, 0.5, 0]]
+        )
+        right = facet(
+            3, [[0.5, 0, 0], [1, 0, 0], [1, 1, 0], [0.5, 1, 0], [0.75, 0, 0], [1, 0.5, 0], [0.75, 1, 0], [c, 0.5, 0]]
+        )
+        model.elementSets["nonMortar_facets"] = ElementSet("nonMortar_facets", [nonMortar])
+        model.elementSets["mortar_facets"] = ElementSet("mortar_facets", [left, right])
+        return model
+
+    @staticmethod
+    def mortarConsistencyError(constraint: MortarContact) -> float:
+        """max |C^T 1 - int N_m| / max |int N_m| -- zero when a uniform multiplier reproduces the
+        consistent mortar-side nodal loads of a uniform pressure."""
+        _, C = constraint.computeMortarCouplingMatrices()
+        loads = np.zeros(constraint.nMortarNodes)
+        xg, wg = np.polynomial.legendre.leggauss(12)
+        for el in constraint.mortarFacets:
+            X = np.array([n.coordinates for n in el.nodes])
+            for a, wa in zip(xg, wg):
+                for b, wb in zip(xg, wg):
+                    xi = np.array([a, b])
+                    dX = el.getShapeFunctionDerivatives(xi) @ X
+                    J = np.linalg.norm(np.cross(dX[0], dX[1]))
+                    for k, n in enumerate(el.nodes):
+                        loads[constraint.mortarNodeToIndex[n]] += el.getShapeFunctions(xi)[k] * J * wa * wb
+        return float(np.max(np.abs(np.asarray(C.sum(axis=0)).ravel() - loads)) / np.max(np.abs(loads)))
+
+    def test_points_beyond_a_curved_chord_go_to_the_facet_that_contains_them(self):
+        model = self.build()
+        constraint = MortarContact(
+            "contact",
+            model,
+            Journal(verbose=False),
+            nonMortarSurface="nonMortar_facets",
+            mortarSurface="mortar_facets",
+            cn=1000.0,
+        )
+        error = self.mortarConsistencyError(constraint)
+
+        self.assertGreater(constraint.lastReattributedGaussPoints, 0, "no point was re-attributed -- vacuous")
+        self.assertEqual(constraint.lastDroppedGaussPoints, 0)
+        # Measured: 6.1e-3 with the attribution of the clipping, 2.1e-4 with the containing facet;
+        # what remains is the quadrature of a triangle that straddles the curved edge.
+        self.assertLess(error, 1e-3)
 
 
 if __name__ == "__main__":

@@ -100,8 +100,27 @@ pressure is made out of the gap, so on a load-free interface -- two surfaces coi
 applied yet -- a stiffness of 1e6 turns the rounding of the geometry into a pressure of 1e-10, and a
 bare sign test reads that as contact. The weighted gap is therefore compared against a noise floor
 of its own scale, the interface diameter times the largest nodal weight, taken relative by the same
-factor the nodal weights themselves use. Below that floor there is no gap and no contact, and the
-augmented outer loop has nothing to correct.
+factor the nodal weights themselves use. Below that floor there is no gap and no penetration: the
+node is *closed*, it carries no pressure, and the augmented outer loop has nothing to correct.
+
+**A closed node is an active node**, in both branches. The complementarity function has a kink where
+its indicator vanishes -- :math:`p_I = 0` together with a gap that is zero up to the noise floor --
+and a semi-smooth Newton method may use any element of the generalized derivative there: Ito and
+Kunisch (2003, Proposition 1.1) give the derivative of :math:`\max(0, y)` as 1 for :math:`y > 0`, 0
+for :math:`y < 0` and an arbitrary :math:`\delta` at :math:`y = 0`. The choice is free for the
+convergence theory but not in practice. Putting the kink on the inactive side removes every closed
+node from the tangent, and a body carried by the contact alone then has a singular tangent whenever
+its gap is exactly closed -- at a cold start from a touching configuration, and at the start of every
+increment that follows a load-free one, which resolves an initial interference to exactly zero. The
+iteration usually recovers, but not without damage: measured on the self-weight cases of the contact
+study with C3D20R, the first Newton correction reached :math:`10^{10}`, and the cancellation that
+followed left rounding of order :math:`10^{-5}` in the near-zero-energy modes of the
+reduced-integrated elements -- a pressure scatter of 2 to 7 % on problems whose exact pressure is
+uniform, in the penalty branch AND the multiplier branch. With the kink on the active side the same
+runs are exact to round-off (below :math:`10^{-8}`) and take two Newton iterations per increment. The
+pressure is unaffected by the choice: a closed node keeps its spring in the tangent, but its pressure
+stays :math:`\max(0, p_\text{trial})`, and it is released as soon as the iteration opens it beyond
+the floor or, in the multiplier branch, produces a tensile multiplier.
 
 ``cn`` is purely algorithmic: the gap vanishes at an active node on convergence, so the converged
 solution is the same for every admissible value. Two properties of it are not obvious:
@@ -1022,6 +1041,10 @@ that a reader checking a single line does not have to reconstruct which work it 
   complementarity problems*, Mathematical Programming 75 (1996), 407--439.
 * M. Hintermüller, K. Ito, K. Kunisch: *The primal-dual active set strategy as a semismooth Newton
   method*, SIAM Journal on Optimization 13 (2002), 865--888.
+* K. Ito, K. Kunisch: *Semi-smooth Newton methods for variational inequalities of the first kind*,
+  ESAIM: Mathematical Modelling and Numerical Analysis 37 (2003), 41--62. -- Proposition 1.1: the
+  generalized derivative of the max operator, with an arbitrary value where its argument vanishes;
+  the basis for treating a closed node as active.
 * S. Hüeber, B. I. Wohlmuth: *A primal-dual active set strategy for non-linear multibody contact
   problems*, Computer Methods in Applied Mechanics and Engineering 194 (2005), 3147--3166. -- The
   lower end of the admissible band for the complementarity parameter, and its linear dependence on

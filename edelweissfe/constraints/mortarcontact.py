@@ -512,6 +512,23 @@ def isConvexPolygon(poly_2d, tol: float = 1e-14) -> bool:
     return True
 
 
+def isInsideReferenceElement(el, local_coords, tol: float = 1e-10) -> bool:
+    """Whether a natural coordinate lies in the element's reference domain (up to ``tol``).
+
+    Used to catch a Gauss point that the segmentation attributed to a facet which does not
+    contain it. The clipping works on the straight sub-cells of a facet (see _subCellMap), so
+    wherever a quadratic facet has a CURVED edge the region between the chord and the true edge
+    belongs to one facet geometrically and to its neighbour in the clipping. Mapped back into the
+    wrong facet, such a point lands outside the reference domain and its shape functions are
+    extrapolated rather than interpolated.
+    """
+    el_type = el.elType.upper()
+    if "TRI" in el_type:
+        xi, eta = local_coords[0], local_coords[1]
+        return xi >= -tol and eta >= -tol and xi + eta <= 1.0 + tol
+    return bool(np.all(np.abs(local_coords) <= 1.0 + tol))
+
+
 def getSubCells(el) -> list[list[int]]:
     """Return the linear sub-cell decomposition (local node indices) of a contact facet."""
     el_type = el.elType.upper()
@@ -1467,6 +1484,69 @@ class Constraint(ConstraintBase):
 
         return normals
 
+    def _nonMortarFacetNeighbours(self) -> dict:
+        """Per non-mortar facet number, the non-mortar facets sharing at least one node with it.
+
+        The facets a Gauss point can be re-attributed to on the non-mortar side (see
+        _containingFacet): the chord of a curved edge deviates from the edge by a fraction of the
+        facet size, so the point always lies in a facet of the one-ring. Built once; the topology
+        of the contact surfaces does not change.
+        """
+        if not hasattr(self, "_nonMortarNeighbourCache"):
+            byNode = {}
+            for f in self.nonMortarFacets:
+                for nd in f.nodes:
+                    byNode.setdefault(nd, []).append(f)
+            self._nonMortarNeighbourCache = {
+                f.elNumber: list(
+                    {g.elNumber: g for nd in f.nodes for g in byNode[nd] if g.elNumber != f.elNumber}.values()
+                )
+                for f in self.nonMortarFacets
+            }
+        return self._nonMortarNeighbourCache
+
+    @staticmethod
+    def _containingFacet(el, coords_2d, point_2d, alternatives, inPlane):
+        """The facet that contains a Gauss point of the segmentation, and its natural coordinate there.
+
+        The segmentation clips the straight sub-cells of the facets (see _subCellMap), and the
+        point is first mapped back into the facet whose sub-cell produced it. On a facet with
+        straight edges that facet contains the point. On a quadratic facet whose edges are CURVED
+        in the surface -- an O-grid, a circular mesh, or any quadratic mesh that has been
+        distorted -- it need not: the sliver between the chord and the true edge belongs to the
+        neighbouring facet, and the back-mapping into the wrong facet returns a natural
+        coordinate outside the reference domain, i.e. shape functions extrapolated beyond the
+        element. Measured on the crossed-interface patch test of the contact study (quadratic
+        hexahedra, 60 degrees): 6.9 % of the mortar-side Gauss points, up to |xi| = 1.17, and a
+        mortar-side consistency error max|C^T 1 - int N_m| / max|int N_m| of 1.0e-2 that no
+        quadrature order removes, since it is the attribution and not the integration that is
+        wrong. Re-attributed, the error drops to 2.2e-3, and the remainder is quadrature of the
+        triangles that straddle the curved edge (6.5e-5 with a 16-fold subdivided rule). On
+        full-integration C3D20 the patch-test pressure scatter goes from 5.6e-3 to 1.9e-3. (With
+        C3D20R the scatter stays at about 3 % either way: the reduced-integrated serendipity
+        element with curved edges does not pass the patch test by itself -- its reactions to a
+        uniform stress miss the consistent face loads by 3.1 %, with no contact in the model.)
+        Such a point is re-attributed to the facet among ``alternatives`` that contains it.
+
+        Returns ``(facet, natural coordinate, converged, moved)``, or ``(None, None, False,
+        False)`` if the point provably lies outside every facet -- which happens only beyond the
+        curved boundary of a surface, where there is nothing to integrate. A back-mapping that
+        did not converge proves nothing; such a point stays with its original facet and is
+        reported through the projection-failure diagnostic, exactly as before.
+        """
+        local, ok = mapPlaneToNatural(el, coords_2d, point_2d)
+        if ok and isInsideReferenceElement(el, local):
+            return el, local, ok, False
+        for other in alternatives:
+            if other is el:
+                continue
+            local_o, ok_o = mapPlaneToNatural(other, inPlane(other), point_2d)
+            if ok_o and isInsideReferenceElement(other, local_o):
+                return other, local_o, ok_o, True
+        if not ok:
+            return el, local, ok, False
+        return None, None, False, False
+
     def computeMortarCouplingMatrices(self, U_np: np.ndarray = None) -> tuple[np.ndarray, np.ndarray]:
         """Compute the global mortar coupling matrices D (slave-slave) and C (slave-master).
         Supports both 2D and 3D contact elements.
@@ -1520,6 +1600,12 @@ class Constraint(ConstraintBase):
         n_proj_failed = 0
         first_proj_failure = None
 
+        # Gauss points re-attributed to the facet that actually contains them, and Gauss points
+        # that no facet contains -- see _containingFacet. Diagnostic; kept for the tests.
+        self.lastReattributedGaussPoints = 0
+        self.lastDroppedGaussPoints = 0
+        slave_neighbours = self._nonMortarFacetNeighbours()
+
         for s_el in self.nonMortarFacets:
             s_nodes = s_el.nodes
 
@@ -1552,6 +1638,17 @@ class Constraint(ConstraintBase):
 
                     s_sub_2d = toPlaneCoordinates(sc_coords, p0, t1, t2)
                     s_full_2d = toPlaneCoordinates(s_coords, p0, t1, t2)
+
+                    # Facets projected into THIS auxiliary plane, computed only when a Gauss
+                    # point has to be re-attributed (see _containingFacet).
+                    plane_cache = {}
+
+                    def inPlane(el, _cache=plane_cache, _p0=p0, _t1=t1, _t2=t2):
+                        if el.elNumber not in _cache:
+                            _cache[el.elNumber] = toPlaneCoordinates(
+                                np.array([current_coords[nd] for nd in el.nodes]), _p0, _t1, _t2
+                            )
+                        return _cache[el.elNumber]
 
                     # The slave sub-cell is the CLIP polygon, so it must be convex
                     # (see isConvexPolygon). For CONQUAD8 this requires the
@@ -1607,27 +1704,46 @@ class Constraint(ConstraintBase):
                                     L1, L2 = gp[0], gp[1]
                                     x_gp_2d = (1.0 - L1 - L2) * v0 + L1 * v1 + L2 * v2
 
-                                    local_s, ok_s = mapPlaneToNatural(s_el, s_full_2d, x_gp_2d)
-                                    local_m, ok_m = mapPlaneToNatural(m_el, m_full_2d, x_gp_2d)
+                                    # The clipping ran on straight sub-cells, so the point
+                                    # need not lie in the two facets whose sub-cells produced
+                                    # it (see isInsideReferenceElement); _containingFacet finds
+                                    # the facets that do contain it.
+                                    rec_s, local_s, ok_s, moved_s = self._containingFacet(
+                                        s_el, s_full_2d, x_gp_2d, slave_neighbours[s_el.elNumber], inPlane
+                                    )
+                                    rec_m, local_m, ok_m, moved_m = self._containingFacet(
+                                        m_el, m_full_2d, x_gp_2d, candidates, inPlane
+                                    )
+                                    if rec_s is None or rec_m is None:
+                                        # On neither side a facet contains the point: it lies
+                                        # beyond the curved boundary of a surface, where there
+                                        # is no contact area to integrate.
+                                        self.lastDroppedGaussPoints += 1
+                                        continue
+                                    if moved_s or moved_m:
+                                        self.lastReattributedGaussPoints += 1
                                     if not ok_s:
                                         n_proj_failed += 1
                                         if first_proj_failure is None:
-                                            first_proj_failure = ("slave", s_el.elNumber, s_el.elType)
+                                            first_proj_failure = ("slave", rec_s.elNumber, rec_s.elType)
                                     if not ok_m:
                                         n_proj_failed += 1
                                         if first_proj_failure is None:
-                                            first_proj_failure = ("master", m_el.elNumber, m_el.elType)
+                                            first_proj_failure = ("master", rec_m.elNumber, rec_m.elType)
 
-                                    N_s = s_el.getShapeFunctions(local_s)
-                                    N_m = m_el.getShapeFunctions(local_m)
+                                    N_s = rec_s.getShapeFunctions(local_s)
+                                    N_m = rec_m.getShapeFunctions(local_m)
 
-                                    s_num = s_el.elNumber
+                                    s_num = rec_s.elNumber
                                     if s_num not in seg_records:
                                         seg_records[s_num] = []
                                         seg_masters[s_num] = {}
-                                        slave_els[s_num] = (s_el, s_idx)
-                                    seg_records[s_num].append((N_s, m_el.elNumber, N_m, area_jac * w))
-                                    seg_masters[s_num][m_el.elNumber] = m_el
+                                        slave_els[s_num] = (
+                                            rec_s,
+                                            np.array([self.nonMortarNodeToIndex[nd] for nd in rec_s.nodes]),
+                                        )
+                                    seg_records[s_num].append((N_s, rec_m.elNumber, N_m, area_jac * w))
+                                    seg_masters[s_num][rec_m.elNumber] = rec_m
 
                 else:
                     # 2D line segment Mortar integration
@@ -1994,17 +2110,44 @@ class Constraint(ConstraintBase):
                 # check perturb the state without the branch flipping underneath it,
                 # and what a deliberately tied (bilateral) contact would use.
                 if self.useActiveSet:
-                    # Against the noise floor of the gap the pressure is made from, not against
-                    # zero - see currentGapTolerance. Once the augmentation carries a real pressure the
-                    # shift is immaterial: it moves the release point by kappa*currentGapTolerance,
-                    # which is 1e-7 against pressures of order 10 in the deck this was measured on.
-                    self.activeSet[I] = bool(p_trial > kappa_I * self.currentGapTolerance)
+                    # A CLOSED node is an active node. The branch test is against the noise floor
+                    # of the gap the pressure is made from (see currentGapTolerance), and the band
+                    # |g_pen| <= currentGapTolerance -- a gap that is zero up to the rounding of the
+                    # geometry -- counts as closed, not as open.
+                    #
+                    # The penalty law p = max(0, p_trial) has a kink at p_trial = 0, and a
+                    # semi-smooth Newton method may use ANY element of its generalized derivative
+                    # there: Ito & Kunisch (2003), Proposition 1.1, give the generalized derivative
+                    # of max(0, y) as 1 for y > 0, 0 for y < 0 and an ARBITRARY delta at y = 0,
+                    # proved in Hintermueller, Ito & Kunisch (2002). The choice is free for convergence
+                    # theory and anything but free in practice. Taking 0 -- which is what the
+                    # test `p_trial > kappa*tol` did -- removes every closed node from the
+                    # tangent, and a body carried by the contact alone then has a singular
+                    # tangent the moment its gap is exactly closed: at a cold start from a
+                    # touching configuration, and at the start of every increment after a
+                    # load-free one, which resolves an initial interference to EXACTLY zero.
+                    # Measured on the two-block self-weight case of the contact study (C3D20R,
+                    # conforming): all 65 nodes inactive at the start of increment 1, a first
+                    # Newton correction of 2e+10, and although the iteration recovers, the
+                    # cancellation leaves rounding of order 1e-5 in the near-zero-energy modes of
+                    # the reduced-integrated elements -- a 5-7 % pressure scatter, a non-planar
+                    # interface and lateral displacements, on a problem whose exact solution is
+                    # a uniform pressure. With the kink assigned to the active side the tangent
+                    # keeps the contact spring and the same run is exact to round-off.
+                    #
+                    # The pressure itself stays max(0, p_trial): a closed node carries the
+                    # stiffness but no tension. Inside the band that makes the tangent differ
+                    # from the residual by at most kappa*currentGapTolerance, which is the noise
+                    # floor itself.
+                    # kappa_I > 0: a node without coverage has no spring at all (see
+                    # _nodalPenaltyStiffness) and is not closed but absent.
+                    self.activeSet[I] = bool(kappa_I > 0.0 and p_trial >= -kappa_I * self.currentGapTolerance)
 
                 if not self.activeSet[I]:
                     self.nodalMultipliers[I] = 0.0
                     continue
 
-                lambda_I = p_trial * sgn_D
+                lambda_I = max(p_trial, 0.0) * sgn_D
                 self.nodalMultipliers[I] = lambda_I
 
                 # The whole nodal contribution is rank one. With the weights
@@ -2065,8 +2208,22 @@ class Constraint(ConstraintBase):
                 # vanishes - but only the length-valued form makes c_n*g_sep a
                 # pressure comparable to p_n, and only for it is the recommendation
                 # c_n ~ O(E) dimensionally meaningful.
+                #
+                # The branch at the kink s_n = 0 is a choice as well, and the same one the
+                # penalty branch makes (see there): a CLOSED node with no pressure yet --
+                # lambda = 0 and a gap that is zero up to the rounding of the geometry -- is
+                # put on the ACTIVE side. Any element of the generalized derivative is
+                # admissible for the semi-smooth Newton method at the kink (Ito & Kunisch 2003,
+                # Proposition 1.1: an arbitrary delta where the argument of max vanishes), but only this one
+                # keeps a body that is carried by the contact alone from having a singular
+                # tangent when it starts exactly touching: with `s_n > 0` every node of such a
+                # start is inactive, its multiplier row decouples, and the first Newton
+                # correction of the single-block self-weight case of the contact study was
+                # 1.4e+10. The iteration recovers, but the cancellation leaves a 1.7-2.4 %
+                # pressure scatter on C3D20R where the exact pressure is uniform. The band is
+                # the noise floor of the weighted gap, carried over to the opening g_sep.
                 s_n = p_n - self.c_n * g_sep
-                self.activeSet[I] = bool(s_n > 0.0)
+                self.activeSet[I] = bool(s_n > -self.c_n * self.currentGapTolerance * abs(inv_D))
 
             # Assembly in the literature sign convention (lambda_n >= 0 in
             # compression). Throughout, K = -dPExt/dU, which is what makes the
