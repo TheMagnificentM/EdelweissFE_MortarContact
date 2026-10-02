@@ -165,11 +165,13 @@ makes their results directly comparable.
     check the contact pressures as well as the displacements.
 
 ``penalty``
-    The multipliers are eliminated in favour of a pressure proportional to the weighted gap. Note
-    the unit of that proportionality: the weighted gap carries length times area, so it is not the
-    penalty parameter of a pointwise formulation and cannot be chosen by the same rules of thumb.
-    The two are related through the nodal weight. The weighted form is used because it needs no
-    division by that weight, which cannot be assumed to stay away from zero.
+    The multipliers are eliminated in favour of a pressure proportional to the penetration. The
+    weighted gap carries length times area, so the stiffness that multiplies it is divided by the
+    nodal weight, node by node: the pressure is then :math:`\varepsilon_N` times the pointwise
+    penetration, and ``penaltyStiffness`` is the same pointwise quantity, in the same unit, as the
+    ``penalty`` of the node- and segment-based penalty constraints, chosen by the same rules of
+    thumb. The division is applied to the stiffness rather than to the gap, because the weight
+    cannot be assumed to stay away from zero; see *The law is a pointwise one* below.
 
 ``penalty`` with ``augmentedLagrange``
     The pressure estimate is corrected in an outer loop that runs after each converged equilibrium
@@ -628,8 +630,9 @@ Choosing the parameters
   unequal extent it is the most consequential one on this list. Put the SMALLER surface there. Every
   one of its facets is then fully covered and no boundary row arises at all. With the sides the
   other way round, a surface that ends while still transmitting pressure produces them in numbers:
-  measured on a half-width punch, nodes outside the punch take 7 % of the transmitted force, rising
-  to 21 % under eightfold refinement. See the section on the choice of sides.
+  measured on a half-width punch, nodes outside the punch take 7 % of the transmitted force,
+  falling to 2 % under eightfold refinement, in all three formulations alike. See the section on the
+  choice of sides.
 
 * **Element type.** ``CONQUAD8`` is the quadratic surface element to prefer. ``CONQUAD9`` receives
   no basis transformation -- its corner integrals are already positive, so it needs none for the
@@ -936,18 +939,24 @@ Force reaching nodes outside a contact surface that ends under pressure
     node is constrained exactly like a fully covered one regardless of coverage: coverage sets how
     the contact force is distributed, never whether a node is tied.
 
-    Measured on a half-width punch: 7 % of the transmitted force lands on nodes outside the punch,
-    and the share GROWS under refinement -- 14 % at twice the resolution, 18 % at four times, 21 % at
-    eight. The total force is unaffected, being fixed by equilibrium; what is wrong is where it
-    ends up. The constraint itself is satisfied exactly throughout, the normalised gap at such a
-    node measuring :math:`-2 \cdot 10^{-16}`, as at every other node.
+    Measured on a half-width punch (the geometry of ``MortarContactPunchEdge`` with the sides
+    exchanged, hexa8): 7.1 % of the transmitted force lands on nodes outside the punch, and the share
+    falls under uniform refinement -- 5.0 % at twice the resolution, 3.3 % at four times, 2.2 % at
+    eight. It falls, but slowly, roughly with the square root of the element size. The total force
+    is unaffected, being fixed by equilibrium; what is wrong is where it ends up. The constraint
+    itself is satisfied exactly throughout, the normalised gap at such a node measuring
+    :math:`-2 \cdot 10^{-16}`, as at every other node.
 
-    Three things bound the problem. It is confined to ``formulation=lagrange``: under penalty the
-    pressure is proportional to the penetration, so a sliver carries a sliver's force, and the same
-    model misplaces :math:`3 \cdot 10^{-9}` instead of 7 %. It requires the pressure to be at full
-    value where the surface ends, so a contact that tapers off between curved bodies is unaffected --
-    a cylindrical indenter measured 0 at every refinement. And it does not arise at all when the
-    smaller surface is the non-mortar one, which is the remedy named above.
+    It is NOT confined to ``formulation=lagrange``. Since the penalty law is pointwise, a node on a
+    sliver carries the pressure its penetration gives it, not a sliver's share of it, and the same
+    model misplaces 7.08 % with ``penalty`` and with ``augmentedLagrange`` alike, and the share
+    does not move over five decades of :math:`\varepsilon_N` (7.1 % at :math:`10^5` to 7.08 % at
+    :math:`10^9`; only a very soft :math:`10^4` gives 7.7 %).
+
+    Two things bound the problem. It requires the pressure to be at full value where the surface
+    ends, so a contact that tapers off between curved bodies is unaffected -- a cylindrical
+    indenter measured 0 at every refinement. And it does not arise at all when the smaller surface
+    is the non-mortar one, which is the remedy named above.
 
     No treatment of it is implemented. The weighting of the boundary rows does not address it and
     cannot: a rescaling of the constraint leaves the solution invariant, and it is the solution that
