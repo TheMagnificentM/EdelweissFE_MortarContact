@@ -37,6 +37,7 @@ from edelweissfe.config.phenomena import getFieldSize
 from edelweissfe.constraints.base.constraintbase import ConstraintBase
 from edelweissfe.journal.journal import Journal
 from edelweissfe.models.femodel import FEModel
+from edelweissfe.sets.nodeset import NodeSet
 from edelweissfe.timesteppers.timestep import TimeStep
 from edelweissfe.utils.caseinsensitivedict import CaseInsensitiveDict
 from edelweissfe.utils.mortargeometry import (
@@ -131,7 +132,20 @@ nodal normals, and the coupling matrices:
 COULOMB FRICTION (``mu > 0``) is available for ``penalty`` only, with or without the augmentation,
 under the implicit and the explicit solvers: a tangential penalty stick predictor from the converged
 nodal traction and the mortar-weighted slip increment, and a radial return onto ``|t_T| <= mu p``.
-See :meth:`Constraint._assembleFriction`.
+See :meth:`Constraint._assembleFriction` for the law, :meth:`Constraint._carryFrictionHistory` for
+the objective correction of the slip at each geometry rebuild, and
+:meth:`Constraint._freezeSlipStateIfChattering` for the anti-chattering rule of the implicit
+iteration.
+
+RESULTS PER NON-MORTAR NODE are published for output. The constraint registers the node set
+``<name>_nonMortarNodes`` (in the order of the contact system), so that the accessors
+:meth:`Constraint.getNormalPressures`, :meth:`Constraint.getTangentialTractions`,
+:meth:`Constraint.getSlipStates` and :meth:`Constraint.getGaps` can be requested as a
+``fromExpression`` field output over that set and exported to Ensight like any nodal result::
+
+    *fieldOutput
+    >>fromExpression, name=pN, nSet=contact_nonMortarNodes,
+    expression='model.constraints["contact"].getNormalPressures()'
 
 The multipliers of the saddle-point form are NOT condensed out of the system. Doing so correctly
 requires a Schur complement of the already assembled non-mortar displacement row -- which carries the
@@ -310,6 +324,13 @@ class MortarContactSchema:
 #: frictional history is still rotated into the new tangent plane rather than discarded; the same
 #: 30 degrees the node-to-surface friction uses.
 _cosOfNormalChangeLimitForFriction = np.cos(np.deg2rad(30.0))
+
+#: Anti-chattering of the stick/slip state in the implicit iteration (see
+#: Constraint._freezeSlipStateIfChattering). Newton iterations of an increment that are always left
+#: alone, so that the predictor and the first corrections may move the state freely ...
+_slipStateFreeIterations = 3
+#: ... and the iteration from which ANY further change of the state freezes it, recurring or not.
+_slipStateFreezeIteration = 6
 
 
 def mapPlaneToNatural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
@@ -907,6 +928,29 @@ class Constraint(ConstraintBase):
         self.frictionTractionConverged = np.zeros((self.nNonMortarNodes, model.domainSize))
         self.frictionTractionCurrent = np.zeros((self.nNonMortarNodes, model.domainSize))
         self.slipState = np.zeros(self.nNonMortarNodes, dtype=int)
+        # The pressure and the contact status that went with the accepted traction. They bound the
+        # history when it is carried into a rebuilt geometry (_carryFrictionHistory), which happens
+        # before the new increment has assembled a pressure of its own.
+        self._frictionPressureCurrent = np.zeros(self.nNonMortarNodes)
+        self.frictionPressureConverged = np.zeros(self.nNonMortarNodes)
+        self.frictionActiveConverged = np.zeros(self.nNonMortarNodes, dtype=bool)
+        # The pointwise weighted gap VECTOR of every non-mortar node, sum_K D_IK x_K - sum_J C_IJ x_J
+        # over |D_II|, as of the last geometry rebuild; NaN where it was not defined. Its change from
+        # one rebuild to the next is what turns the frozen slip into the objective one.
+        self.frictionGapReference = np.full((self.nNonMortarNodes, model.domainSize), np.nan)
+        # Predictor magnitude and cone radius of the last assembly, for the admissibility check of a
+        # frozen stick/slip state.
+        self._frictionTrialMagnitude = np.zeros(self.nNonMortarNodes)
+        self._frictionSlipLimit = np.zeros(self.nNonMortarNodes)
+        # Anti-chattering of the implicit iteration, reset per increment attempt.
+        self.slipStateFrozen = False
+        self._frozenSlip = np.zeros(self.nNonMortarNodes, dtype=bool)
+        self._seenSlipStates = set()
+        self._lastSlipState = None
+        #: How many increments needed the stick/slip state frozen; a diagnostic only.
+        self.slipStateFreezeCount = 0
+
+        self._publishNonMortarNodeSet(model)
 
         # NOTE: self._warned is initialized at the very top of __init__, because the
         # input checks above already emit diagnostics through it. Every assumption
@@ -938,6 +982,33 @@ class Constraint(ConstraintBase):
             # No journal: a constraint constructed directly rather than from an input file. The
             # diagnostic is worth more than the channel, so it still goes out.
             warnings.warn(f"MortarContact {text}", RuntimeWarning, stacklevel=3)
+
+    def _publishNonMortarNodeSet(self, model: FEModel):
+        """Register the non-mortar nodes, in the order of the contact system, as ``<name>_nonMortarNodes``.
+
+        This is the set the per-node accessors (:meth:`getNormalPressures` and its siblings) line up
+        with, so that a ``fromExpression`` field output over it -- and an Ensight ``>>perNode`` export
+        of that output -- needs no reordering. Ensight also gives every node set its own part, so the
+        contact zone shows up in a post-processor without any field output at all.
+
+        A set of that name that already exists is left alone and reported: it may be the user's own,
+        and overwriting it would silently change what another output refers to.
+        """
+
+        setName = f"{self._name}_nonMortarNodes"
+        self.nonMortarNodeSetName = setName
+        nodeSets = getattr(model, "nodeSets", None)
+        if nodeSets is None:
+            return
+        if setName in nodeSets:
+            self._warnOnce(
+                "node_set_exists",
+                f"the node set '{setName}' already exists, so the non-mortar nodes are not published under "
+                f"that name. A fromExpression output of this constraint's nodal results needs a set in the "
+                f"order of the contact system; rename the existing set to get one.",
+            )
+            return
+        nodeSets[setName] = NodeSet(setName, list(self.nonMortarNodes))
 
     @staticmethod
     def _collectFacets(model: FEModel, elementSetName: str, side: str) -> list:
@@ -2235,6 +2306,9 @@ class Constraint(ConstraintBase):
                         # An open node carries no traction, and its history goes with it.
                         self.frictionTractionCurrent[I] = 0.0
                         self.slipState[I] = 0
+                        self._frictionPressureCurrent[I] = 0.0
+                        self._frictionTrialMagnitude[I] = 0.0
+                        self._frictionSlipLimit[I] = 0.0
                     continue
 
                 lambda_I = max(p_trial, 0.0) * sgn_D
@@ -2363,6 +2437,8 @@ class Constraint(ConstraintBase):
         #      are a linear solve on the fixed set.
         # A hard iteration cap remains as a final safeguard.
         self._freezeActiveSetIfSettled(penalty, timeStep)
+        if friction:
+            self._freezeSlipStateIfChattering()
         self._reportThinlyCoveredNodes(timeStep)
 
     def _freezeActiveSetIfSettled(self, penalty: bool, timeStep: TimeStep):
@@ -2547,12 +2623,21 @@ class Constraint(ConstraintBase):
         current tangent plane (Puso et al. 2008, Eq. 19), which costs nothing and keeps the history
         tangential across geometry rebuilds.
 
-        THE SLIP MEASURE IS THE FROZEN-GEOMETRY ONE, ``D dU_s - C dU_m`` with D, C and n held at the
-        last converged state, not the fully objective ``(D_n+1 - D_n) x_s - (C_n+1 - C_n) x_m`` of
-        Yang et al. (2005), Eq. (47). It is consistent with how the normal part is treated -- the
-        assembled tangent is exact for the residual that is assembled -- and the two differ by the
-        tangential part of the change of the weighted gap VECTOR over the increment, which is small
-        as long as the penalty gap is.
+        WITHIN AN INCREMENT THE SLIP IS THE FROZEN-GEOMETRY ONE, ``D dU_s - C dU_m`` with D, C and n
+        held at the last converged state, so that the assembled tangent is exact for the residual
+        that is assembled, as for the normal part. It is not objective on its own: a rigid rotation
+        theta of a penetrating pair turns the weighted gap vector g and reads as a slip
+        ``P_T (R - I) g``, i.e. a spurious traction of about ``(eps_T/eps_N) theta p``. The objective
+        slip of Yang et al. (2005), Eq. (47), ``-(D_n+1 - D_n) x_s + (C_n+1 - C_n) x_m``, differs
+        from it by exactly the change of the gap vector, and the coupling matrices of the end of the
+        increment are what the next rebuild computes -- so :meth:`_carryFrictionHistory` removes that
+        difference from the accepted history there. The error is then that of the frozen normal,
+        first order in one increment and not accumulated over many.
+
+        ANTI-CHATTERING. Once :meth:`_freezeSlipStateIfChattering` has frozen the state of the
+        increment, a node that was slipping is kept slipping, while a sticking node may still go to
+        slip. The state can then only change in one direction and the iteration terminates; no
+        frozen state lets a traction leave the cone.
 
         Nodal forces are ``PExt_a += w_a t``, the gradient of the convex stick energy
         ``1/2 kappa_T |P_T s|^2``, so the sign of D_II needs no special treatment here: only its
@@ -2591,8 +2676,15 @@ class Constraint(ConstraintBase):
 
         slipLimit = self.mu * p
         trialMagnitude = float(np.linalg.norm(trial))
+        slipping = trialMagnitude > slipLimit
+        if self.slipStateFrozen and self._frozenSlip[I] and trialMagnitude > 0.0:
+            slipping = True
 
-        if trialMagnitude <= slipLimit:
+        self._frictionPressureCurrent[I] = p
+        self._frictionTrialMagnitude[I] = trialMagnitude
+        self._frictionSlipLimit[I] = slipLimit
+
+        if not slipping:
             traction = trial
             self.slipState[I] = 1
             K[np.ix_(idcs, idcs)] += np.kron(np.outer(w, w), kappaT_I * projector)
@@ -2609,6 +2701,134 @@ class Constraint(ConstraintBase):
         self.frictionTractionCurrent[I] = traction
         PExt[idcs] += np.kron(w, traction)
 
+    def _freezeSlipStateIfChattering(self):
+        """Freeze the stick/slip state of this increment once it chatters.
+
+        Coulomb friction is a non-smooth law, and a Newton iteration on it can flip nodes near the
+        boundary of the cone back and forth between stick and slip without ever settling -- the
+        chattering that the multiplier-based friction of the earlier branches never got rid of. The
+        rule here, applied per increment attempt and reset with it:
+
+        * the first ``_slipStateFreeIterations`` (3) iterations are always free: the predictor and
+          the first corrections legitimately move many nodes at once;
+        * after that, a state that RECURS after a change -- a proven cycle, since there are only
+          finitely many states -- freezes it at once;
+        * from iteration ``_slipStateFreezeIteration`` (6) on, any change at all freezes it. The
+          friction decks of the test suite settle within five iterations, so this only fires on an
+          increment that is genuinely struggling.
+
+        Frozen means: a slipping node stays slipping for the rest of the increment, a sticking node
+        may still go to slip (see :meth:`_assembleFriction`). That direction is the safe one -- a
+        frozen stick could carry a traction outside the cone, a force no Coulomb contact can exert --
+        and because the state can then only move one way, the iteration terminates. The price is
+        that a node held in slip whose predictor has fallen back inside the cone carries mu*p where
+        stick would carry less; :meth:`acceptLastState` measures that and reports it.
+        """
+
+        if self.slipStateFrozen:
+            # Monotone from here: a node that has gone to slip under the freeze stays there too.
+            self._frozenSlip |= self.slipState == 2
+            return
+
+        state = self.slipState.tobytes()
+        changed = self._lastSlipState is not None and state != self._lastSlipState
+        cycle = changed and state in self._seenSlipStates
+        self._seenSlipStates.add(state)
+        self._lastSlipState = state
+
+        iteration = self.currentIteration
+        if (cycle and iteration >= _slipStateFreeIterations) or (changed and iteration >= _slipStateFreezeIteration):
+            self.slipStateFrozen = True
+            self._frozenSlip[:] = self.slipState == 2
+            self.slipStateFreezeCount += 1
+
+    def _carryFrictionHistory(self, U_ref: np.ndarray, previousNormals: np.ndarray | None):
+        """Carry the accepted tangential tractions into a rebuilt geometry, with the objective slip.
+
+        Within an increment the slip is measured on the frozen geometry (see
+        :meth:`_assembleFriction`). Between two rebuilds that measure sums to
+
+            sum s_frozen = D_old (x_new - x_old)_s - C_old (x_new - x_old)_m ,
+
+        while the objective slip of Yang, Laursen & Meng (2005), Eq. (47), integrated over the same
+        interval, is ``-(D_new - D_old) x_new,s + (C_new - C_old) x_new,m``. Their difference is
+        exactly the change of the weighted gap VECTOR ``g = D x_s - C x_m`` from one rebuild to the
+        next, which both sides of it can compute. The accepted traction is therefore corrected by
+
+            t  <-  P_T,new ( t + eps_T (g_new/|D_II,new| - g_old/|D_II,old|) ) ,
+
+        and returned onto the cone of the accepted pressure if that takes it outside. The pointwise
+        normalisation by |D_II| is the one the traction carries throughout (kappa_T = eps_T/|D_II|).
+
+        What it removes is the spurious slip of a rotation: a rigidly rotating, penetrating pair
+        keeps D and C and turns g, and the frozen measure reads the turn as a slip of the penalty
+        gap. Under a pure slide of a flat pair g does not change and the correction is zero, so a
+        genuine slip is left as it was measured.
+
+        Two nodes are not carried. A node whose normal turned by more than 30 degrees across the
+        rebuild -- a crease of the mortar side -- loses its history, since projecting it would drop
+        the part that now points along the new normal and leave a predictor unrelated to the
+        frictional state; it enters like a fresh contact, which is harmless where it matters (a
+        sticking node does not cross a crease, a slipping one is returned onto the cone within the
+        increment). A node whose gap vector is not defined on both sides of the rebuild -- no weight,
+        or not in contact at the accepted state -- is left as it is.
+
+        Repeating a rebuild at the same configuration, as a cutback re-attempt may, changes nothing,
+        since the reference gap vector is updated here as well.
+
+        Parameters
+        ----------
+        U_ref
+            The configuration the geometry was just rebuilt at, the last accepted one.
+        previousNormals
+            The nodal normals of the previous rebuild, ``None`` at the first.
+        """
+
+        nSlave = self.nNonMortarNodes
+        dim = self.model.domainSize
+        sf = self.sizeField
+        nNodes = len(self._nodes)
+        coords = self._X + U_ref[: sf * nNodes].reshape(nNodes, sf)[:, :dim]
+        x_slave, x_master = coords[:nSlave], coords[nSlave:]
+
+        weights = np.abs(np.asarray(self.currentNodalWeights, dtype=float))
+        gap = np.full((nSlave, dim), np.nan)
+        for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
+            if weights[I] <= self.currentWeightTolerance:
+                continue
+            nzD, nzC = self.currentDNonzero[I], self.currentCNonzero[I]
+            g = np.zeros(dim)
+            if len(nzD):
+                g += self.currentDRow[I] @ x_slave[nzD]
+            if len(nzC):
+                g -= self.currentCRow[I] @ x_master[nzC]
+            gap[I] = g / weights[I]
+
+        previousGap = self.frictionGapReference.copy()
+        self.frictionGapReference[:] = gap
+
+        if previousNormals is not None:
+            turned = np.einsum("ij,ij->i", previousNormals, self.currentNormals) < _cosOfNormalChangeLimitForFriction
+            self.frictionTractionConverged[turned] = 0.0
+        else:
+            turned = np.zeros(nSlave, dtype=bool)
+
+        defined = ~np.isnan(gap[:, 0]) & ~np.isnan(previousGap[:, 0])
+        carried = np.flatnonzero(defined & self.frictionActiveConverged & ~turned)
+        if not len(carried):
+            return
+
+        epsT = self._tangentPenaltyStiffness()
+        for I in carried:  # noqa: E741
+            n_I = self.currentNormals[I]
+            traction = self.frictionTractionConverged[I] + epsT * (gap[I] - previousGap[I])
+            traction -= (traction @ n_I) * n_I
+            limit = self.mu * self.frictionPressureConverged[I]
+            magnitude = float(np.linalg.norm(traction))
+            if magnitude > limit:
+                traction *= limit / magnitude
+            self.frictionTractionConverged[I] = traction
+
     def acceptLastState(self):
         """Promote the tangential tractions of the converged iterate to the frictional history.
 
@@ -2616,28 +2836,107 @@ class Constraint(ConstraintBase):
         accepted -- after the augmented outer loop, if any, has finished -- and under explicit
         dynamics after every time step. A cutback never reaches it, so the history of a failed
         attempt cannot leak into the next one.
+
+        If the stick/slip state was frozen in this increment, the accepted state is also checked for
+        what the freeze may have cost: a node held in slip whose predictor lies inside the cone
+        should have stuck, and carries mu*p instead of the smaller stick traction. That is reported
+        once, with the worst ratio, rather than refused -- the traction is still on the cone.
         """
 
-        if self.friction:
-            self.frictionTractionConverged[:] = self.frictionTractionCurrent
+        if not self.friction:
+            return
+        self.frictionTractionConverged[:] = self.frictionTractionCurrent
+        self.frictionPressureConverged[:] = self._frictionPressureCurrent
+        self.frictionActiveConverged[:] = self.slipState > 0
+
+        if self.slipStateFrozen:
+            heldInSlip = np.flatnonzero(
+                (self.slipState == 2)
+                & (self._frictionSlipLimit > 0.0)
+                & (self._frictionTrialMagnitude < (1.0 - 1e-3) * self._frictionSlipLimit)
+            )
+            if len(heldInSlip):
+                worst = float(np.min(self._frictionTrialMagnitude[heldInSlip] / self._frictionSlipLimit[heldInSlip]))
+                self._warnOnce(
+                    "slip_state_frozen_inadmissible",
+                    f"the stick/slip state chattered and was frozen, and {len(heldInSlip)} node(s) were "
+                    f"accepted in slip although their stick predictor lies inside the friction cone (down "
+                    f"to {worst:.3f} of mu*p). Those nodes carry the full friction mu*p where stick would "
+                    f"carry less; the traction never exceeds the cone. Smaller increments, or a smaller "
+                    f"tangentPenalty, remove it.",
+                )
+
+    def getNormalPressures(self) -> np.ndarray:
+        """The contact pressure of each non-mortar node, >= 0 in compression, as of the last assembly.
+
+        Ordered like the node set ``<name>_nonMortarNodes`` (see :meth:`_publishNonMortarNodeSet`).
+        In the penalty branch it is eps_N times the pointwise penetration (plus the augmented
+        estimate); in the multiplier branch it is the multiplier, with the sign of the nodal weight
+        taken out.
+        """
+
+        weights = getattr(self, "currentNodalWeights", None)
+        sign = np.sign(weights) if weights is not None else np.ones(self.nNonMortarNodes)
+        return self.nodalMultipliers * np.where(sign == 0.0, 1.0, sign)
+
+    def getTangentialTractions(self) -> np.ndarray:
+        """The frictional traction of each non-mortar node, a pressure-valued vector in global
+        components, as of the last assembly; zero without friction.
+
+        It is the traction the MORTAR side exerts on the non-mortar side, i.e. it points along the
+        motion of the mortar body relative to the non-mortar one. Ordered like
+        ``<name>_nonMortarNodes``.
+        """
+
+        return self.frictionTractionCurrent.copy()
+
+    def getSlipStates(self) -> np.ndarray:
+        """The stick/slip state of each non-mortar node as of the last assembly, as a float for output:
+        0 open, 1 stick, 2 slip. Ordered like ``<name>_nonMortarNodes``. Always 0 without friction."""
+
+        return self.slipState.astype(float)
+
+    def getGaps(self) -> np.ndarray:
+        """The pointwise normal opening of each non-mortar node, ``g_I / D_II``: positive open,
+        negative penetrating, 0 where the node has no weight. Ordered like ``<name>_nonMortarNodes``."""
+
+        weights = getattr(self, "currentNodalWeights", None)
+        if weights is None:
+            return np.zeros(self.nNonMortarNodes)
+        covered = np.abs(weights) > self.currentWeightTolerance
+        return np.divide(self.currentWeakGap, weights, out=np.zeros(self.nNonMortarNodes), where=covered)
 
     def getRestartData(self) -> dict[str, np.ndarray] | None:
         """The converged frictional history and augmented pressure estimate.
 
         Everything else -- the frozen geometry, the active set, the derived stiffnesses -- is rebuilt
-        from the restored solution at the first assembly after a restart.
+        from the restored solution at the first assembly after a restart. The reference gap vector
+        comes along so that the objective correction of the first rebuild after the restart has
+        something to compare against.
         """
 
         return {
             "frictionTractionConverged": self.frictionTractionConverged,
+            "frictionPressureConverged": self.frictionPressureConverged,
+            "frictionActiveConverged": self.frictionActiveConverged.astype(float),
+            "frictionGapReference": self.frictionGapReference,
             "augmentedMultipliersConverged": self.augmentedMultipliersConverged,
         }
 
     def setRestartData(self, data: dict[str, np.ndarray]):
-        """Restore the converged frictional history and augmented pressure estimate."""
+        """Restore the converged frictional history and augmented pressure estimate.
+
+        A checkpoint written before the objective slip correction existed holds only the traction;
+        the correction then starts at the first rebuild after the restart instead.
+        """
 
         self.frictionTractionConverged[:] = data["frictionTractionConverged"]
         self.frictionTractionCurrent[:] = data["frictionTractionConverged"]
+        if "frictionPressureConverged" in data:
+            self.frictionPressureConverged[:] = data["frictionPressureConverged"]
+            self._frictionPressureCurrent[:] = data["frictionPressureConverged"]
+            self.frictionActiveConverged[:] = np.asarray(data["frictionActiveConverged"]) > 0.5
+            self.frictionGapReference[:] = data["frictionGapReference"]
         self.augmentedMultipliersConverged[:] = data["augmentedMultipliersConverged"]
         self.augmentedMultipliers[:] = data["augmentedMultipliersConverged"]
 
@@ -2921,6 +3220,11 @@ class Constraint(ConstraintBase):
             # estimate of a failed attempt belongs to a diverged iterate.
             self._augmentation_counter = 0
             self.augmentedMultipliers[:] = self.augmentedMultipliersConverged
+            # The stick/slip state is free again in every increment attempt, like the active set.
+            self.slipStateFrozen = False
+            self._frozenSlip[:] = False
+            self._seenSlipStates = set()
+            self._lastSlipState = None
         else:
             self.currentIteration += 1
 
@@ -2935,17 +3239,6 @@ class Constraint(ConstraintBase):
         U_ref = U_np - dU
         previousNormals = getattr(self, "currentNormals", None)
         self.currentNormals = self.computeNormals(U_ref)
-        if self.friction and previousNormals is not None:
-            # The history is re-projected onto the current tangent plane at every assembly, which is
-            # right for the small rotation of the frame between two rebuilds. Over a genuine crease
-            # of the mortar side it is not: projecting would silently drop the part of the old
-            # traction that now points along the new normal and leave a predictor unrelated to the
-            # frictional state. Such a node enters like a fresh contact instead -- harmless where it
-            # matters, since a sticking node does not move across a crease and a slipping one is
-            # returned onto the cone within the increment anyway. Same rule as the node-to-surface
-            # friction.
-            turned = np.einsum("ij,ij->i", previousNormals, self.currentNormals) < _cosOfNormalChangeLimitForFriction
-            self.frictionTractionConverged[turned] = 0.0
         D_full, C_full = self.computeMortarCouplingMatrices(U_ref)
         # The FULL (element-locally sparse) D matrix is used for forces,
         # stiffness and weak gap. With the basis transformation T_e the
@@ -3049,6 +3342,9 @@ class Constraint(ConstraintBase):
                         f"stability limit. The bound is a conservative (Gershgorin) estimate, so a "
                         f"small exceedance may still run -- but it will not be trustworthy.",
                     )
+
+        if self.friction:
+            self._carryFrictionHistory(U_ref, previousNormals)
 
     def _assembleCouplingMatricesFromSegments(
         self, seg_records, seg_masters, slave_els, current_coords, n_slave, n_master

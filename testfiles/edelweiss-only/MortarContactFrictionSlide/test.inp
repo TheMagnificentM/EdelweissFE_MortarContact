@@ -56,6 +56,13 @@ mu=0.3
 >>perNode, elSet=upper_all, field=displacement, result=U, name=dispUpper
 >>perNode, name=RFDrag,   nSet=lower_back, field=displacement, result=P, f(x)='sum(x[:,0])', saveHistory=True
 >>perNode, name=RFNormal, nSet=lower_back, field=displacement, result=P, f(x)='sum(x[:,2])', saveHistory=True
+** The constraint's own nodal results, over the node set it publishes (contact_nonMortarNodes):
+** pressure, frictional traction, stick/slip state and opening -- what an Ensight >>perNode export
+** of the contact zone reads. tests/test_mortarfriction.py checks them against the constraint.
+>>fromExpression, name=contactPressure, nSet=contact_nonMortarNodes, expression='model.constraints["contact"].getNormalPressures()'
+>>fromExpression, name=contactTraction, nSet=contact_nonMortarNodes, expression='model.constraints["contact"].getTangentialTractions()'
+>>fromExpression, name=contactSlipState, nSet=contact_nonMortarNodes, expression='model.constraints["contact"].getSlipStates()'
+>>fromExpression, name=contactGap, nSet=contact_nonMortarNodes, expression='model.constraints["contact"].getGaps()'
 
 *output, type=monitor, name=monitor
 fieldOutput=RFDrag

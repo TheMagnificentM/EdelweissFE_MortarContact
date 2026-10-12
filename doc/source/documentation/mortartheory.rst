@@ -262,11 +262,40 @@ The tangent is the exact derivative of that law with the geometry frozen, as for
 It is symmetric in stick and non-symmetric in slip, where the cone radius :math:`\mu p` couples the
 tangential force to the normal gap (Wriggers 2006, Eq. 10.113).
 
-The slip measure is the frozen-geometry one, :math:`D \Delta u_s - C \Delta u_m`, rather than the
-fully objective :math:`(D_{n+1} - D_n) x_s - (C_{n+1} - C_n) x_m` of Yang et al., Eq. (47), and of
-Gitterle et al. (2010), Eq. (53). The two differ by the tangential part of the change of the weighted
-gap vector over the increment, which a superposed rigid rotation produces in proportion to the
-penalty gap; it is small as long as that gap is.
+Within an increment the slip measure is the frozen-geometry one, :math:`D \Delta u_s - C \Delta u_m`,
+which keeps the tangent exact. On its own it is not objective: a rigid rotation :math:`\theta` of a
+penetrating pair turns the weighted gap vector :math:`g_I = \sum_K D_{IK} x_K - \sum_J C_{IJ} x_J`
+and reads as a slip of about :math:`\theta` times the penalty gap, which in stick would accumulate
+over the increments. The objective measure of Yang et al., Eq. (47), and of Gitterle et al. (2010),
+Eq. (53), :math:`-(D_{n+1} - D_n) x_s + (C_{n+1} - C_n) x_m`, differs from the frozen one by exactly
+the change of :math:`g_I`, and the coupling matrices of the end of an increment are what the next
+geometry rebuild computes. The accepted traction is therefore corrected there,
+
+.. math::
+
+   t_{I,n} \leftarrow P_T \Big( t_{I,n} + \varepsilon_T \Big( \frac{g_I^{new}}{|D_{II}^{new}|}
+   - \frac{g_I^{old}}{|D_{II}^{old}|} \Big) \Big),
+
+and returned onto the cone of the accepted pressure. Integrated over any number of increments the
+slip is then the objective one; what remains is the error of the frozen normal, first order in one
+increment and not accumulated. A pure slide of a flat pair leaves :math:`g_I` unchanged and is not
+corrected. Measured on two blocks rotated rigidly in stick by 0.01 per increment, the frozen measure
+alone leaves :math:`0.7\,p\,\varepsilon_T/\varepsilon_N` after seven increments, the corrected one
+never more than the single increment's :math:`0.1`.
+
+The stick/slip state is iterated together with the displacements. To keep Newton from chattering
+between the two branches -- the problem the multiplier-based friction of the earlier branches never
+got rid of -- the state of an increment is frozen once it chatters: the first three iterations are
+always free, after that a state that recurs after a change freezes it, and from the sixth iteration
+on any change does. Frozen means that a slipping node stays slipping while a sticking node may still
+go to slip. The state can then only change in one direction, so the iteration terminates, and no
+traction ever leaves the cone; a node held in slip although its predictor fell back inside the cone
+is reported when the increment is accepted.
+
+The nodal results -- pressure, frictional traction, stick/slip state and opening -- are available
+through ``getNormalPressures``, ``getTangentialTractions``, ``getSlipStates`` and ``getGaps``,
+ordered like the node set ``<name>_nonMortarNodes`` that the constraint registers, so that they can
+be written as ``fromExpression`` field outputs and exported to Ensight per node.
 
 Under explicit dynamics the stick spring enters the stability bound alongside the normal one,
 row by row, :math:`\omega^2 \le \max_a (\varepsilon_N r_{N,a} + \varepsilon_T r_{T,a})`, and a

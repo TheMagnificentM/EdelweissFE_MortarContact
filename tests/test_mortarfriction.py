@@ -49,7 +49,7 @@ from edelweissfe.utils.inputfileparser import parseInputFile
 _DECK_ROOT = Path(__file__).resolve().parents[1] / "testfiles" / "edelweiss-only"
 
 
-def _runDeck(deckName: str):
+def _runDeck(deckName: str, withOutputs: bool = False):
     """Run one regression deck and return its mortar constraint, holding the last assembled state."""
 
     previous = os.getcwd()
@@ -57,12 +57,14 @@ def _runDeck(deckName: str):
         os.chdir(_DECK_ROOT / deckName)
         inputFile = parseInputFile("test.inp")
         with contextlib.redirect_stdout(io.StringIO()):
-            model, _ = finiteElementSimulation(inputFile, verbose=False, suppressPlots=True)
+            model, fieldOutputs = finiteElementSimulation(inputFile, verbose=False, suppressPlots=True)
     finally:
         os.chdir(previous)
 
     constraints = [c for c in model.constraints.values() if hasattr(c, "frictionTractionCurrent")]
     assert len(constraints) == 1, f"{deckName} does not hold exactly one mortar constraint"
+    if withOutputs:
+        return constraints[0], fieldOutputs
     return constraints[0]
 
 
@@ -89,3 +91,21 @@ def test_explicit_friction_stays_inside_the_cone_and_transmits_force():
     magnitude = np.linalg.norm(constraint.frictionTractionCurrent, axis=1)
     assert np.max(magnitude) > 0.0, "no frictional traction at all -- test is vacuous"
     assert np.all(magnitude <= constraint.mu * pressure * (1.0 + 1e-12) + 1e-14 * np.max(pressure))
+
+
+def test_the_nodal_contact_results_reach_the_field_outputs():
+    """The fromExpression outputs over the published node set carry the constraint's own state."""
+
+    constraint, fieldOutputs = _runDeck("MortarContactFrictionSlide", withOutputs=True)
+    outputs = fieldOutputs.fieldOutputs
+    n = constraint.nNonMortarNodes
+
+    traction = np.asarray(outputs["contactTraction"].getLastResult())
+    assert traction.shape == (n, 3)
+    np.testing.assert_allclose(traction, constraint.frictionTractionCurrent)
+    np.testing.assert_allclose(
+        np.asarray(outputs["contactPressure"].getLastResult()).ravel(), constraint.getNormalPressures()
+    )
+    np.testing.assert_array_equal(np.asarray(outputs["contactSlipState"].getLastResult()).ravel(), constraint.slipState)
+    gap = np.asarray(outputs["contactGap"].getLastResult()).ravel()
+    assert np.all(gap[constraint.activeSet] <= 0.0), "an active node reports an opening"

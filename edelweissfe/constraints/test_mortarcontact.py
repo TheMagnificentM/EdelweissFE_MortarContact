@@ -1408,6 +1408,161 @@ class TestFriction(unittest.TestCase):
         restored = self._constraint(mu=10.0)
         restored.setRestartData(data)
         np.testing.assert_allclose(restored.frictionTractionConverged, constraint.frictionTractionConverged)
+        np.testing.assert_allclose(restored.frictionPressureConverged, constraint.frictionPressureConverged)
+        np.testing.assert_array_equal(restored.frictionActiveConverged, constraint.frictionActiveConverged)
+        np.testing.assert_array_equal(restored.frictionGapReference, constraint.frictionGapReference)
+
+    # ------------------------------------------------------------------ objective slip
+
+    def _rigidRotation(self, constraint, theta):
+        """The displacement of a rigid rotation of BOTH blocks by ``theta`` about the z axis."""
+
+        rotation = np.array([[np.cos(theta), -np.sin(theta), 0.0], [np.sin(theta), np.cos(theta), 0.0], [0, 0, 1]])
+        centre = np.array([0.5, 1.0, 0.5])
+        X = constraint._X
+        motion = (X - centre) @ rotation.T + centre - X
+        U = np.zeros(constraint.nDof)
+        sf = constraint.sizeField
+        for i in range(len(X)):
+            U[sf * i : sf * i + 3] = motion[i]
+        return U
+
+    def _stage(self, constraint, increments):
+        """Run accepted increments through ``(U, rebuild)`` pairs, as the implicit solver would."""
+
+        previous = np.zeros(constraint.nDof)
+        for number, U in enumerate(increments, start=1):
+            constraint.updateConnectivity(constraint.model)
+            self._assemble(constraint, U, U - previous, _frozenTimeStep(number))
+            constraint.acceptLastState()
+            previous = U
+
+    def test_a_rigid_rotation_does_not_accumulate_a_frictional_traction(self):
+        """A penetrating, sticking pair rotated rigidly over many increments keeps no history.
+
+        On the frozen geometry alone every increment reads the turn of the penalty gap as a slip of
+        about theta * penetration, and in stick that accumulates. The objective correction at each
+        rebuild removes it again, so at the next rebuild nothing is left.
+        """
+
+        theta, steps = 0.01, 8
+        constraint = self._constraint(mu=10.0)
+        increments = [self._rigidRotation(constraint, k * theta) for k in range(steps)]
+        self._stage(constraint, increments + [increments[-1]])
+
+        active = constraint.frictionActiveConverged
+        self.assertGreater(int(np.sum(active)), 0, "no node is in contact -- test is vacuous")
+        pressure = constraint.frictionPressureConverged[active]
+        # What the frozen measure alone leaves after the same motion, for scale: eps_T times the
+        # accumulated turn of the 0.01 penetration.
+        accumulated = self.penaltyStiffness * (steps - 1) * theta * 0.01
+        self.assertGreater(accumulated, 1e-3 * float(np.max(pressure)))
+        traction = np.linalg.norm(constraint.frictionTractionConverged[active], axis=1)
+        self.assertLess(float(np.max(traction)), 1e-3 * accumulated)
+
+    def test_a_pure_slide_is_left_as_measured(self):
+        """A flat slide does not change the gap vector, so the rebuild leaves the stick traction alone."""
+
+        slide = 1e-4
+        constraint = self._constraint(mu=10.0)
+        U = self._masterSlide(constraint, slide)
+        self._stage(constraint, [np.zeros_like(U), U])
+        before = constraint.frictionTractionConverged.copy()
+        constraint.updateConnectivity(constraint.model)
+        self._assemble(constraint, U, np.zeros_like(U), _frozenTimeStep(3))
+
+        active = constraint.frictionActiveConverged
+        np.testing.assert_allclose(before[active, 0], self.penaltyStiffness * slide, rtol=1e-10)
+        np.testing.assert_allclose(
+            constraint.frictionTractionConverged[active], before[active], rtol=0.0, atol=1e-10 * np.max(before)
+        )
+
+    def test_a_repeated_rebuild_at_the_same_state_changes_nothing(self):
+        """A cutback re-attempt may rebuild the geometry again at the accepted state."""
+
+        constraint = self._constraint(mu=10.0)
+        increments = [self._rigidRotation(constraint, k * 0.01) for k in range(3)]
+        self._stage(constraint, increments)
+        constraint.updateConnectivity(constraint.model)
+        self._assemble(constraint, increments[-1], np.zeros(constraint.nDof), _frozenTimeStep(10))
+        once = constraint.frictionTractionConverged.copy()
+        constraint.updateConnectivity(constraint.model)
+        self._assemble(constraint, increments[-1], np.zeros(constraint.nDof), _frozenTimeStep(11))
+        np.testing.assert_allclose(constraint.frictionTractionConverged, once, rtol=0.0, atol=1e-14)
+
+    # ------------------------------------------------------------------ anti-chattering
+
+    def test_a_recurring_stick_slip_state_freezes_after_the_free_iterations(self):
+        constraint = self._constraint(mu=0.3)
+        stick, slip = np.ones(constraint.nNonMortarNodes, dtype=int), np.full(constraint.nNonMortarNodes, 2)
+        for iteration, state in enumerate((stick, slip, stick, slip, stick)):
+            constraint.currentIteration = iteration
+            constraint.slipState[:] = state
+            constraint._freezeSlipStateIfChattering()
+            # A-B-A within the free iterations (0..2) is left alone; the recurrence at 3 freezes.
+            self.assertEqual(constraint.slipStateFrozen, iteration >= 3, f"iteration {iteration}")
+        np.testing.assert_array_equal(constraint._frozenSlip, True)
+
+    def test_a_late_change_freezes_even_without_a_cycle(self):
+        constraint = self._constraint(mu=0.3)
+        n = constraint.nNonMortarNodes
+        for iteration in range(8):
+            constraint.currentIteration = iteration
+            # A different state in every iteration -- the bits of the iteration number -- so that
+            # nothing ever recurs and only the late change can be what freezes it.
+            state = 1 + (iteration >> np.arange(n)) % 2
+            constraint.slipState[:] = state
+            constraint._freezeSlipStateIfChattering()
+            if constraint.slipStateFrozen:
+                break
+        self.assertTrue(constraint.slipStateFrozen)
+        self.assertGreaterEqual(constraint.currentIteration, 6)
+
+    def test_a_frozen_slip_node_stays_on_the_cone_and_is_reported(self):
+        """Frozen: slip is kept even where the predictor falls back inside the cone, never the reverse."""
+
+        mu = 0.2
+        journal = _RecordingJournal()
+        model = _TwoBlockModel.build(gap=-0.01, masterShift=0.2)
+        constraint = _TwoBlockModel.constraint(
+            model, journal, formulation="penalty", penaltyStiffness=self.penaltyStiffness, mu=mu
+        )
+        timeStep = _frozenTimeStep()
+        U = self._masterSlide(constraint, 0.05)
+        self._assemble(constraint, U, U, timeStep)
+        active = constraint.activeSet.copy()
+        np.testing.assert_array_equal(constraint.slipState[active], 2)
+
+        constraint.slipStateFrozen = True
+        constraint._frozenSlip[:] = constraint.slipState == 2
+        tiny = self._masterSlide(constraint, 1e-6)
+        self._assemble(constraint, tiny, tiny, timeStep)
+        np.testing.assert_array_equal(constraint.slipState[active], 2)
+        pressure = np.abs(constraint.nodalMultipliers[active])
+        np.testing.assert_allclose(
+            np.linalg.norm(constraint.frictionTractionCurrent[active], axis=1), mu * pressure, rtol=1e-12
+        )
+
+        constraint.acceptLastState()
+        self.assertTrue(any("frozen" in message for _, message in journal.records))
+
+    # ------------------------------------------------------------------ output
+
+    def test_the_nodal_results_line_up_with_the_published_node_set(self):
+        constraint = self._constraint(mu=0.2)
+        U = self._masterSlide(constraint, 0.05)
+        self._assemble(constraint, U, U, _frozenTimeStep())
+
+        nodeSet = constraint.model.nodeSets["contact_nonMortarNodes"]
+        self.assertEqual(list(nodeSet), constraint.nonMortarNodes)
+        self.assertEqual(constraint.getNormalPressures().shape, (len(nodeSet),))
+        self.assertEqual(constraint.getTangentialTractions().shape, (len(nodeSet), 3))
+
+        active = constraint.activeSet
+        np.testing.assert_allclose(constraint.getNormalPressures()[active], np.abs(constraint.nodalMultipliers[active]))
+        self.assertTrue(np.all(constraint.getNormalPressures() >= 0.0))
+        np.testing.assert_allclose(constraint.getGaps()[active], -0.01, rtol=1e-10)
+        np.testing.assert_array_equal(constraint.getSlipStates()[active], 2.0)
 
 
 if __name__ == "__main__":
