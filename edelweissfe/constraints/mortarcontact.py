@@ -128,6 +128,11 @@ nodal normals, and the coupling matrices:
     without its extra unknowns, and the converged result no longer depends on the penalty stiffness,
     which only sets how fast the outer loop converges.
 
+COULOMB FRICTION (``mu > 0``) is available for ``penalty`` only, with or without the augmentation,
+under the implicit and the explicit solvers: a tangential penalty stick predictor from the converged
+nodal traction and the mortar-weighted slip increment, and a radial return onto ``|t_T| <= mu p``.
+See :meth:`Constraint._assembleFriction`.
+
 The multipliers of the saddle-point form are NOT condensed out of the system. Doing so correctly
 requires a Schur complement of the already assembled non-mortar displacement row -- which carries the
 surrounding bulk stiffness, not merely this constraint's own contribution -- and replaces that row
@@ -273,6 +278,38 @@ class MortarContactSchema:
         dtype=int,
         default=10,
     )
+
+    mu: float = schemaField(
+        description=(
+            "Coulomb friction coefficient, used only for formulation=penalty. 0, the default, is "
+            "frictionless and leaves the constraint exactly as it is without this option. A positive value "
+            "adds a penalty-regularised Coulomb law at every non-mortar node: an elastic (stick) predictor "
+            "from the converged tangential traction and the mortar-weighted tangential slip increment, and "
+            "a radial return onto the cone |t_T| <= mu * p on slip (Yang, Laursen & Meng 2005; Puso, "
+            "Laursen & Solberg 2008). It works under the implicit and the explicit solvers alike; the "
+            "implicit tangent is non-symmetric on slip, which is inherent to Coulomb friction."
+        ),
+        dtype=float,
+        default=0.0,
+    )
+
+    tangentPenalty: float = schemaField(
+        description=(
+            "Tangential penalty stiffness eps_T of the stick predictor, used only for mu > 0: a traction "
+            "per unit tangential slip, in the same unit as penaltyStiffness. It sets the elastic slip a "
+            "sticking node accumulates, mu*p/eps_T at most. Leave it at 0, the default, to take the "
+            "resolved normal penalty stiffness eps_N, including its derivation from the stability limit "
+            "under explicit dynamics."
+        ),
+        dtype=float,
+        default=0.0,
+    )
+
+
+#: Cosine of the largest change of a nodal normal across one geometry rebuild over which the
+#: frictional history is still rotated into the new tangent plane rather than discarded; the same
+#: 30 degrees the node-to-surface friction uses.
+_cosOfNormalChangeLimitForFriction = np.cos(np.deg2rad(30.0))
 
 
 def mapPlaneToNatural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
@@ -752,6 +789,20 @@ class Constraint(ConstraintBase):
         self.augmentationTolerance = float(kwargs["augmentationTolerance"])
         self.maxAugmentations = int(kwargs["maxAugmentations"])
 
+        # Coulomb friction, penalty branch only. eps_T <= 0 means "follow eps_N", resolved
+        # lazily through _tangentPenaltyStiffness because eps_N itself may be derived only at the
+        # first geometry rebuild -- and, under explicit dynamics, re-derived at every one.
+        self.mu = float(kwargs["mu"])
+        self._epsTGiven = float(kwargs["tangentPenalty"])
+        if self.mu < 0.0:
+            raise ValueError(f"MortarContact '{name}': the friction coefficient mu must not be negative.")
+        if self.mu > 0.0 and self.formulation != "penalty":
+            raise ValueError(
+                f"MortarContact '{name}': friction (mu > 0) is implemented for formulation=penalty only. "
+                f"Set formulation=penalty."
+            )
+        self.friction = self.mu > 0.0
+
         # A parameter that belongs to the OTHER formulation is silently inert, which
         # is exactly the kind of thing that costs an afternoon. Say it once.
         if self.formulation == "penalty" and float(kwargs["cn"]) > 0.0:
@@ -846,6 +897,16 @@ class Constraint(ConstraintBase):
         # solution vector otherwise.
         self.currentWeakGap = np.zeros(self.nNonMortarNodes)
         self.nodalMultipliers = np.zeros(self.nNonMortarNodes)
+
+        # ---------------- state of the friction law (mu > 0) ----------------
+        # The tangential traction per non-mortar node, a pressure-valued vector in global
+        # components. The CONVERGED one is the history of the stick predictor and is promoted from
+        # the current one in acceptLastState only, so a cutback re-attempt -- which recomputes the
+        # slip from a fresh dU -- needs no reset. slipState is for output and diagnostics:
+        # 0 open, 1 stick, 2 slip.
+        self.frictionTractionConverged = np.zeros((self.nNonMortarNodes, model.domainSize))
+        self.frictionTractionCurrent = np.zeros((self.nNonMortarNodes, model.domainSize))
+        self.slipState = np.zeros(self.nNonMortarNodes, dtype=int)
 
         # NOTE: self._warned is initialized at the very top of __init__, because the
         # input checks above already emit diagnostics through it. Every assumption
@@ -1199,23 +1260,43 @@ class Constraint(ConstraintBase):
         # changes as the contact evolves, and a stiffness that was stable for the first overlap is
         # not thereby stable for a later one.
         if self._explicit and self._explicitLumpedMass is not None:
-            factor = self._stabilityFactor(self._explicitLumpedMass)
+            rows = self._stabilityRowSums(self._explicitLumpedMass)
+            factor = float(np.max(rows[0])) if rows is not None else 0.0
             dt = self._explicitTimeIncrement
             if factor > 0.0 and dt > 0.0:
-                kappaMax = 4.0 / (dt * dt * factor)
                 # Half the limit. The bound holds for the geometry it was computed on, and the
                 # geometry is frozen only until the next connectivity tick -- between two ticks the
                 # overlap moves, and R with it. A factor of two in the stiffness is a factor of
                 # sqrt(2) in the frequency, which is the margin that buys.
+                #
+                # With friction the tangential stick spring shares the budget, row by row:
+                # max_a (eps_N r_N,a + eps_T r_T,a) <= 2/dt^2. With eps_T following eps_N that is a
+                # single bound on eps_N; with a fixed eps_T, eps_N gets what eps_T leaves.
+                budget = 2.0 / (dt * dt)
                 previous = getattr(self, "epsN", None)
-                self.epsN = 0.5 * kappaMax
+                if not self.friction:
+                    self.epsN = budget / factor
+                elif self._epsTGiven <= 0.0:
+                    factor = float(np.max(rows[0] + rows[1]))
+                    self.epsN = budget / factor
+                else:
+                    loaded = rows[0] > 0.0
+                    self.epsN = float(np.min((budget - self._epsTGiven * rows[1][loaded]) / rows[0][loaded]))
+                    if self.epsN <= 0.0:
+                        raise ValueError(
+                            f"MortarContact '{self._name}': tangentPenalty = {self._epsTGiven:.4g} alone exceeds "
+                            f"the stability limit of the time increment {dt:.4g}, so no normal penalty "
+                            f"stiffness is left. Lower tangentPenalty or leave it at 0 to follow eps_N."
+                        )
                 if previous is None or not np.isclose(previous, self.epsN, rtol=0.25):
                     self._warnOnce(
                         "epsN_derived_explicit",
                         f"'penaltyStiffness' was not given and this is an explicit analysis, so "
                         f"eps_N has been derived from the STABILITY limit rather than from the "
                         f"material: eps_N = {self.epsN:.4g} = 0.5 * 4/(dt^2 * R) with "
-                        f"dt = {dt:.4g} and R = {factor:.4g}. A larger value would need a smaller "
+                        f"dt = {dt:.4g} and R = {factor:.4g}"
+                        f"{' (R including the tangential friction spring)' if self.friction and self._epsTGiven <= 0.0 else ''}. "
+                        f"A larger value would need a smaller "
                         f"time increment; set 'penaltyStiffness' explicitly to choose that "
                         f"trade-off yourself, and watch the reported penetration.",
                     )
@@ -2001,6 +2082,8 @@ class Constraint(ConstraintBase):
         # _nodalPenaltyStiffness. Formed once per assembly rather than per node: it depends
         # only on the frozen weights and on eps_N, neither of which moves inside this loop.
         nodalPenalty = self._nodalPenaltyStiffness() if penalty else None
+        friction = penalty and self.friction
+        nodalTangentPenalty = self._nodalPenaltyStiffness(self._tangentPenaltyStiffness()) if friction else None
         _dim_offsets = np.arange(dim)
 
         for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
@@ -2148,6 +2231,10 @@ class Constraint(ConstraintBase):
 
                 if not self.activeSet[I]:
                     self.nodalMultipliers[I] = 0.0
+                    if friction:
+                        # An open node carries no traction, and its history goes with it.
+                        self.frictionTractionCurrent[I] = 0.0
+                        self.slipState[I] = 0
                     continue
 
                 lambda_I = max(p_trial, 0.0) * sgn_D
@@ -2175,6 +2262,10 @@ class Constraint(ConstraintBase):
                 v = (w[:, None] * n_I[None, :]).ravel()
                 PExt[idcs] -= lambda_I * v
                 K[np.ix_(idcs, idcs)] += kappa_I * np.outer(v, v)
+                if friction:
+                    self._assembleFriction(
+                        I, w, v, idcs, n_I, max(p_trial, 0.0), kappa_I * sgn_D, nodalTangentPenalty[I], dU, PExt, K
+                    )
                 continue
 
             self.nodalMultipliers[I] = lambda_I
@@ -2365,8 +2456,11 @@ class Constraint(ConstraintBase):
                     f"because every non-mortar facet is then fully covered.",
                 )
 
-    def _nodalPenaltyStiffness(self) -> np.ndarray:
+    def _nodalPenaltyStiffness(self, modulus: float | None = None) -> np.ndarray:
         """The stiffness each non-mortar node's penalty spring actually carries.
+
+        ``modulus`` is the pointwise penalty modulus to normalise, eps_N when omitted; the
+        friction law passes eps_T through the same normalisation, for the same reasons.
 
         THE ONE PLACE THE NORMALISATION OF THE WEIGHTED GAP LIVES. The penalty law of this
         constraint is a pressure per unit POINTWISE opening,
@@ -2413,8 +2507,139 @@ class Constraint(ConstraintBase):
         magnitude = np.abs(weights)
         covered = magnitude > self.currentWeightTolerance
         stiffness = np.zeros_like(magnitude)
-        stiffness[covered] = self.epsN / magnitude[covered]
+        stiffness[covered] = (self.epsN if modulus is None else modulus) / magnitude[covered]
         return stiffness
+
+    def _tangentPenaltyStiffness(self) -> float:
+        """The pointwise tangential penalty modulus eps_T: the given one, or eps_N as resolved."""
+
+        return self._epsTGiven if self._epsTGiven > 0.0 else self.epsN
+
+    def _assembleFriction(
+        self,
+        I: int,  # noqa: E741 - the non-mortar node index of the formulation
+        w: np.ndarray,
+        v: np.ndarray,
+        idcs: np.ndarray,
+        n_I: np.ndarray,
+        p: float,
+        dp_dv: float,
+        kappaT_I: float,
+        dU: np.ndarray,
+        PExt: np.ndarray,
+        K: np.ndarray,
+    ):
+        """Penalty-regularised Coulomb friction at one active non-mortar node.
+
+        The law is that of Yang, Laursen & Meng (2005), Eqs. (39), (47)-(49), in the 3D form of
+        Puso, Laursen & Solberg (2008), Eqs. (16)-(21), with the return map of Wriggers (2006),
+        Box 14:
+
+            s_I    = P_T sum_a w_a dU_a                    weighted slip increment (length x area)
+            t_tr   = P_T t_n - kappa_T,I s_I               stick predictor, kappa_T,I = eps_T/|D_II|
+            t      = t_tr                     if |t_tr| <= mu p    (stick)
+                     mu p t_tr/|t_tr|         otherwise            (slip)
+
+        with ``P_T = I - n n^T`` of the frozen nodal normal and the same weights ``w_a`` (+D_IK on
+        the slave, -C_IJ on the master nodes) the weighted gap is built from. ``kappa_T,I * s_I`` is
+        therefore eps_T times the POINTWISE relative tangential displacement, exactly as the normal
+        pressure is eps_N times the pointwise penetration. The old traction is re-projected onto the
+        current tangent plane (Puso et al. 2008, Eq. 19), which costs nothing and keeps the history
+        tangential across geometry rebuilds.
+
+        THE SLIP MEASURE IS THE FROZEN-GEOMETRY ONE, ``D dU_s - C dU_m`` with D, C and n held at the
+        last converged state, not the fully objective ``(D_n+1 - D_n) x_s - (C_n+1 - C_n) x_m`` of
+        Yang et al. (2005), Eq. (47). It is consistent with how the normal part is treated -- the
+        assembled tangent is exact for the residual that is assembled -- and the two differ by the
+        tangential part of the change of the weighted gap VECTOR over the increment, which is small
+        as long as the penalty gap is.
+
+        Nodal forces are ``PExt_a += w_a t``, the gradient of the convex stick energy
+        ``1/2 kappa_T |P_T s|^2``, so the sign of D_II needs no special treatment here: only its
+        magnitude enters kappa_T. With K = -dPExt/dU,
+
+            stick:  K += kappa_T (w w^T) (x) P_T
+            slip:   K += -mu dp/dU (w (x) s_hat) v^T  +  mu p kappa_T/|t_tr| (w w^T) (x) (I - s_hat s_hat^T) P_T
+
+        The first slip term couples the tangential force to the normal pressure and makes the
+        tangent non-symmetric (Wriggers 2006, Eq. 10.113).
+
+        Parameters
+        ----------
+        I
+            The non-mortar node.
+        w, v, idcs
+            The weight row, ``w (x) n_I``, and the local degrees of freedom of this node's coupling.
+        n_I
+            The frozen nodal normal.
+        p
+            The physical contact pressure, >= 0.
+        dp_dv
+            The derivative of p along v, i.e. ``dp/dU = dp_dv * v``.
+        kappaT_I
+            The node's tangential penalty stiffness eps_T/|D_II|.
+        dU, PExt, K
+            As in :meth:`applyConstraint`.
+        """
+
+        dim = len(n_I)
+        projector = np.eye(dim) - np.outer(n_I, n_I)
+
+        # idcs holds exactly the dim displacement components of every coupled node, in node order.
+        slip = projector @ (w @ dU[idcs].reshape(len(w), dim))
+        trial = projector @ self.frictionTractionConverged[I] - kappaT_I * slip
+
+        slipLimit = self.mu * p
+        trialMagnitude = float(np.linalg.norm(trial))
+
+        if trialMagnitude <= slipLimit:
+            traction = trial
+            self.slipState[I] = 1
+            K[np.ix_(idcs, idcs)] += np.kron(np.outer(w, w), kappaT_I * projector)
+        else:
+            direction = trial / trialMagnitude
+            traction = slipLimit * direction
+            self.slipState[I] = 2
+            K[np.ix_(idcs, idcs)] -= self.mu * dp_dv * np.outer(np.kron(w, direction), v)
+            K[np.ix_(idcs, idcs)] += np.kron(
+                np.outer(w, w),
+                (slipLimit * kappaT_I / trialMagnitude) * ((np.eye(dim) - np.outer(direction, direction)) @ projector),
+            )
+
+        self.frictionTractionCurrent[I] = traction
+        PExt[idcs] += np.kron(w, traction)
+
+    def acceptLastState(self):
+        """Promote the tangential tractions of the converged iterate to the frictional history.
+
+        Called by :meth:`~edelweissfe.models.femodel.FEModel.advanceToTime` once an increment is
+        accepted -- after the augmented outer loop, if any, has finished -- and under explicit
+        dynamics after every time step. A cutback never reaches it, so the history of a failed
+        attempt cannot leak into the next one.
+        """
+
+        if self.friction:
+            self.frictionTractionConverged[:] = self.frictionTractionCurrent
+
+    def getRestartData(self) -> dict[str, np.ndarray] | None:
+        """The converged frictional history and augmented pressure estimate.
+
+        Everything else -- the frozen geometry, the active set, the derived stiffnesses -- is rebuilt
+        from the restored solution at the first assembly after a restart.
+        """
+
+        return {
+            "frictionTractionConverged": self.frictionTractionConverged,
+            "augmentedMultipliersConverged": self.augmentedMultipliersConverged,
+        }
+
+    def setRestartData(self, data: dict[str, np.ndarray]):
+        """Restore the converged frictional history and augmented pressure estimate."""
+
+        self.frictionTractionConverged[:] = data["frictionTractionConverged"]
+        self.frictionTractionCurrent[:] = data["frictionTractionConverged"]
+        self.augmentedMultipliersConverged[:] = data["augmentedMultipliersConverged"]
+        self.augmentedMultipliers[:] = data["augmentedMultipliersConverged"]
 
     def _stabilityFactor(self, lumpedMass: np.ndarray) -> float:
         """The stiffness-independent part R of this constraint's stability bound.
@@ -2451,14 +2676,31 @@ class Constraint(ConstraintBase):
         happened to be active when it was computed would not be a bound.
         """
 
+        rows = self._stabilityRowSums(lumpedMass)
+        return float(np.max(rows[0])) if rows is not None else 0.0
+
+    def _stabilityRowSums(self, lumpedMass: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+        """The mass-scaled Gershgorin row sums of the normal and of the tangential contact stiffness.
+
+        Returned per degree of freedom and free of the moduli, as ``(r_N, r_T)``, so that the bound
+        of the combined stiffness is ``omega^2 <= max_a (eps_N r_N,a + eps_T r_T,a)``. The normal part
+        is the one :meth:`_stabilityFactor` describes; the tangential part is the stick stiffness of
+        the friction law, ``(eps_T/|D_II|) (w w^T) (x) P_T``, bounded the same way with ``|P_T|`` in
+        place of ``|n n^T|``. Splitting the two is what keeps a stiff tangential spring from being
+        hidden behind a normal one that loads other components: on an axis-aligned interface they
+        act on disjoint rows, and eps_T = eps_N then costs no time step at all. ``r_T`` is zero
+        without friction. ``None`` while no geometry exists or a touched row has no mass.
+        """
+
         if not hasattr(self, "currentNormals"):
-            return 0.0
+            return None
 
         nSlave = self.nNonMortarNodes
         sf = self.sizeField
         dim = self.model.domainSize
         offsets = np.arange(dim)
         rowSums = np.zeros(len(lumpedMass))
+        rowSumsT = np.zeros(len(lumpedMass))
 
         # The stiffness-free part of kappa_I = eps_N/|D_II|. Taken directly rather than through
         # _nodalPenaltyStiffness, because this method is also called BEFORE eps_N is known --
@@ -2475,12 +2717,30 @@ class Constraint(ConstraintBase):
             idcs = (sf * nodeIds[:, None] + offsets).ravel()
             v = np.abs((w[:, None] * self.currentNormals[I][None, :]).ravel())
             rowSums[idcs] += v * float(np.sum(v)) / weights[I]
+            if self.friction:
+                n_I = self.currentNormals[I]
+                absW = np.abs(w)
+                projectorRowSums = np.abs(np.eye(dim) - np.outer(n_I, n_I)).sum(axis=1)
+                rowSumsT[idcs] += np.kron(absW * float(np.sum(absW)), projectorRowSums) / weights[I]
 
         mass = np.asarray(lumpedMass, dtype=float)
-        touched = rowSums > 0.0
+        touched = (rowSums > 0.0) | (rowSumsT > 0.0)
         if not np.any(touched) or np.any(mass[touched] <= 0.0):
+            return None
+        scaledN = np.zeros_like(rowSums)
+        scaledT = np.zeros_like(rowSumsT)
+        scaledN[touched] = rowSums[touched] / mass[touched]
+        scaledT[touched] = rowSumsT[touched] / mass[touched]
+        return scaledN, scaledT
+
+    def _omegaSquaredBound(self, lumpedMass: np.ndarray) -> float:
+        """Gershgorin bound of the largest contact eigenvalue of ``M^-1 K`` at the current moduli."""
+
+        rows = self._stabilityRowSums(lumpedMass)
+        if rows is None:
             return 0.0
-        return float(np.max(rowSums[touched] / mass[touched]))
+        epsT = self._tangentPenaltyStiffness() if self.friction else 0.0
+        return float(np.max(self.epsN * rows[0] + epsT * rows[1]))
 
     def computeCriticalTimeStepForExplicitDynamics(self, lumpedMass: np.ndarray) -> float:
         """The stable time increment this constraint's penalty stiffness permits.
@@ -2500,10 +2760,10 @@ class Constraint(ConstraintBase):
         if self.formulation != "penalty" or not hasattr(self, "currentNormals"):
             return np.inf
 
-        factor = self._stabilityFactor(self._explicitLumpedMass)
-        if factor <= 0.0:
+        omegaSquared = self._omegaSquaredBound(self._explicitLumpedMass)
+        if omegaSquared <= 0.0:
             return np.inf
-        return 2.0 / np.sqrt(self.epsN * factor)
+        return 2.0 / np.sqrt(omegaSquared)
 
     def applyConstraintExplicit(
         self,
@@ -2673,7 +2933,19 @@ class Constraint(ConstraintBase):
         self._geometryStale = False
         # Last converged state - see the reference-configuration note above.
         U_ref = U_np - dU
+        previousNormals = getattr(self, "currentNormals", None)
         self.currentNormals = self.computeNormals(U_ref)
+        if self.friction and previousNormals is not None:
+            # The history is re-projected onto the current tangent plane at every assembly, which is
+            # right for the small rotation of the frame between two rebuilds. Over a genuine crease
+            # of the mortar side it is not: projecting would silently drop the part of the old
+            # traction that now points along the new normal and leave a predictor unrelated to the
+            # frictional state. Such a node enters like a fresh contact instead -- harmless where it
+            # matters, since a sticking node does not move across a crease and a slipping one is
+            # returned onto the cone within the increment anyway. Same rule as the node-to-surface
+            # friction.
+            turned = np.einsum("ij,ij->i", previousNormals, self.currentNormals) < _cosOfNormalChangeLimitForFriction
+            self.frictionTractionConverged[turned] = 0.0
         D_full, C_full = self.computeMortarCouplingMatrices(U_ref)
         # The FULL (element-locally sparse) D matrix is used for forces,
         # stiffness and weak gap. With the basis transformation T_e the
@@ -2760,17 +3032,19 @@ class Constraint(ConstraintBase):
             # a run that completes and means nothing. Reported rather than refused, because the
             # Gershgorin bound behind it is conservative and would otherwise block models that
             # are in fact stable.
-            factor = self._stabilityFactor(self._explicitLumpedMass)
+            omegaSquared = self._omegaSquaredBound(self._explicitLumpedMass)
             dt = getattr(self, "_explicitTimeIncrement", 0.0)
-            if factor > 0.0 and dt > 0.0:
-                dtStable = 2.0 / np.sqrt(self.epsN * factor)
+            if omegaSquared > 0.0 and dt > 0.0:
+                dtStable = 2.0 / np.sqrt(omegaSquared)
                 if dt > dtStable:
                     self._warnOnce(
                         "epsN_above_stability_limit",
-                        f"penaltyStiffness = {self.epsN:.4g} needs a time increment of at most "
+                        f"penaltyStiffness = {self.epsN:.4g}"
+                        f"{f' with tangentPenalty = {self._tangentPenaltyStiffness():.4g}' if self.friction else ''}"
+                        f" needs a time increment of at most "
                         f"{dtStable:.4g} to stay stable, and this analysis runs at {dt:.4g} -- a "
-                        f"factor of {dt / dtStable:.2f} above it. Either lower it to at most "
-                        f"{4.0 / (dt * dt * factor):.4g}, lower 'courant-number' by the same "
+                        f"factor of {dt / dtStable:.2f} above it. Either lower the stiffness by a factor of at "
+                        f"least {(dt / dtStable) ** 2:.4g}, lower 'courant-number' by the same "
                         f"factor, or leave 'penaltyStiffness' unset and let it be derived from the "
                         f"stability limit. The bound is a conservative (Gershgorin) estimate, so a "
                         f"small exceedance may still run -- but it will not be trustworthy.",

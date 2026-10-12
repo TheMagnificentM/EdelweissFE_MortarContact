@@ -1242,5 +1242,173 @@ class TestCurvedEdgeAttribution(unittest.TestCase):
         self.assertLess(error, 1e-3)
 
 
+class TestFriction(unittest.TestCase):
+    """Penalty-regularised Coulomb friction of the penalty branch (``mu > 0``).
+
+    The two blocks of :class:`_TwoBlockModel` touch across the plane y = 1, so the nodal normals are
+    the y axis and the tangent plane is x-z. A tangential increment is staged by moving the mortar
+    (upper) block in x through ``dU``, which is what the slip measure reads.
+    """
+
+    penaltyStiffness = 1.0e3
+
+    def _constraint(self, mu, gap=-0.01, **options):
+        model = _TwoBlockModel.build(gap=gap, masterShift=0.2)
+        return _TwoBlockModel.constraint(
+            model, formulation="penalty", penaltyStiffness=self.penaltyStiffness, mu=mu, **options
+        )
+
+    @staticmethod
+    def _masterSlide(constraint, amount):
+        """The increment that moves every mortar node by ``amount`` in x."""
+
+        dU = np.zeros(constraint.nDof)
+        sf = constraint.sizeField
+        for i in range(constraint.nNonMortarNodes, len(constraint.nodes)):
+            dU[sf * i] = amount
+        return dU
+
+    @staticmethod
+    def _assemble(constraint, U, dU, timeStep):
+        nDof = constraint.nDof
+        P, K = np.zeros(nDof), np.zeros((nDof, nDof))
+        constraint.applyConstraint(U, dU, P, K, timeStep)
+        return P, K
+
+    def _finiteDifferenceTangent(self, constraint, U, dU, timeStep, h=1e-8):
+        """-dP/dU with U and dU perturbed together, as a Newton correction moves both."""
+
+        nDof = constraint.nDof
+        numeric = np.zeros((nDof, nDof))
+        for j in range(nDof):
+            step = np.zeros(nDof)
+            step[j] = h
+            plus, _ = self._assemble(constraint, U + step, dU + step, timeStep)
+            minus, _ = self._assemble(constraint, U - step, dU - step, timeStep)
+            numeric[:, j] = -(plus - minus) / (2.0 * h)
+        return numeric
+
+    def test_friction_is_refused_for_the_multiplier_branch(self):
+        model = _TwoBlockModel.build(gap=-0.01)
+        with self.assertRaises(ValueError):
+            _TwoBlockModel.constraint(model, formulation="lagrange", mu=0.3)
+
+    def test_without_tangential_motion_friction_changes_nothing(self):
+        """No slip and no history: the frictional forces vanish and the normal ones are untouched."""
+
+        timeStep = _frozenTimeStep()
+        frictionless = self._constraint(mu=0.0)
+        frictional = self._constraint(mu=0.5)
+        U = np.zeros(frictionless.nDof)
+        P0, K0 = self._assemble(frictionless, U, U, timeStep)
+        P1, K1 = self._assemble(frictional, U, U, timeStep)
+        self.assertGreater(int(np.sum(frictional.activeSet)), 0, "no node is in contact -- test is vacuous")
+        np.testing.assert_allclose(P1, P0, rtol=0.0, atol=1e-14 * np.max(np.abs(P0)))
+        np.testing.assert_allclose(np.abs(frictional.frictionTractionCurrent), 0.0, atol=1e-14)
+
+    def _checkTangent(self, mu, slide, expectedState):
+        timeStep = _frozenTimeStep()
+        constraint = self._constraint(mu=mu)
+        U = self._masterSlide(constraint, slide)
+        dU = U.copy()
+        self._assemble(constraint, U, dU, timeStep)
+        active = constraint.activeSet.copy()
+        self.assertGreater(int(np.sum(active)), 0, "no node is in contact -- test is vacuous")
+        np.testing.assert_array_equal(constraint.slipState[active], expectedState)
+        constraint.useActiveSet = False
+
+        _, K = self._assemble(constraint, U, dU, timeStep)
+        numeric = self._finiteDifferenceTangent(constraint, U, dU, timeStep)
+        np.testing.assert_array_equal(constraint.slipState[active], expectedState, "state flipped under h")
+        scale = float(np.max(np.abs(K)))
+        np.testing.assert_allclose(K / scale, numeric / scale, atol=1e-6)
+        return constraint, K
+
+    def test_the_stick_tangent_differentiates_the_residual_it_assembles(self):
+        self._checkTangent(mu=10.0, slide=1e-4, expectedState=1)
+
+    def test_the_slip_tangent_differentiates_the_residual_it_assembles(self):
+        """The slip branch, including the non-symmetric normal-tangential coupling."""
+
+        _, K = self._checkTangent(mu=0.2, slide=0.05, expectedState=2)
+        self.assertGreater(float(np.max(np.abs(K - K.T))), 1e-8 * float(np.max(np.abs(K))), "slip tangent is symmetric")
+
+    def test_a_slipping_node_carries_mu_times_its_pressure_against_the_slide(self):
+        mu = 0.2
+        constraint = self._constraint(mu=mu)
+        U = self._masterSlide(constraint, 0.05)
+        self._assemble(constraint, U, U, _frozenTimeStep())
+
+        active = constraint.activeSet
+        pressure = np.abs(constraint.nodalMultipliers[active])
+        traction = constraint.frictionTractionCurrent[active]
+        np.testing.assert_allclose(np.linalg.norm(traction, axis=1), mu * pressure, rtol=1e-12)
+        # Purely tangential, and on the slave side it drags along with the mortar block: +x.
+        np.testing.assert_allclose(traction[:, 1:], 0.0, atol=1e-12 * float(np.max(pressure)))
+        self.assertTrue(np.all(traction[:, 0] > 0.0))
+
+    def test_a_sticking_node_carries_eps_T_times_the_relative_slide(self):
+        """In stick, the traction is the pointwise penalty law: eps_T times the relative motion."""
+
+        slide = 1e-4
+        constraint = self._constraint(mu=10.0, tangentPenalty=2.0e3)
+        U = self._masterSlide(constraint, slide)
+        self._assemble(constraint, U, U, _frozenTimeStep())
+        active = constraint.activeSet
+        np.testing.assert_allclose(constraint.frictionTractionCurrent[active, 0], 2.0e3 * slide, rtol=1e-10)
+
+    def test_the_history_is_promoted_only_on_acceptance(self):
+        """A cutback re-attempt must start from the last ACCEPTED traction, not from the failed iterate."""
+
+        slide = 1e-4
+        constraint = self._constraint(mu=10.0)
+        U = self._masterSlide(constraint, slide)
+        self._assemble(constraint, U, U, _frozenTimeStep(1))
+        afterFirst = constraint.frictionTractionCurrent.copy()
+        np.testing.assert_allclose(constraint.frictionTractionConverged, 0.0)
+
+        constraint.acceptLastState()
+        np.testing.assert_allclose(constraint.frictionTractionConverged, afterFirst)
+
+        # Next increment, no further motion: the accepted traction is held (stick).
+        self._assemble(constraint, U, np.zeros_like(U), _frozenTimeStep(2))
+        active = constraint.activeSet
+        np.testing.assert_allclose(constraint.frictionTractionCurrent[active], afterFirst[active], rtol=1e-10)
+
+        # A failed attempt that slid further back is never accepted; the retry sees the old history.
+        self._assemble(constraint, U, -self._masterSlide(constraint, 5 * slide), _frozenTimeStep(3))
+        self._assemble(constraint, U, np.zeros_like(U), _frozenTimeStep(4))
+        np.testing.assert_allclose(constraint.frictionTractionCurrent[active], afterFirst[active], rtol=1e-10)
+
+    def test_the_tangential_spring_enters_the_stability_bound(self):
+        """With friction the bound covers the stick spring too, and never gets less conservative."""
+
+        bounds = {}
+        for mu in (0.0, 0.3):
+            model = _TwoBlockModel.build(gap=-1e-3)
+            constraint = _TwoBlockModel.constraint(model, formulation="penalty", penaltyStiffness=1e6, mu=mu)
+            mass = np.ones(constraint.nDof)
+            constraint.computeCriticalTimeStepForExplicitDynamics(mass)
+            constraint._explicit = True
+            constraint._explicitTimeIncrement = 1e-6
+            self._assemble(constraint, np.zeros(constraint.nDof), np.zeros(constraint.nDof), _frozenTimeStep())
+            bounds[mu] = constraint.computeCriticalTimeStepForExplicitDynamics(mass)
+            rows = constraint._stabilityRowSums(mass)
+            if mu > 0.0:
+                self.assertGreater(float(np.max(rows[1])), 0.0, "the tangential rows are missing")
+        self.assertLessEqual(bounds[0.3], bounds[0.0])
+
+    def test_restart_data_round_trips(self):
+        constraint = self._constraint(mu=10.0)
+        U = self._masterSlide(constraint, 1e-4)
+        self._assemble(constraint, U, U, _frozenTimeStep())
+        constraint.acceptLastState()
+        data = {k: v.copy() for k, v in constraint.getRestartData().items()}
+
+        restored = self._constraint(mu=10.0)
+        restored.setRestartData(data)
+        np.testing.assert_allclose(restored.frictionTractionConverged, constraint.frictionTractionConverged)
+
+
 if __name__ == "__main__":
     unittest.main()

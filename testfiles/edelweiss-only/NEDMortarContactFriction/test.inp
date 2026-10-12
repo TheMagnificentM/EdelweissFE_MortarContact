@@ -1,0 +1,87 @@
+** Explicit-dynamic (NED) mortar contact with Coulomb friction (formulation=penalty, mu=0.3).
+**
+** NEDMortarContact with friction switched on and the pushed block also moved sideways, so that the
+** frictional forces are evaluated by the explicit integrator: once per time step, without a tangent,
+** with the history committed after every step. The tangential stick spring (tangentPenalty defaults
+** to penaltyStiffness) enters the constraint's stability bound alongside the normal one.
+**
+** THE DECISIVE CHECK is RFLowerDrag: only friction can carry a force in x into the lower block,
+** so it is identically zero unless the frictional forces reach the equations. It must also stay
+** bounded by mu times the normal force RFLower (tests/test_mortarfriction.py).
+
+*material, name=LinearElastic, id=linearelastic, provider=edelweiss
+**E       nu     density
+1.8e4,    0.3,   1.0
+
+*job, name=nedmortarjob, domain=3d
+
+*solver, solver=NED, name=theSolver
+second-order-fields="displacement"
+courant-number=0.8
+output-frequency=50
+contact-update-frequency=10
+
+*modelGenerator, generator=boxGen, name=lower
+nX      =3
+nY      =3
+nZ      =3
+x0      =0
+y0      =0
+z0      =0
+lX      =2
+lY      =2
+lZ      =1
+elProvider =edelweiss
+elType  =C3D8
+
+*modelGenerator, generator=boxGen, name=upper
+nX      =2
+nY      =2
+nZ      =3
+x0      =0.3
+y0      =1.1
+z0      =1.05
+lX      =0.6
+lY      =0.6
+lZ      =1
+elProvider =edelweiss
+elType  =C3D8
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen1
+surface = upper_back
+name    = nonMortarSurf
+facets  = wholeFace
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen2
+surface = lower_front
+name    = mortarSurf
+facets  = wholeFace
+
+*section, name=section1, material=linearelastic, type=solid
+lower_all
+upper_all
+
+*constraint, name=contact, type=mortarcontact
+nonMortarSurface=nonMortarSurf_facets
+mortarSurface=mortarSurf_facets
+field=displacement
+formulation=penalty
+penaltyStiffness=2e4
+mu=0.3
+
+*fieldOutput
+>>perNode, elSet=lower_all, field=displacement, result=U, name=dispLower
+>>perNode, elSet=upper_all, field=displacement, result=U, name=dispUpper
+>>perNode, name=dispLowerMax, elSet=lower_all, field=displacement, result=U, f(x)='np.max(np.abs(x))', saveHistory=True
+>>perNode, name=RFLower, nSet=lower_back, field=displacement, result=P, f(x)='np.sum(x[:,2])', saveHistory=True
+>>perNode, name=RFLowerDrag, nSet=lower_back, field=displacement, result=P, f(x)='np.sum(x[:,0])', saveHistory=True
+
+*output, type=monitor, name=monitor
+fieldOutput=dispLowerMax
+fieldOutput=RFLower
+fieldOutput=RFLowerDrag
+
+*step, type=adaptiveForExplicitSimulations, solver=theSolver
+maxInc=1, minInc=1e-12, maxNumInc=2000, maxIter=25, stepLength=0.5
+>>dirichlet, name=fix, nSet=lower_back, field=displacement, 1=0.0, 2=0.0, 3=0.0
+>>dirichlet, name=push, nSet=upper_front, field=displacement, 1=0.1, 3=-0.1

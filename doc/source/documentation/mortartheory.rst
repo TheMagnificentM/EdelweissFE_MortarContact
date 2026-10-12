@@ -223,6 +223,56 @@ tolerance. A formulation that re-segmented every iteration and carried the full 
 remove it, at the price of a considerably more involved tangent.
 
 
+Friction
+~~~~~~~~
+
+With ``mu > 0`` the ``penalty`` formulation adds Coulomb friction, regularised by a tangential
+penalty in the same way the normal condition is: an elastic stick predictor and a radial return onto
+the friction cone at every non-mortar node. It is the law of Yang, Laursen and Meng (2005), their
+Eqs. (39) and (47)--(49), in the three-dimensional form of Puso, Laursen and Solberg (2008), their
+Eqs. (16)--(21), with the return map of Wriggers (2006), Box 14. It needs no unknowns of its own and
+is therefore available under the implicit and the explicit solvers alike; ``formulation=lagrange``
+with ``mu > 0`` is refused.
+
+The weighted slip increment is built from the same weights as the weighted gap, :math:`w_a = D_{IK}`
+on the non-mortar and :math:`w_a = -C_{IJ}` on the mortar nodes, projected onto the tangent plane
+:math:`P_T = I - n_I \otimes n_I` of the frozen nodal normal:
+
+.. math::
+
+   s_I = P_T \sum_a w_a \, \Delta u_a ,\qquad
+   t^{tr}_I = P_T \, t_{I,n} - \frac{\varepsilon_T}{|D_{II}|} \, s_I ,
+
+   t_I = \begin{cases}
+   t^{tr}_I & |t^{tr}_I| \le \mu p_I \quad \text{(stick)} \\
+   \mu p_I \, t^{tr}_I / |t^{tr}_I| & \text{otherwise (slip)}
+   \end{cases}
+
+:math:`\Delta u` is the increment since the last converged state under the implicit solvers and one
+time step's displacement under the explicit one; the history :math:`t_{I,n}` is promoted in
+``acceptLastState`` only, so a cutback re-attempt starts from the last accepted traction. The
+division by :math:`|D_{II}|` makes :math:`\varepsilon_T` (``tangentPenalty``, by default the
+resolved :math:`\varepsilon_N`) a pointwise modulus exactly like :math:`\varepsilon_N`: a sticking
+node carries :math:`\varepsilon_T` times the relative tangential displacement, and accumulates at
+most :math:`\mu p / \varepsilon_T` of elastic slip. The nodal forces are :math:`w_a t_I`. The old
+traction is re-projected onto the current tangent plane at every assembly, and discarded where a
+geometry rebuild turns the nodal normal by more than 30 degrees.
+
+The tangent is the exact derivative of that law with the geometry frozen, as for the normal part.
+It is symmetric in stick and non-symmetric in slip, where the cone radius :math:`\mu p` couples the
+tangential force to the normal gap (Wriggers 2006, Eq. 10.113).
+
+The slip measure is the frozen-geometry one, :math:`D \Delta u_s - C \Delta u_m`, rather than the
+fully objective :math:`(D_{n+1} - D_n) x_s - (C_{n+1} - C_n) x_m` of Yang et al., Eq. (47), and of
+Gitterle et al. (2010), Eq. (53). The two differ by the tangential part of the change of the weighted
+gap vector over the increment, which a superposed rigid rotation produces in proportion to the
+penalty gap; it is small as long as that gap is.
+
+Under explicit dynamics the stick spring enters the stability bound alongside the normal one,
+row by row, :math:`\omega^2 \le \max_a (\varepsilon_N r_{N,a} + \varepsilon_T r_{T,a})`, and a
+derived :math:`\varepsilon_N` is chosen so that the two together stay at half the limit.
+
+
 Surface discretisation and integration
 --------------------------------------
 
@@ -1023,9 +1073,20 @@ that a reader checking a single line does not have to reconstruct which work it 
 * M. A. Puso, T. A. Laursen, J. Solberg: *A segment-to-segment mortar contact method for quadratic
   elements and large deformations*, Computer Methods in Applied Mechanics and Engineering 197
   (2008), 555--566. -- The augmented outer loop, their Eq. (18), advanced only once equilibrium has
-  converged. Their Fig. 3 is also the decomposition of a quadratic facet into linear sub-cells used
+  converged; and the three-dimensional friction trial state with the re-projected history, Eqs.
+  (16)--(21). Their Fig. 3 is also the decomposition of a quadratic facet into linear sub-cells used
   here: four quadrilaterals for the nine-node patch, four triangles for the six-node patch, and four
   triangles plus one quadrilateral for the serendipity eight-node patch.
+* B. Yang, T. A. Laursen, X. Meng: *Two dimensional mortar contact methods for large deformation
+  frictional sliding*, International Journal for Numerical Methods in Engineering 62 (2005),
+  1183--1225. -- The penalty-regularised Coulomb law of the friction option, its trial state and
+  return map, Eqs. (39) and (47)--(49); and the nodal scale factor of the penalty normalisation.
+* P. Wriggers: *Computational Contact Mechanics*, 2nd ed., Springer, 2006. -- The return map of the
+  friction law, Box 14, and the non-symmetric slip tangent, Eq. (10.113).
+* M. Gitterle, A. Popp, M. W. Gee, W. A. Wall: *Finite deformation frictional mortar contact using a
+  semi-smooth Newton method with consistent linearization*, International Journal for Numerical
+  Methods in Engineering 84 (2010), 543--571. -- The objective weighted slip increment, Eq. (53),
+  that the frozen-geometry slip measure of the friction option approximates.
 * A. Popp, M. W. Gee, W. A. Wall: *A finite deformation mortar contact formulation using a
   primal-dual active set strategy*, International Journal for Numerical Methods in Engineering 79
   (2009), 1354--1391.
