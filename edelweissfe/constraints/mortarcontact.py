@@ -114,11 +114,13 @@ nodal normals, and the coupling matrices:
     condition is satisfied exactly at convergence.
 
 ``penalty``
-    The multipliers are eliminated and replaced by a pressure proportional to the weighted gap. The
+    The multipliers are eliminated and replaced by a pressure proportional to the penetration. The
     condition is then satisfied only approximately, the error falling in proportion to the penalty
-    stiffness. Note the unit: the weighted gap carries length times area, so this stiffness is not
-    the classical penalty parameter of a pointwise formulation and cannot be chosen from the same
-    rules of thumb.
+    stiffness. Note the unit: the weighted gap carries length times area, so the stiffness that
+    multiplies it is divided by the nodal weight ``D_II``, node by node. The pressure is then
+    ``eps_N`` times the pointwise penetration, and ``penaltyStiffness`` is the classical pointwise
+    penalty parameter -- the same quantity, in the same unit, as the ``penalty`` of the node- and
+    segment-based penalty constraints, chosen by the same rules of thumb.
 
 ``penalty`` with ``augmentedLagrange``
     The same, with the pressure estimate corrected in an outer loop that runs after each converged
@@ -203,7 +205,7 @@ class MortarContactSchema:
             "How the non-penetration condition is enforced. 'lagrange', the default, keeps the multipliers "
             "as unknowns of the global system, which becomes a saddle-point problem and satisfies the "
             "condition exactly at convergence. 'penalty' eliminates them in favour of a pressure proportional "
-            "to the WEIGHTED gap, which satisfies the condition only to an error falling in proportion to "
+            "to the penetration, which satisfies the condition only to an error falling in proportion to "
             "penaltyStiffness -- unless augmentedLagrange is switched on as well, which recovers the accuracy "
             "without the extra unknowns. Both share the entire geometric pipeline (search, projection, "
             "clipping, segmentation, nodal normals and the coupling matrices) and differ in the constraint "
@@ -215,17 +217,18 @@ class MortarContactSchema:
 
     penaltyStiffness: float = schemaField(
         description=(
-            "Stiffness of the penalty pressure, used only for formulation=penalty. NOTE the unit, which is "
-            "not the one a pointwise penalty formulation would have: the gap it multiplies is the WEIGHTED "
-            "gap and carries length times area, so a value taken from a rule of thumb for a classical penalty "
-            "parameter will be wrong by the size of a face. The weighted form is used because it needs no "
-            "division by the nodal mortar weight, and that weight cannot be assumed to stay away from zero on "
-            "a partially covered quadratic face. Leave it at 0, the default, to derive it as the smallest "
-            "adjacent Young's modulus divided by the characteristic face size and the mean nodal weight -- a "
-            "contact stiffness per unit area of one adjacent element layer. That derivation is an engineering "
-            "rule of this implementation rather than an established value, and the derived number is reported "
-            "once so it stays checkable. With augmentedLagrange enabled the converged result does not depend "
-            "on this stiffness at all; it then only sets how fast the outer loop converges."
+            "Stiffness of the penalty pressure, used only for formulation=penalty: the pressure is "
+            "penaltyStiffness times the pointwise penetration. It is the classical pointwise penalty "
+            "parameter, in the same unit as the penalty of the node- and segment-based penalty constraints, "
+            "so a value can be carried between them. Internally the weighted gap (length times area) is "
+            "multiplied by penaltyStiffness divided by the nodal mortar weight, node by node; the division is "
+            "applied to the stiffness rather than to the gap because that weight cannot be assumed to stay "
+            "away from zero on a partially covered quadratic face. Leave it at 0, the default, to derive it as "
+            "100 times the smallest adjacent Young's modulus divided by the characteristic face size (under "
+            "explicit dynamics, from the stability limit of the time increment instead). That derivation is an "
+            "engineering rule of this implementation rather than an established value, and the derived number "
+            "is reported once so it stays checkable. With augmentedLagrange enabled the converged result does "
+            "not depend on this stiffness at all; it then only sets how fast the outer loop converges."
         ),
         dtype=float,
         default=0.0,
