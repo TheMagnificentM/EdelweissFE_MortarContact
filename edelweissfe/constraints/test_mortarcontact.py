@@ -1306,9 +1306,9 @@ class TestFriction(unittest.TestCase):
         np.testing.assert_allclose(P1, P0, rtol=0.0, atol=1e-14 * np.max(np.abs(P0)))
         np.testing.assert_allclose(np.abs(frictional.frictionTractionCurrent), 0.0, atol=1e-14)
 
-    def _checkTangent(self, mu, slide, expectedState):
+    def _checkTangent(self, mu, slide, expectedState, **options):
         timeStep = _frozenTimeStep()
-        constraint = self._constraint(mu=mu)
+        constraint = self._constraint(mu=mu, **options)
         U = self._masterSlide(constraint, slide)
         dU = U.copy()
         self._assemble(constraint, U, dU, timeStep)
@@ -1332,6 +1332,50 @@ class TestFriction(unittest.TestCase):
 
         _, K = self._checkTangent(mu=0.2, slide=0.05, expectedState=2)
         self.assertGreater(float(np.max(np.abs(K - K.T))), 1e-8 * float(np.max(np.abs(K))), "slip tangent is symmetric")
+
+    def test_the_pressure_dependent_stick_tangent_differentiates_its_residual(self):
+        """slipTolerance: eps_T = mu p / gamma_crit, so the stick tangent carries a pressure term."""
+
+        constraint, _ = self._checkTangent(mu=0.3, slide=1e-4, expectedState=1, slipTolerance=0.05)
+        self.assertGreater(constraint._elasticSlip, 0.0)
+
+    def test_the_pressure_dependent_slip_tangent_differentiates_its_residual(self):
+        self._checkTangent(mu=0.3, slide=0.05, expectedState=2, slipTolerance=0.005)
+
+    def test_the_elastic_slip_is_the_same_at_every_pressure(self):
+        """With slipTolerance a sticking node carries mu p (slide / gamma_crit), proportional to p."""
+
+        slide = 1e-4
+        constraint = self._constraint(mu=0.3, slipTolerance=0.05)
+        U = self._masterSlide(constraint, slide)
+        self._assemble(constraint, U, U, _frozenTimeStep())
+        active = constraint.activeSet
+        np.testing.assert_array_equal(constraint.slipState[active], 1)
+        pressure = np.abs(constraint.nodalMultipliers[active])
+        expected = 0.3 * pressure * slide / constraint._elasticSlip
+        np.testing.assert_allclose(constraint.frictionTractionCurrent[active, 0], expected, rtol=1e-10)
+
+    def test_slip_tolerance_and_tangent_penalty_are_exclusive(self):
+        model = _TwoBlockModel.build(gap=-0.01)
+        with self.assertRaises(ValueError):
+            _TwoBlockModel.constraint(model, formulation="penalty", mu=0.3, slipTolerance=0.005, tangentPenalty=1e3)
+
+    def test_a_node_without_pressure_has_no_friction_and_no_tangential_stiffness(self):
+        """A closed node at zero pressure: no stick spring may tie the surfaces over a cone of radius 0."""
+
+        timeStep = _frozenTimeStep()
+        frictionless = _TwoBlockModel.constraint(
+            _TwoBlockModel.build(gap=0.0, masterShift=0.2), formulation="penalty", penaltyStiffness=1e3
+        )
+        frictional = self._constraint(mu=0.5, gap=0.0)
+        U = self._masterSlide(frictional, 1e-4)
+        P0, K0 = self._assemble(frictionless, U, U, timeStep)
+        P1, K1 = self._assemble(frictional, U, U, timeStep)
+        self.assertGreater(int(np.sum(frictional.activeSet)), 0, "no node is closed -- test is vacuous")
+        np.testing.assert_allclose(frictional.getNormalPressures(), 0.0, atol=1e-10)  # round-off of a zero gap
+        np.testing.assert_allclose(K1, K0, atol=0.0)
+        np.testing.assert_allclose(P1, P0, atol=0.0)
+        np.testing.assert_array_equal(frictional.slipState[frictional.activeSet], 2)
 
     def test_a_slipping_node_carries_mu_times_its_pressure_against_the_slide(self):
         mu = 0.2
@@ -1495,6 +1539,7 @@ class TestFriction(unittest.TestCase):
     def test_a_recurring_stick_slip_state_freezes_after_the_free_iterations(self):
         constraint = self._constraint(mu=0.3)
         stick, slip = np.ones(constraint.nNonMortarNodes, dtype=int), np.full(constraint.nNonMortarNodes, 2)
+        constraint.frictionTractionCurrent[:] = [0.0, 0.0, 1.0]  # a direction to freeze
         for iteration, state in enumerate((stick, slip, stick, slip, stick)):
             constraint.currentIteration = iteration
             constraint.slipState[:] = state
@@ -1502,6 +1547,7 @@ class TestFriction(unittest.TestCase):
             # A-B-A within the free iterations (0..2) is left alone; the recurrence at 3 freezes.
             self.assertEqual(constraint.slipStateFrozen, iteration >= 3, f"iteration {iteration}")
         np.testing.assert_array_equal(constraint._frozenSlip, True)
+        np.testing.assert_allclose(constraint._frozenDirection, [[0.0, 0.0, 1.0]] * constraint.nNonMortarNodes)
 
     def test_a_late_change_freezes_even_without_a_cycle(self):
         constraint = self._constraint(mu=0.3)
@@ -1534,10 +1580,21 @@ class TestFriction(unittest.TestCase):
         np.testing.assert_array_equal(constraint.slipState[active], 2)
 
         constraint.slipStateFrozen = True
-        constraint._frozenSlip[:] = constraint.slipState == 2
-        tiny = self._masterSlide(constraint, 1e-6)
-        self._assemble(constraint, tiny, tiny, timeStep)
+        constraint._freezeDirections(constraint.slipState == 2)
+        frozenDirection = constraint.frictionTractionCurrent[active] / np.linalg.norm(
+            constraint.frictionTractionCurrent[active], axis=1, keepdims=True
+        )
+        # Back the other way, by less than the elastic range: free, this would stick (and reverse);
+        # frozen, it keeps slipping the way it went.
+        back = -self._masterSlide(constraint, 1e-6)
+        self._assemble(constraint, back, back, timeStep)
         np.testing.assert_array_equal(constraint.slipState[active], 2)
+        np.testing.assert_allclose(
+            constraint.frictionTractionCurrent[active]
+            / np.linalg.norm(constraint.frictionTractionCurrent[active], axis=1, keepdims=True),
+            frozenDirection,
+            atol=1e-12,
+        )
         pressure = np.abs(constraint.nodalMultipliers[active])
         np.testing.assert_allclose(
             np.linalg.norm(constraint.frictionTractionCurrent[active], axis=1), mu * pressure, rtol=1e-12
