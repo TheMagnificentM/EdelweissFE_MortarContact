@@ -37,6 +37,13 @@ from edelweissfe.models.femodel import FEModel
 from edelweissfe.models.meshdependent import MeshDependent
 from edelweissfe.sets.elementset import ElementSet
 from edelweissfe.timesteppers.timestep import TimeStep
+from edelweissfe.utils.contactfriction import (
+    CoulombFriction,
+    characteristicFacetSize,
+    frictionCoefficientField,
+    slipToleranceField,
+    tangentPenaltyField,
+)
 from edelweissfe.utils.facetcontactgeometry import (
     closestFacetCandidates,
     line2ClosestPoint,
@@ -76,10 +83,10 @@ distributing with those would leave the corners lifting off exactly as before. T
 basis (:mod:`~edelweissfe.utils.parentfacegeometry`) is the load-bearing half of the formulation.
 
 Scope of this implementation: normal penalty contact under ``sliding=small``, for both the implicit
-and the explicit solver path. Coulomb friction and augmented Lagrange are *not* implemented (the
-node-based constraint has both); the per-quadrature-point state they need is carried here so they
-can be added without restructuring. ``sliding=finite`` is rejected rather than approximated, see
-:class:`Constraint`.
+and the explicit solver path, with optional Coulomb friction -- the law shared by all contact
+formulations (:mod:`~edelweissfe.utils.contactfriction`), evaluated at every quadrature point.
+Augmented Lagrange is *not* implemented (the node-based constraint has it). ``sliding=finite`` is
+rejected rather than approximated, see :class:`Constraint`.
 
 What this formulation does *not* fix: pointwise enforcement at quadrature points still
 over-constrains a non-matching interface, and the integrand is discontinuous inside a slave facet
@@ -188,6 +195,9 @@ class SurfaceToDeformableSurfacePenaltySchema:
         dtype=str,
         default="small",
     )
+    mu: float = frictionCoefficientField(" Evaluated at every quadrature point.")
+    tangentPenalty: float = tangentPenaltyField("penalty")
+    slipTolerance: float = slipToleranceField()
 
 
 class Constraint(ConstraintBase, MeshDependent):
@@ -234,13 +244,21 @@ class Constraint(ConstraintBase, MeshDependent):
     itself an iterative sub-problem -- a substantially different formulation from the flat-facet
     algebra of :mod:`~edelweissfe.utils.facetcontactgeometry`, not a variation on it.
 
+    Coulomb friction (``mu > 0``) is the law shared by all contact formulations
+    (:class:`~edelweissfe.utils.contactfriction.CoulombFriction`): every quadrature point is a
+    contact point with the coefficients ``c = [N^s, -N^m]`` of its frozen projection, the measure
+    ``A = J_q`` and the pressure ``p = -f_n / J_q``, so the tangential traction is integrated and
+    distributed with the parent-face shape functions exactly as the pressure is. The history is
+    rotated into the new frozen tangent plane at every connectivity update and discarded where a
+    point loses its facet or crosses a crease of the master surface.
+
     Like the node-based constraint, this is a
     :class:`~edelweissfe.models.meshdependent.MeshDependent`: if either surface's source solid
     elements are refined mid-run, it rebuilds that side from the regenerated facets at its own next
-    :meth:`updateConnectivity` tick. Since no frictional or multiplier history exists yet, the
-    rebuild is unconditional and carries nothing across -- the point at which friction is added is
-    the point at which that becomes a real problem, because quadrature points, unlike nodes, have no
-    identity that survives a retiling.
+    :meth:`updateConnectivity` tick. Quadrature points, unlike nodes, have no identity of their own,
+    so the frictional history is keyed by the nodes of its slave facet and the quadrature point
+    index: a slave facet that survives the retiling unchanged keeps the history of its points, the
+    points of a newly created facet start at rest.
 
     Parameters
     ----------
@@ -308,6 +326,13 @@ class Constraint(ConstraintBase, MeshDependent):
         self.nQuadraturePoints = configuration.nQuadraturePoints
         self.searchDistance = configuration.searchDistance
 
+        # The friction law and its per-point state; sized (and, after a retiling, remapped) by
+        # _buildFromSurfaces.
+        self._friction = CoulombFriction(
+            0, self.nDim, configuration.mu, configuration.tangentPenalty, configuration.slipTolerance, owner=name
+        )
+        self._pointKeys = None
+
         self._buildFromSurfaces(slaveSurface, masterSurface)
 
         self.totalNormalForce = 0.0
@@ -315,7 +340,7 @@ class Constraint(ConstraintBase, MeshDependent):
         self.journal.message(
             f"contact '{self.name}': {self.nPoints} points ({len(self._slaveFacets)} slave facets x "
             f"{self.nQuadraturePoints} quadrature points), {len(self.facetElements)} master facets, "
-            f"sliding={self.sliding}, type={self.type}",
+            f"sliding={self.sliding}, type={self.type}, friction={'on' if self._friction.enabled else 'off'}",
             self.identification,
         )
 
@@ -324,8 +349,8 @@ class Constraint(ConstraintBase, MeshDependent):
 
         Called once from ``__init__`` and again after an AMR retiling. Everything here derives from
         the reference configuration and the facets' stamped parent faces, so it is safe to redo
-        wholesale -- there is no history to preserve while friction and augmented Lagrange are
-        unimplemented.
+        wholesale -- except the frictional history, which is carried over for every point whose
+        slave facet (identified by its nodes) and quadrature point survive the retiling.
 
         Parameters
         ----------
@@ -404,6 +429,22 @@ class Constraint(ConstraintBase, MeshDependent):
         self._pointFacet = np.repeat(np.arange(len(self._slaveFacets)), self.nQuadraturePoints)
         self._pointQuadraturePoint = np.tile(np.arange(self.nQuadraturePoints), len(self._slaveFacets))
         self.nPoints = len(self._pointFacet)
+
+        # The frictional state per point, keyed by (slave facet nodes, quadrature point) across a
+        # retiling; the characteristic facet size of slipTolerance is the mean slave facet size.
+        pointKeys = [
+            (tuple(self._slaveFacets[f].nodes), q) for f, q in zip(self._pointFacet, self._pointQuadraturePoint)
+        ]
+        if self._pointKeys is None:
+            self._friction.resize(self.nPoints)
+        else:
+            self._friction.remap(self._pointKeys, pointKeys)
+        self._pointKeys = pointKeys
+        if self._friction.enabled and self._friction.slipTolerance > 0.0 and self._slaveFacets:
+            surfaceMeasure = float(sum(np.sum(w) for w in self._slaveIntegrationWeights))
+            self._friction.setCharacteristicLength(
+                characteristicFacetSize(surfaceMeasure, len(self._slaveFacets), self.nDim)
+            )
 
         self._referenceCoordsFacets = [np.array([n.coordinates for n in el.nodes]) for el in self.facetElements]
         self._masterParentRefCoords = [
@@ -499,8 +540,15 @@ class Constraint(ConstraintBase, MeshDependent):
         # _frozenNormals -- both evaluation paths only read it into a row of nBar.
         facetNormals = {}
 
+        # The frozen normals before and after the update, NaN where there is none, for the transport
+        # of the frictional history into the new tangent planes.
+        previousNormals = np.full((self.nPoints, self.nDim), np.nan)
+        newNormals = np.full((self.nPoints, self.nDim), np.nan)
+
         newAssignment = [None] * self.nPoints
         for p in range(self.nPoints):
+            if self._frozenNormals[p] is not None:
+                previousNormals[p] = self._frozenNormals[p]
             bestDistance = np.inf
             bestFacet = None
             bestWeights = None
@@ -522,9 +570,23 @@ class Constraint(ConstraintBase, MeshDependent):
                     normal, _ = facetNormalAndMeasure(facetCoords[bestFacet])
                     facetNormals[bestFacet] = normal
                 self._frozenNormals[p] = normal
+                newNormals[p] = normal
             else:
                 self._frozenMasterShapeFunctions[p] = None
                 self._frozenNormals[p] = None
+
+        if self._friction.enabled:
+            # Rotate the frictional history into the new frozen tangent planes; discard it where a
+            # point lost its facet or crossed a crease of the master surface (CoulombFriction.carry).
+            assigned = np.array([a is not None for a in newAssignment], dtype=bool)
+            nDiscarded = self._friction.carry(newNormals, previousNormals, assigned, normalPenalty=self.penalty)
+            if nDiscarded:
+                self.journal.message(
+                    f"contact '{self.name}': {nDiscarded} points crossed a crease of the master surface; their "
+                    "frictional history was discarded",
+                    self.identification,
+                    level=2,
+                )
 
         hasChanged = newAssignment != self._assignedFacetIdx
         self._assignedFacetIdx = newAssignment
@@ -596,8 +658,8 @@ class Constraint(ConstraintBase, MeshDependent):
         The facets themselves were already regenerated in the topology-update phase by the implicit
         ``surfaceFacets`` modifier; this constraint is a pure reader of the resulting element sets.
         Everything cached here is derived from the reference configuration, so the rebuild is
-        wholesale -- see the class docstring on why that is acceptable only while there is no
-        frictional or multiplier history to carry.
+        wholesale, except the frictional history of the points whose slave facet survives the
+        retiling (see the class docstring).
         """
 
         slaveRecipe = model.contactFacetRecipes.get(self._slaveSurfaceSetName)
@@ -685,7 +747,7 @@ class Constraint(ConstraintBase, MeshDependent):
             "blockDof": blockDof,
         }
 
-    def _applyConstraintBatched(self, U_np: np.ndarray, PExt: np.ndarray, K) -> None:
+    def _applyConstraintBatched(self, U_np: np.ndarray, dU: np.ndarray, PExt: np.ndarray, K) -> None:
         """The batched force evaluation. Physics identical to the per-point loop, expressed over all
         active points at once; see :meth:`_prepareActiveArrays`."""
 
@@ -728,12 +790,32 @@ class Constraint(ConstraintBase, MeshDependent):
         self._normalForceCurrent[active[closed]] = f_n
         self.totalNormalForce = float(f_n.sum())
 
+        frictionTangent = None
+        if self._friction.enabled:
+            # Every closed point as a contact point of the shared law: c, A = J_q, the frozen normal,
+            # p = -f_n / J_q and dp/dU = -stiffness * w / J_q -- all points at once.
+            area = b["weights"][closed]
+            frictionForces, frictionTangent = self._friction.evaluate(
+                active[closed],
+                c,
+                area,
+                b["nBar"][closed],
+                -f_n / area,
+                (-stiffness / area)[:, None] * w,
+                dU.reshape((-1, b["blockDof"]))[rows],
+                self.penalty,
+                computeTangent=K is not None,
+            )
+            PExt.reshape((-1, b["blockDof"]))[rows] += frictionForces
+
         if K is not None:
             # The tangent is only ever requested by the implicit path, so it stays a loop: one
             # (nSlave+nMaster)*nDim square block per point, written into the view's own per-active
             # -point slots, which the batched form has no way to address in bulk.
             for i, activeIdx in enumerate(rows):
                 K.blocks[activeIdx] += stiffness[i] * np.outer(w[i], w[i])
+                if frictionTangent is not None:
+                    K.blocks[activeIdx] += frictionTangent[i]
 
     def _activeBlockSizes(self) -> list[int]:
         """The DOF count of each assigned contact point's dense block, in assembly order.
@@ -796,6 +878,7 @@ class Constraint(ConstraintBase, MeshDependent):
         inexplicably slow run. One loop rather than two, so the physics cannot drift between the
         implicit and explicit paths."""
 
+        self._friction.checkExplicitIntegrability()
         self.applyConstraint(U_np, dU, PExt, None, timeStep)
 
     def applyConstraint(
@@ -815,9 +898,27 @@ class Constraint(ConstraintBase, MeshDependent):
         self.totalNormalForce = 0.0
         self._normalForceCurrent[:] = 0.0
 
+        friction = self._friction.enabled
+        if friction:
+            self._friction.beginEvaluation(timeStep)
+            self._friction.markOpen(slice(None))
+
         if self._batched is not None:
-            self._applyConstraintBatched(U_np, PExt, K)
-            return
+            self._applyConstraintBatched(U_np, dU, PExt, K)
+        else:
+            self._applyConstraintPointwise(U_np, dU, PExt, K)
+
+        if friction:
+            self._friction.freezeIfChattering(self._friction.iteration)
+
+    def _applyConstraintPointwise(
+        self,
+        U_np: np.ndarray,
+        dU: np.ndarray,
+        PExt: np.ndarray,
+        K: IntegratedSurfaceContactStiffnessView | None,
+    ):
+        """The per-point force evaluation, the reference implementation of the batched one."""
 
         localOffset = 0
         activeIdx = 0
@@ -881,6 +982,25 @@ class Constraint(ConstraintBase, MeshDependent):
             if K is not None:
                 K.blocks[activeIdx] += stiffness * np.outer(w, w)
 
+            if self._friction.enabled:
+                # The point as a contact point of the shared law: c, A = J_q, the frozen normal,
+                # p = -f_n / J_q and dp/dU = -stiffness * w / J_q.
+                area = self._slaveIntegrationWeights[f][self._pointQuadraturePoint[p]]
+                PFriction, KFriction = self._friction.evaluatePoint(
+                    p,
+                    c,
+                    area,
+                    nBar,
+                    -f_n / area,
+                    (-stiffness / area) * w,
+                    dU[globalIdcs],
+                    self.penalty,
+                    computeTangent=K is not None,
+                )
+                PExt[globalIdcs] += PFriction
+                if K is not None:
+                    K.blocks[activeIdx] += KFriction
+
             self._normalForceCurrent[p] = f_n
             self.totalNormalForce += f_n
             activeIdx += 1
@@ -912,6 +1032,48 @@ class Constraint(ConstraintBase, MeshDependent):
         """
 
         return self._gapCurrent.copy()
+
+    def getTangentialTractions(self) -> np.ndarray:
+        """The current tangential (frictional) traction magnitude at each contact point, ordered like
+        :meth:`getNormalPressures`; zero without friction."""
+
+        return self._friction.tractionMagnitudes()
+
+    def getSlipStates(self) -> np.ndarray:
+        """The current stick/slip state of each contact point as a float for output -- 0 open,
+        1 stick, 2 slip -- ordered like :meth:`getNormalPressures`. Always 0 without friction."""
+
+        return self._friction.slipStates()
+
+    def acceptLastState(self):
+        """Promote the tangential tractions of the converged iterate to the frictional history.
+        Called by :meth:`~edelweissfe.models.femodel.FEModel.advanceToTime` upon increment
+        acceptance."""
+
+        if not self._friction.enabled:
+            return
+        insideCone, turnedAway = self._friction.accept()
+        if insideCone or turnedAway:
+            self.journal.message(
+                f"contact '{self.name}': the stick/slip state chattered and was frozen; {insideCone} point(s) "
+                f"were accepted in slip although their stick predictor lies inside the friction cone, "
+                f"{turnedAway} with a predictor more than 30 degrees away from the frozen slip direction. "
+                "They carry the full friction mu*p in the frozen direction; smaller increments, or a "
+                "slipTolerance, remove it.",
+                self.identification,
+                level=1,
+            )
+
+    def getRestartData(self) -> dict[str, np.ndarray] | None:
+        """The converged frictional history; ``None`` without friction, where there is none. The
+        frozen projection is recomputed by the first connectivity update after a restart."""
+
+        return self._friction.restartData() if self._friction.enabled else None
+
+    def setRestartData(self, data: dict[str, np.ndarray]):
+        """Restore the converged frictional history."""
+
+        self._friction.setRestartData(data)
 
     def getSlaveNodalNormalForces(self) -> np.ndarray:
         """The normal component of the contact force delivered to each slave surface node.

@@ -52,6 +52,7 @@ from edelweissfe.models.femodel import FEModel
 from edelweissfe.points.node import Node
 from edelweissfe.sets.elementset import ElementSet
 from edelweissfe.sets.nodeset import NodeSet
+from edelweissfe.utils.contactfriction import SLIP, STICK
 
 _HEXA20_EDGES = (
     (0, 1),
@@ -588,6 +589,146 @@ class TestIntegratedSurfaceContact(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             self._constraint(model, slaveSurface, masterSurface, contactType="cubic")
         self.assertIn("is not supported", str(ctx.exception))
+
+
+class TestIntegratedSurfaceFriction(unittest.TestCase):
+    """Coulomb friction of the integrated constraint: the shared law of
+    :mod:`edelweissfe.utils.contactfriction`, evaluated at every quadrature point."""
+
+    def setUp(self):
+        self.journal = Journal()
+
+    def _constraint(self, penetration=0.05, **options) -> IntegratedContact:
+        model, slaveSurface, masterSurface = twoBlockModel(self.journal, penetration)
+        configuration = SurfaceToDeformableSurfacePenaltySchema(
+            penalty=1.0e4, searchDistance=1.0, contactType="quadratic", **options
+        )
+        constraint = IntegratedContact(
+            "theContact", model, slaveSurface, masterSurface, self.journal, configuration=configuration
+        )
+        constraint.updateConnectivity(model)
+        return constraint
+
+    @staticmethod
+    def _slide(constraint, amount) -> np.ndarray:
+        """Moves the slave nodes of every point block by ``amount`` in x, plus a little noise."""
+
+        U = 1e-4 * np.random.default_rng(5).standard_normal(constraint.nDof)
+        offset = 0
+        for m in constraint._activeBlockSizes():
+            nSlaveDof = constraint.nDim * len(constraint._slaveShapeFunctions[0][0])
+            U[offset : offset + nSlaveDof : constraint.nDim] += amount
+            offset += m
+        return U
+
+    @staticmethod
+    def _forces(constraint, U, dU) -> np.ndarray:
+        PExt = np.zeros(constraint.nDof)
+        constraint.applyConstraint(U, dU, PExt, None, None)
+        return PExt
+
+    @staticmethod
+    def _assembledTangent(constraint, U, dU) -> np.ndarray:
+        flat = np.zeros(constraint.getVIJContributionSize())
+        view = constraint.shapeVIJContribution(flat)
+        constraint.applyConstraint(U, dU, np.zeros(constraint.nDof), view, None)
+        K = np.zeros((constraint.nDof, constraint.nDof))
+        offset = 0
+        for block in view.blocks:
+            idcs = np.arange(offset, offset + block.shape[0])
+            K[np.ix_(idcs, idcs)] += block
+            offset += block.shape[0]
+        return K
+
+    def _checkTangent(self, constraint, U, expectedState):
+        K = self._assembledTangent(constraint, U, U)
+        loaded = constraint.getNormalPressures() > 0.0
+        self.assertTrue(loaded.any(), "no point is in contact -- test is vacuous")
+        np.testing.assert_array_equal(constraint._friction.slipState[loaded], expectedState)
+        h = 1e-8
+        numeric = np.zeros_like(K)
+        for j in range(constraint.nDof):
+            step = np.zeros(constraint.nDof)
+            step[j] = h
+            numeric[:, j] = -(
+                self._forces(constraint, U + step, U + step) - self._forces(constraint, U - step, U - step)
+            ) / (2.0 * h)
+        np.testing.assert_array_equal(constraint._friction.slipState[loaded], expectedState, "state flipped")
+        scale = np.abs(K).max()
+        np.testing.assert_allclose(K / scale, numeric / scale, atol=1e-6)
+
+    def test_the_stick_and_slip_tangents_differentiate_the_residual(self):
+        for batched in (True, False):
+            for slide, state, options in (
+                (1e-5, STICK, {"mu": 10.0}),
+                (5e-2, SLIP, {"mu": 0.3}),
+                (5e-2, SLIP, {"mu": 0.3, "slipTolerance": 0.05}),
+            ):
+                constraint = self._constraint(**options)
+                if not batched:
+                    constraint._batched = None
+                with self.subTest(batched=batched, slide=slide, **options):
+                    self._checkTangent(constraint, self._slide(constraint, slide), state)
+
+    def test_batched_and_per_point_friction_agree(self):
+        constraint = self._constraint(penetration=0.02, mu=0.3)
+        rng = np.random.default_rng(11)
+        U = 2e-2 * rng.standard_normal(constraint.nDof)
+        results = {}
+        for label in ("batched", "loop"):
+            if label == "loop":
+                constraint._batched = None
+            results[label] = (
+                self._forces(constraint, U, U),
+                self._assembledTangent(constraint, U, U),
+                constraint.getTangentialTractions().copy(),
+                constraint.getSlipStates().copy(),
+            )
+        states = results["batched"][3]
+        self.assertTrue((states == STICK).any() or (states == SLIP).any(), "no frictional point -- vacuous")
+        for b, l in zip(results["batched"], results["loop"]):
+            np.testing.assert_allclose(b, l, rtol=1e-11, atol=1e-12)
+
+    def test_sliding_points_carry_mu_times_the_pressure(self):
+        constraint = self._constraint(mu=0.3)
+        U = self._slide(constraint, 5e-2)
+        P = self._forces(constraint, U, U)
+        loaded = constraint.getNormalPressures() > 0.0
+        np.testing.assert_allclose(
+            constraint.getTangentialTractions()[loaded], 0.3 * constraint.getNormalPressures()[loaded], rtol=1e-12
+        )
+        frictionless = self._constraint(mu=0.0)
+        P0 = self._forces(frictionless, U, U)
+        # the frictional force resultant opposes the slide of the slave (x) and equals mu * N
+        nDim = constraint.nDim
+        resultant = (P - P0).reshape(-1, nDim)
+        normal = -frictionless.totalNormalForce
+        self.assertAlmostEqual(abs(resultant[:, 0].sum()), 0.0, delta=1e-9 * normal)  # slave and master cancel
+        slaveForce = 0.0
+        offset = 0
+        nSlaveDof = nDim * len(constraint._slaveShapeFunctions[0][0])
+        for m in constraint._activeBlockSizes():
+            slaveForce += (P - P0)[offset : offset + nSlaveDof : nDim].sum()
+            offset += m
+        self.assertAlmostEqual(slaveForce, -0.3 * normal, delta=1e-6 * normal)
+
+    def test_history_is_promoted_on_accept_and_restored(self):
+        constraint = self._constraint(mu=10.0)
+        U = self._slide(constraint, 1e-5)
+        self._forces(constraint, U, U)
+        np.testing.assert_array_equal(constraint._friction.tractionConverged, 0.0)
+        constraint.acceptLastState()
+        np.testing.assert_allclose(constraint._friction.tractionConverged, constraint._friction.tractionCurrent)
+        restored = self._constraint(mu=10.0)
+        restored.setRestartData({k: v.copy() for k, v in constraint.getRestartData().items()})
+        np.testing.assert_array_equal(restored._friction.tractionConverged, constraint._friction.tractionConverged)
+        self.assertIsNone(self._constraint().getRestartData(), "no friction, no restart data")
+
+    def test_slip_tolerance_is_refused_explicitly(self):
+        constraint = self._constraint(mu=0.3, slipTolerance=0.005)
+        U = np.zeros(constraint.nDof)
+        with self.assertRaises(NotImplementedError):
+            constraint.applyConstraintExplicit(U, U, np.zeros(constraint.nDof), None)
 
 
 if __name__ == "__main__":
