@@ -46,7 +46,11 @@ from edelweissfe.utils.contactfriction import (
     tangentPenaltyField,
 )
 from edelweissfe.utils.facetcontactgeometry import (
+    closestFacet,
     closestFacetCandidates,
+    edgeOrVertexNormal,
+    facetSurfaceBoundary,
+    liesOnSurfaceBoundary,
     line2ClosestPoint,
     line2GapGradientHessian,
     tria3ClosestPoint,
@@ -430,6 +434,8 @@ class Constraint(ConstraintBase, MeshDependent):
 
         self._referenceCoordsSlaves = np.array([n.coordinates for n in self.slaveNodes])
         self._referenceCoordsFacets = [np.array([n.coordinates for n in el.nodes]) for el in self.facetElements]
+        self._masterBoundary = facetSurfaceBoundary([el.nodes for el in self.facetElements])
+        self._setTieTolerance()
 
         self._assignedFacetIdx = [None] * self.nSlaves
 
@@ -524,13 +530,18 @@ class Constraint(ConstraintBase, MeshDependent):
             newNormals = np.full((self.nSlaves, self.nDim), np.nan)
             candidatesPerSlave = closestFacetCandidates(slaveCoords, facetCoords, self.searchDistance)
             for s in range(self.nSlaves):
-                bestDistance = np.inf
-                bestFacet = None
-                bestWeights = None
-                for i in candidatesPerSlave[s]:
-                    weights, distance = closestPointFunction(slaveCoords[s], *facetCoords[i])
-                    if distance < bestDistance:
-                        bestDistance, bestFacet, bestWeights = distance, i, weights
+                # The first facet of exactly the smallest distance; whether another one is equally
+                # close decides the normal below. (The facet itself is not chosen by the lowest index
+                # on a tie: with nodalWeights=serendipityOptimal the facet sets the distribution of
+                # the force, and NodeToDeformableSurfaceContactPatchHexa20 pins the established one.)
+                bestFacet, bestWeights, bestDistance, tied = closestFacet(
+                    slaveCoords[s],
+                    candidatesPerSlave[s],
+                    facetCoords,
+                    closestPointFunction,
+                    self._tieTolerance,
+                    lowestIndexOnTie=False,
+                )
 
                 if bestFacet is not None and (self.searchDistance is None or bestDistance <= self.searchDistance):
                     newAssignment[s] = bestFacet
@@ -541,6 +552,22 @@ class Constraint(ConstraintBase, MeshDependent):
                     weightTransform = self.facetElements[bestFacet].weightTransform
                     self._frozenWeights[s] = bestWeights if weightTransform is None else weightTransform @ bestWeights
                     normal, _ = facetNormalAndMeasure(facetCoords[bestFacet])
+                    if (
+                        tied
+                        and weightTransform is None
+                        and not liesOnSurfaceBoundary(
+                            self.facetElements[bestFacet].nodes, bestWeights, self._masterBoundary
+                        )
+                    ):
+                        # On an edge or vertex between facets each facet normal would give its own
+                        # gap (Wriggers 2006, Fig. 10.8); the normal along the distance vector gives
+                        # the one signed distance, continuous across the edge. Not on the boundary of
+                        # the master surface, where the point is beside the surface rather than over
+                        # it, and not with transformed weights: they move the point within the facet
+                        # plane, which leaves the gap unchanged only along the facet normal.
+                        normal = edgeOrVertexNormal(
+                            slaveCoords[s], bestWeights @ facetCoords[bestFacet], normal, self._tieTolerance
+                        )
                     if self._frozenNormals[s] is not None:
                         previousNormals[s] = self._frozenNormals[s]
                     newNormals[s] = normal
@@ -660,6 +687,13 @@ class Constraint(ConstraintBase, MeshDependent):
                 "master facets with the default nodalWeights='facetConsistent'."
             )
 
+    def _setTieTolerance(self) -> None:
+        """Two facets within this distance of each other count as equally close (see closestFacet)."""
+
+        self._tieTolerance = 1e-10 * characteristicFacetSize(
+            float(np.sum(self.tributaryAreas)), max(len(self.slaveFacetElements), 1), self.nDim
+        )
+
     def _rebindSlave(self, model: FEModel) -> None:
         """Rebuild the slave-side node list/tributary areas from the regenerated facet set,
         preserving frictional history and the AL multiplier of retained slave nodes by identity."""
@@ -677,6 +711,7 @@ class Constraint(ConstraintBase, MeshDependent):
         self.tributaryAreas = np.array(list(tributaryAreaOfSlaveNode.values()))
         self.nSlaves = len(self.slaveNodes)
         self._referenceCoordsSlaves = np.array([n.coordinates for n in self.slaveNodes])
+        self._setTieTolerance()
 
         self._friction.remap(oldSlaveNodes, self.slaveNodes)
         self._lambdaN = np.array([oldLambda.get(n, 0.0) for n in self.slaveNodes])
@@ -693,6 +728,7 @@ class Constraint(ConstraintBase, MeshDependent):
 
         self.facetElements = list(model.elementSets[self._masterSurfaceSetName])
         self._referenceCoordsFacets = [np.array([n.coordinates for n in el.nodes]) for el in self.facetElements]
+        self._masterBoundary = facetSurfaceBoundary([el.nodes for el in self.facetElements])
         self._validateMasterWeightTransforms()
 
         self._assignedFacetIdx = [None] * self.nSlaves

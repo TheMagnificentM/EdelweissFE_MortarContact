@@ -466,14 +466,12 @@ class TestIntegratedSurfaceContact(unittest.TestCase):
         """A point sliding from one master element's parent face onto the next one's reproduces the
         same gap exactly.
 
-        This is the reassignment that actually occurs in service -- 166 times over the
-        NEDSurfaceContact run -- and the one that makes an explicit trajectory a step function of
-        rounding, because *which* side of the seam a borderline point lands on is decided at the
-        1e-16 level. That sensitivity is legitimate only if the two branches agree where they meet,
-        which is what this asserts. On a flat master they agree exactly; what remains in a deformed
-        model is the genuine kink between two non-coplanar element faces, i.e. the frozen facet
-        normal changing -- a property of facet-based contact, not of this mapping. See the header of
-        testfiles/edelweiss-only/NEDSurfaceContact/test.inp.
+        This is the reassignment that occurs in service under a periodic re-search, and *which* side
+        of the seam a borderline point lands on is decided at the 1e-16 level. That is harmless only
+        if the two branches agree where they meet, which is what this asserts. On a flat master they
+        agree exactly; on an edge between two non-coplanar faces of a deformed master they agree
+        through the normal along the distance vector (tests/test_facet_edge_normal.py). See the
+        header of testfiles/edelweiss-only/NEDSurfaceContact/test.inp.
         """
 
         model, slaveSurface, masterSurface = self._twoElementMasterModel(penetration=0.01)

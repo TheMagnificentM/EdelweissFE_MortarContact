@@ -110,8 +110,25 @@ the master surface is computed once per increment from the last converged config
    assigned. Because the *closed* domain is used, there is no dead zone at facet seams: a node
    beyond a facet's edge clamps to that edge or vertex and remains loadable.
 
-2. The assigned facet's unit normal :math:`\bar{\boldsymbol{n}}` and the clamped weights
-   :math:`\bar{N}_a` are frozen. The gap of the current iterate is then
+2. The clamped weights :math:`\bar{N}_a` and a unit normal :math:`\bar{\boldsymbol{n}}` are
+   frozen. The normal is the assigned facet's, except where the closest point lies on an edge or
+   vertex in the interior of the master surface, shared by several facets. There every one of them
+   returns the same closest point at the same distance, so the projection is not unique, and each
+   facet normal would give a gap of its own (Wriggers 2006, Remark 4.1, p. 60, and Fig. 10.8,
+   p. 319). The normal is then taken along the distance vector, as for a node-to-edge or
+   node-to-vertex contact element (Wriggers 2006, Eqs. 9.123 and 9.131),
+
+   .. math::
+
+      \bar{\boldsymbol{n}} = \pm \frac{\boldsymbol{x}_s - \bar{\boldsymbol{x}}}{\| \boldsymbol{x}_s -
+      \bar{\boldsymbol{x}} \|},
+
+   oriented like the facet normal, so that the gap is the signed distance to the surface whichever
+   of the facets is assigned, and continuous across the edge. Facets within :math:`10^{-10} h` of
+   the smallest distance count as equally close (:math:`h` the mean slave facet size). On the
+   boundary of the master surface, where a point is beside the surface rather than over it, the
+   facet normal is kept, and so it is with ``nodalWeights=serendipityOptimal``, whose transformed
+   weights move the point within the facet plane. The gap of the current iterate is then
 
    .. math::
 
@@ -896,11 +913,14 @@ what a reader modifying :mod:`~edelweissfe.constraints.surfacetodeformablesurfac
    triangle-inequality radius bound, a superset of the exhaustive sweep iterated in ascending facet
    index, so it reproduces the exhaustive tie-break). The clamped closest point is computed on each
    candidate **flat** facet and the nearest wins, subject to ``searchDistance`` where one is given.
+   Of facets within :math:`10^{-10} h` of the smallest distance the lowest index wins, so the
+   choice of the parent face does not depend on the rounding of the coordinates.
 #. What is frozen from the winner is *not* the flat-facet interpolation: the clamped barycentric
    weights are mapped through that facet's ``vertexParametricCoords`` into its parent face's
-   parametric space, and the parent-face shape functions :math:`N^m` are evaluated there. The
-   facet's unit normal :math:`\bar{\boldsymbol{n}}` is frozen alongside them, per facet rather than
-   per point.
+   parametric space, and the parent-face shape functions :math:`N^m` are evaluated there. The unit
+   normal :math:`\bar{\boldsymbol{n}}` is frozen alongside them: the facet's, or, on an edge or
+   vertex in the interior of the master surface, the one along the distance vector, as for the
+   node-to-surface constraint (:ref:`small-sliding-kinematics`).
 #. Only *assigned* points contribute DOFs, and each contributes one dense block over its slave
    parent face's nodes plus its assigned master parent face's nodes. Gap activation is deliberately
    **not** part of this: an assigned point that happens to be open still owns its block, which is
@@ -1010,10 +1030,7 @@ either surface they rebind to the regenerated facets and carry their history ove
 slave node for node-to-surface, the slave facet's nodes and the quadrature point for the integrated
 formulation. On a restart of a refined run the topology replay re-creates the refined surfaces before
 the contact state is restored, and ``setRestartData`` first catches up with them and then matches the
-checkpoint by node labels, respectively point keys (``tests/test_contact_amr_restart.py``). Ties in
-the integrated formulation's closest-facet search are broken within :math:`10^{-10} h` towards the
-lowest facet index, so that a point on a seam between two parent faces does not switch its
-distribution basis with the rounding of the converged solution.
+checkpoint by node labels, respectively point keys (``tests/test_contact_amr_restart.py``).
 
 .. _contact-explicit-dynamics:
 
@@ -1054,34 +1071,25 @@ A candidate-facet pre-filter (a centroid k-d tree with a triangle-inequality rad
 the search cost without changing which facet is selected; it is a superset of the exhaustive sweep
 and iterated in ascending facet index, so it reproduces the exhaustive tie-break exactly.
 
-**What throttling costs in reproducibility, as opposed to accuracy.** The argument above is about
-accuracy, and it holds. Reproducibility is a separate question, and the answer is different: a
-periodic re-search makes an explicit trajectory a *step function of rounding*. Re-projection itself
-does not -- on a flat master it is provably a change of representation and nothing else, since
-:math:`\bar{\boldsymbol{n}}` is constant and :math:`\bar{\boldsymbol{n}} \cdot \boldsymbol{x}`
-is unchanged by a tangential slide, so the gap is bit-identical whichever facet, parent face or
-parametric location the search now returns (asserted in
-``test_surfacetodeformablesurfacepenalty.py``, both within one parent face and across two). What
-is discontinuous is the *frozen facet normal* where the master is deformed: two adjacent element
-faces are then no longer coplanar, and a point crossing their seam picks up the kink. Measured on
-``NEDSurfaceContact`` at ``contact-update-frequency=10``: 166 crossings over the run, with
-:math:`\|\Delta \bar{\boldsymbol{n}}\|` up to :math:`5.2 \times 10^{-2}` and a gap jump up to
-:math:`4.8 \times 10^{-4}`, some 1.3 % of the gap. Which side of a seam a borderline point lands on
-is decided at the :math:`10^{-16}` level, so a perturbation of that size grows to
-:math:`5.3 \times 10^{-4}` in the final displacements; with the connectivity pinned
-(``contact-update-frequency=0``) the same perturbation ends at :math:`3.8 \times 10^{-16}`.
-
-The practical consequences are worth separating. For a *simulation*, nothing here is a defect: the
-jump is the genuine facet-normal discontinuity of any facet-based scheme, it is self-limiting, and
-throttling remains the right trade. For a *regression reference*, it is fatal, so the explicit
-regression case pins its connectivity and the reassignment path is covered by unit tests instead.
-Note also that the node-based constraint's decks are not a control for any of this unless they set
+**Reproducibility of a periodic re-search.** The argument above is about accuracy. A re-search can
+also move a point onto another facet, and on a flat master that is a change of representation and
+nothing else: :math:`\bar{\boldsymbol{n}}` is constant and :math:`\bar{\boldsymbol{n}} \cdot
+\boldsymbol{x}` is unchanged by a tangential slide, so the gap is bit-identical whichever facet,
+parent face or parametric location the search returns (asserted in
+``test_surfacetodeformablesurfacepenalty.py``, both within one parent face and across two). Where
+the master is deformed, adjacent element faces are no longer coplanar, and a point whose closest
+point lies on the edge between two of them is exactly equally close to both. With the facet normal
+each would give its own gap, and the choice between them is decided at the :math:`10^{-16}` level;
+measured on ``NEDSurfaceContact`` at ``contact-update-frequency=10``, it moves the final
+displacements by :math:`4 \times 10^{-4}`. With the normal along the distance vector
+(:ref:`small-sliding-kinematics`) the gap is the same whichever facet is chosen -- taking the
+highest instead of the lowest index moves the final displacements by :math:`2.7 \times
+10^{-10}` -- and a perturbation of the penalty by :math:`2 \times 10^{-16}` relative ends at
+:math:`4.2 \times 10^{-16}`. The regression case nevertheless pins its connectivity
+(``contact-update-frequency=0``), so that its reference does not depend on the update frequency.
+Note also that the node-based constraint's decks exercise the frozen projection only where they set
 ``sliding=small`` explicitly: the node-based default is ``sliding=finite``, which has no frozen
-projection to re-freeze. Under ``sliding=small`` it injects re-projection jumps too (up to
-:math:`4.8 \times 10^{-6}` on the equivalent model) and still reproduces to
-:math:`6.9 \times 10^{-16}`, because its slave *nodes* happen never to cross a master element
-boundary where 54 quadrature points do -- a property of that model's sampling, not of the
-formulation.
+projection to re-freeze.
 
 
 Verification and benchmarks

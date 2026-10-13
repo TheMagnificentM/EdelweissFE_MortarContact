@@ -358,3 +358,125 @@ def closestFacetCandidates(queryPoints: np.ndarray, facetCoords: list, searchDis
         candidates.append(surviving.tolist())
 
     return candidates
+
+
+def closestFacet(
+    point: np.ndarray,
+    candidates: list,
+    facetCoords: list,
+    closestPointFunction,
+    tieTolerance: float,
+    lowestIndexOnTie: bool = True,
+) -> tuple[int | None, np.ndarray | None, float, bool]:
+    """The closest of the candidate facets to ``point``, and whether that choice is a tie.
+
+    Facets whose distance lies within ``tieTolerance`` of the smallest one count as equally close,
+    and of those the one with the lowest index is taken, so the choice does not depend on the
+    rounding of the current coordinates; with ``lowestIndexOnTie=False`` the first facet of exactly
+    the smallest distance is taken instead. A tie is the ordinary case, not an accident: when the
+    closest point lies on an edge or a vertex shared by several facets, every one of them returns
+    that same point at the same distance. It is where the projection onto a faceted surface is not
+    unique (Wriggers 2006, Remark 4.1 and Fig. 4.4, p. 60; Section 10.1 and Fig. 10.8, pp. 318-319).
+
+    Parameters
+    ----------
+    point
+        The point to be projected.
+    candidates
+        The candidate facet indices, in ascending order (see :func:`closestFacetCandidates`).
+    facetCoords
+        The current coordinates of each facet's nodes.
+    closestPointFunction
+        :func:`tria3ClosestPoint` or :func:`line2ClosestPoint`.
+    tieTolerance
+        Distances within this of the smallest one count as equal.
+    lowestIndexOnTie
+        Whether a tie goes to the lowest index, or to the first facet of exactly the smallest distance.
+
+    Returns
+    -------
+    tuple
+        The index of the chosen facet (``None`` without candidates), its clamped closest-point
+        weights, the distance, and whether another facet was equally close.
+    """
+
+    results = [(i, *closestPointFunction(point, *facetCoords[i])) for i in candidates]
+    if not results:
+        return None, None, np.inf, False
+    smallest = min(distance for _, _, distance in results)
+    equallyClose = [(i, weights, distance) for i, weights, distance in results if distance <= smallest + tieTolerance]
+    if lowestIndexOnTie:
+        facet, weights, distance = equallyClose[0]
+    else:
+        facet, weights, distance = next(result for result in results if result[2] == smallest)
+    return facet, weights, distance, len(equallyClose) > 1
+
+
+def edgeOrVertexNormal(point: np.ndarray, closestPoint: np.ndarray, facetNormal: np.ndarray, tolerance: float):
+    """The contact normal of a point whose closest point lies on an edge or vertex shared by several
+    master facets.
+
+    No facet normal is the normal there, since the edge lies between facets of different
+    orientation. The normal is taken along the distance vector instead, as for the node-to-edge and
+    node-to-vertex contact elements (Wriggers 2006, Eq. 9.123, p. 250, and Eq. 9.131, p. 251),
+    oriented like the facet normal, so that the gap ``n . (point - closestPoint)`` is the signed
+    distance ``+-|point - closestPoint|`` whichever of the equally close facets was chosen.
+
+    Where the distance vector has no tangential part beyond ``tolerance`` -- the point lies on the
+    edge, or above a flat stretch of the surface, where the facet normal already is the direction of
+    the distance vector -- the facet normal is kept as it is. The switch is continuous: at the
+    boundary of an edge's region the distance vector is parallel to the facet normal.
+    """
+
+    distanceVector = point - closestPoint
+    tangential = distanceVector - (facetNormal @ distanceVector) * facetNormal
+    if float(np.linalg.norm(tangential)) <= tolerance:
+        return facetNormal
+    sign = 1.0 if float(facetNormal @ distanceVector) >= 0.0 else -1.0
+    return sign * distanceVector / float(np.linalg.norm(distanceVector))
+
+
+def facetSurfaceBoundary(facetNodes: list) -> tuple[set, set]:
+    """The boundary of a surface made of flat facets: the edges that belong to one facet only, and
+    the nodes on them. In 2D, where a facet is a segment, the boundary edges are empty and the
+    boundary nodes are the ends of the chain (nodes of one segment only).
+
+    Parameters
+    ----------
+    facetNodes
+        The nodes of each facet, in the facet's order.
+
+    Returns
+    -------
+    tuple
+        The boundary edges as frozensets of two nodes, and the set of boundary nodes.
+    """
+
+    if facetNodes and len(facetNodes[0]) == 2:
+        count = {}
+        for nodes in facetNodes:
+            for node in nodes:
+                count[node] = count.get(node, 0) + 1
+        return set(), {node for node, n in count.items() if n == 1}
+
+    count = {}
+    for nodes in facetNodes:
+        for a in range(len(nodes)):
+            edge = frozenset((nodes[a], nodes[(a + 1) % len(nodes)]))
+            count[edge] = count.get(edge, 0) + 1
+    boundaryEdges = {edge for edge, n in count.items() if n == 1}
+    return boundaryEdges, {node for edge in boundaryEdges for node in edge}
+
+
+def liesOnSurfaceBoundary(nodes: list, weights: np.ndarray, boundary: tuple[set, set]) -> bool:
+    """Whether the closest point given by its clamped ``weights`` on the facet with ``nodes`` lies on
+    the boundary of the surface (see :func:`facetSurfaceBoundary`): on a boundary vertex, or on a
+    boundary edge."""
+
+    boundaryEdges, boundaryNodes = boundary
+    support = [node for node, weight in zip(nodes, weights) if weight != 0.0]
+    if len(support) == 1:
+        return support[0] in boundaryNodes
+    if len(support) == 2 and len(nodes) == 3:
+        return frozenset(support) in boundaryEdges
+    return False

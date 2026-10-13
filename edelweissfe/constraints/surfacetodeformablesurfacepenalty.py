@@ -46,7 +46,11 @@ from edelweissfe.utils.contactfriction import (
     tangentPenaltyField,
 )
 from edelweissfe.utils.facetcontactgeometry import (
+    closestFacet,
     closestFacetCandidates,
+    edgeOrVertexNormal,
+    facetSurfaceBoundary,
+    liesOnSurfaceBoundary,
     line2ClosestPoint,
     tria3ClosestPoint,
 )
@@ -449,7 +453,8 @@ class Constraint(ConstraintBase, MeshDependent):
             )
 
         self._referenceCoordsFacets = [np.array([n.coordinates for n in el.nodes]) for el in self.facetElements]
-        # Two facets within this distance of each other count as equally close (see updateConnectivity).
+        self._masterBoundary = facetSurfaceBoundary([el.nodes for el in self.facetElements])
+        # Two facets within this distance of each other count as equally close (see closestFacet).
         self._tieTolerance = 1e-10 * characteristicFacetSize(
             float(sum(np.sum(w) for w in self._slaveIntegrationWeights)), max(len(self._slaveFacets), 1), self.nDim
         )
@@ -555,19 +560,12 @@ class Constraint(ConstraintBase, MeshDependent):
         for p in range(self.nPoints):
             if self._frozenNormals[p] is not None:
                 previousNormals[p] = self._frozenNormals[p]
-            bestDistance = np.inf
-            bestFacet = None
-            bestWeights = None
-            for i in candidatesPerPoint[p]:
-                weights, distance = closestPointFunction(slavePointCoords[p], *facetCoords[i])
-                # A tie up to the rounding of the coordinates goes to the first (lowest-index) facet,
-                # not to whichever of them the last bits of the converged solution happen to favour:
-                # the parallel element assembly is reproducible only up to rounding, and a contact
-                # point on the seam between two facets of different parent faces would otherwise
-                # switch its distribution basis from run to run (measured on the AMR contact deck of
-                # tests/test_contact_amr_restart.py: 5e-6 between two identical runs, 1e-16 with it).
-                if distance < bestDistance - self._tieTolerance:
-                    bestDistance, bestFacet, bestWeights = distance, i, weights
+            # The closest facet; a tie -- the closest point on an edge or vertex shared by several
+            # facets -- goes to the lowest index, so the distribution basis does not depend on the
+            # last bits of the coordinates.
+            bestFacet, bestWeights, bestDistance, tied = closestFacet(
+                slavePointCoords[p], candidatesPerPoint[p], facetCoords, closestPointFunction, self._tieTolerance
+            )
 
             if bestFacet is not None and (self.searchDistance is None or bestDistance <= self.searchDistance):
                 newAssignment[p] = bestFacet
@@ -581,6 +579,14 @@ class Constraint(ConstraintBase, MeshDependent):
                 if normal is None:
                     normal, _ = facetNormalAndMeasure(facetCoords[bestFacet])
                     facetNormals[bestFacet] = normal
+                if tied and not liesOnSurfaceBoundary(facet.nodes, bestWeights, self._masterBoundary):
+                    # On an edge or vertex between facets each facet normal would give its own gap
+                    # (Wriggers 2006, Fig. 10.8); the normal along the distance vector gives the one
+                    # signed distance, continuous across the edge. Not on the boundary of the master
+                    # surface, where the point is beside the surface rather than over it.
+                    normal = edgeOrVertexNormal(
+                        slavePointCoords[p], bestWeights @ facetCoords[bestFacet], normal, self._tieTolerance
+                    )
                 self._frozenNormals[p] = normal
                 newNormals[p] = normal
             else:
