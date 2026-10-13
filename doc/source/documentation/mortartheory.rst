@@ -910,7 +910,8 @@ contribution of one non-mortar node is RANK ONE,
 so the assembled contact stiffness is :math:`\boldsymbol{K} = \varepsilon_N \sum_I
 \lvert D_{II}\rvert^{-1} \boldsymbol{v}_I \boldsymbol{v}_I^{\mathsf T}`, and Gershgorin's theorem
 bounds the largest eigenvalue of :math:`\boldsymbol{M}^{-1}\boldsymbol{K}` by the largest scaled
-absolute row sum, as in Ghesquière-Diérickx et al. (2026), Eq. (18), after Kulak (1989):
+absolute row sum, as in Kulak (1989), Eqs. (11)--(12), and Ghesquière-Diérickx et al. (2026),
+Eq. (18):
 
 .. math::
    :label: mortar-stability-factor
@@ -941,9 +942,13 @@ direction to err in. The exact rank-one eigenvalue :math:`\kappa_I \, \boldsymbo
 soon as two nodes share a degree of freedom, which is the normal case. Every non-mortar node is
 counted, not only the currently active ones: the active set changes from increment to increment,
 and a bound that held only for the set that happened to be active when it was computed would not be
-a bound (Ghesquière-Diérickx et al. likewise include all potential contact facets). The bound covers
-the contact on its own: the solver takes the smaller of it and the elements' own critical time
-step, which is not a bound of the elements and the contact together.
+a bound (Ghesquière-Diérickx et al. likewise include all potential contact facets). Kulak shows on
+two impacting bars that the Rayleigh quotient of the contact element underestimates the exact
+eigenvalue (by 39 % when contact and bar stiffness are equal) while the Gershgorin bound
+overestimates it. The bound covers the contact on its own: the solver takes the smaller of it and
+the elements' own critical time step, as Kulak does (his Eq. 14), but his row sums also contain the
+stiffness of the elements adjoining the contact nodes, so the minimum here is not a bound of the
+elements and the contact together.
 
 **What the constraint does with it.** Two cases, and neither of them is silent:
 
@@ -976,11 +981,16 @@ override it, so their penalty stiffness is not covered by the solver's time step
   with penalty-based contact in explicit dynamic fragmentation simulations*, Mechanics of Materials
   215 (2026) 105581.
   -- The penalty scale :math:`\alpha E/h`, Eq. (12); the critical time step and its Gershgorin bound
-  over all potential contact facets, Eqs. (17)--(18), after Kulak (1989).
+  over all potential contact facets, Eqs. (17)--(18).
+* R. F. Kulak: *Critical time step estimation for three-dimensional explicit impact analysis*,
+  Argonne National Laboratory, report CONF-8907161, 1989. -- The Gershgorin bound of the critical
+  time step of penalty contact from nodal row sums, Eqs. (11)--(12), combined with the elements'
+  own limit by the minimum, Eq. (14).
 * LS-DYNA support documentation, *SOFT option* and *Contact stiffness calculation*,
-  https://www.dynasupport.com/howtos/contact/soft-option -- the ``SOFT=1`` stiffness, taken from
-  the nodal masses and the global time step, which is the practical precedent for the derivation
-  above.
+  https://www.dynasupport.com/howtos/contact/soft-option -- with ``SOFT=1`` the contact stiffness
+  is ``max(SLSFAC*SFS*k0, SOFSCL*k1)``, where ``k1`` is "calculated from nodal masses and the
+  solution time step" and ``k0`` from the bulk modulus and the element dimensions; the practical
+  precedent for the derivation above.
 
 
 What is verified, and how

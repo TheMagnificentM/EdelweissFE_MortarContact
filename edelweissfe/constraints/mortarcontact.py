@@ -3151,14 +3151,15 @@ class Constraint(ConstraintBase, MeshDependent):
         stiffness ``eps_N <= 4/(dt^2 R)``. Both follow from the central-difference stability
         limit ``dt_cr = 2/sqrt(lambda_max)`` (Kwon, Kim, Cho & González 2025, Eqs. (20)-(21);
         Ghesquiere-Dierickx et al. 2026, Eq. (17)), with ``lambda_max`` bounded by the Gershgorin row
-        sums of ``M^-1 K`` as in Ghesquiere-Dierickx et al. (2026), Eq. (18), after Kulak (1989).
+        sums of ``M^-1 K`` (Kulak 1989, Eqs. (11)-(12); Ghesquiere-Dierickx et al. 2026, Eq. (18)).
 
         Gershgorin OVERestimates the eigenvalue, so the bound is conservative for the contact
         stiffness on its own: it may ask for a slightly smaller time step, or a slightly softer
         stiffness, than strictly necessary. It bounds the contact alone, not the solids and the
         contact together: the solver takes the smaller of this and the solids' own stable time
-        step, which is not a bound of the coupled system (Ghesquiere-Dierickx et al. 2026 put both
-        into one row sum). That
+        step, as Kulak (1989), Eq. (14), does -- but Kulak's row sums also hold the stiffness of the
+        elements adjoining the contact nodes, and Ghesquiere-Dierickx et al. (2026) put bulk and
+        penalty into one row sum, whereas R here holds the contact stiffness only. That
         is the right direction to err in, and the alternative -- the exact rank-one eigenvalue
         ``kappa * v_I^T M^-1 v_I`` -- is exact for one node in isolation but UNDERestimates as
         soon as two nodes share a degree of freedom, which is the normal case.

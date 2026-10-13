@@ -84,9 +84,11 @@ each formulation assigns to a point. The tangential modulus ``eps_T`` is a tract
 either constant (``tangentPenalty``; by default the formulation's normal penalty modulus, the one
 parameter for normal contact and stick of Wriggers 2006, p. 236, and Puso et al. 2008, Eqs. 18-19)
 or, with ``slipTolerance``, proportional to the pressure, ``eps_T = mu p / (slipTolerance h)`` with
-``h`` the characteristic facet size of the slave surface (as in the penalty friction of Abaqus): a
-sticking point then always slips elastically by up to ``slipTolerance * h``, however lightly it is
-loaded. A pressure-proportional tangential stiffness is the form of Wriggers 2006, Eq. 5.54, p. 92,
+``h`` the characteristic facet size of the slave surface: a sticking point then always slips
+elastically by up to ``slipTolerance * h``, however lightly it is loaded. This is the SLIP
+TOLERANCE of Abaqus/Standard, "the ratio of allowable maximum elastic slip to characteristic contact
+surface face dimension", default 0.005 (Abaqus Keywords Reference, *FRICTION,
+https://abaqus-docs.mit.edu/2017/English/SIMACAEKEYRefMap/simakey-r-friction.htm). A pressure-proportional tangential stiffness is the form of Wriggers 2006, Eq. 5.54, p. 92,
 with exponent one; the definition of ``h`` is this implementation's.
 
 A point without pressure carries no friction (Simo & Laursen 1992, p. 104: the algorithm requires

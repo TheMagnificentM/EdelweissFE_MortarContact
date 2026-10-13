@@ -417,7 +417,9 @@ def edgeOrVertexNormal(point: np.ndarray, closestPoint: np.ndarray, facetNormal:
     master facets.
 
     No facet normal is the normal there, since the edge lies between facets of different
-    orientation. The normal is taken along the distance vector instead, as for the node-to-edge and
+    orientation; a projection onto a C0 surface has to include its edges and corner points
+    (Konyukhov & Schweizerhof 2008, CMAME 197, 3045-3056). The normal is taken along the distance
+    vector instead, as for the node-to-edge and
     node-to-vertex contact elements (Wriggers 2006, Eq. 9.123, p. 250, and Eq. 9.131, p. 251),
     oriented like the facet normal, so that the gap ``n . (point - closestPoint)`` is the signed
     distance ``+-|point - closestPoint|`` whichever of the equally close facets was chosen.

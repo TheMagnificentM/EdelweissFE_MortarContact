@@ -115,8 +115,9 @@ the master surface is computed once per increment from the last converged config
    vertex in the interior of the master surface, shared by several facets. There every one of them
    returns the same closest point at the same distance, so the projection is not unique, and each
    facet normal would give a gap of its own (Wriggers 2006, Remark 4.1, p. 60, and Fig. 10.8,
-   p. 319). The normal is then taken along the distance vector, as for a node-to-edge or
-   node-to-vertex contact element (Wriggers 2006, Eqs. 9.123 and 9.131),
+   p. 319). For a surface that is only :math:`C^0`, the projection has to include edges and corner
+   points (Konyukhov & Schweizerhof 2008). The normal is then taken along the distance vector, as
+   for a node-to-edge or node-to-vertex contact element (Wriggers 2006, Eqs. 9.123 and 9.131),
 
    .. math::
 
@@ -356,7 +357,9 @@ Eqs. 10.121--10.126 and Box 14). The tangential modulus :math:`\varepsilon_T` is
 slip: constant (``tangentPenalty``, by default the formulation's normal penalty modulus, one
 parameter for normal contact and stick as in Wriggers 2006, p. 236) or, with ``slipTolerance``,
 proportional to the pressure, :math:`\varepsilon_T = \mu p / (\texttt{slipTolerance}\, h)` with
-:math:`h` the mean facet size of the slave surface (Abaqus' penalty friction). A sticking point then
+:math:`h` the mean facet size of the slave surface -- the SLIP TOLERANCE of Abaqus/Standard, the
+ratio of the allowable elastic slip to a characteristic contact surface face dimension, whose
+default 0.005 it shares (Abaqus Keywords Reference, ``*FRICTION``). A sticking point then
 slips elastically by up to :math:`\texttt{slipTolerance}\, h` however lightly it is loaded, which
 keeps the stick/slip state from being decided by noise on lightly loaded interfaces.
 ``slipTolerance`` is refused under explicit dynamics, where a pressure-dependent modulus is not
