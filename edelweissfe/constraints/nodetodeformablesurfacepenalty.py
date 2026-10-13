@@ -41,6 +41,7 @@ from edelweissfe.utils.contactfriction import (
     CoulombFriction,
     characteristicFacetSize,
     frictionCoefficientField,
+    matchRestartKeys,
     slipToleranceField,
     tangentPenaltyField,
 )
@@ -347,6 +348,7 @@ class Constraint(ConstraintBase, MeshDependent):
 
         self.name = name
         self.journal = journal
+        self._model = model
         self._lastSeenTopologyVersion = model.topologyVersion
         model.registerMeshDependent(self)
 
@@ -981,7 +983,8 @@ class Constraint(ConstraintBase, MeshDependent):
                 self._lambdaN[s] = min(0.0, self._lambdaN[s] + penaltyForcePart)
 
     def getRestartData(self) -> dict[str, np.ndarray]:
-        """Return the converged frictional and augmented-Lagrange-multiplier history.
+        """Return the converged frictional and augmented-Lagrange-multiplier history per slave node,
+        together with the slave node labels.
 
         ``_assignedFacetIdx``, ``_gapCurrent``, ``_frozenWeights``/``_frozenNormals`` are excluded:
         they are recomputed from scratch every increment by :meth:`updateConnectivity` /
@@ -991,18 +994,35 @@ class Constraint(ConstraintBase, MeshDependent):
         return {
             **self._friction.restartData(),
             "lambdaN": self._lambdaN,
+            "slaveNodeLabels": np.array([node.label for node in self.slaveNodes], dtype=int),
         }
 
     def setRestartData(self, data: dict[str, np.ndarray]):
-        """Restore the converged frictional and augmented-Lagrange-multiplier history. A checkpoint
-        written while the history was still stored as a nodal force (``tangentialForceConverged``)
-        is converted to the traction by the tributary areas."""
+        """Restore the converged frictional and augmented-Lagrange-multiplier history.
+
+        Called after the topology replay of an AMR run has re-created the refined mesh but before any
+        solver refreshed the mesh dependents, so the constraint first catches up with the refined
+        surfaces (:meth:`refresh`) and then matches the checkpoint to its slave nodes by label. A
+        checkpoint without labels is taken to be in the current order. One written while the history
+        was still stored as a nodal force (``tangentialForceConverged``) is converted to the traction
+        by the tributary areas."""
+
+        self.refreshIfMeshChanged(self._model)
+
+        if "slaveNodeLabels" in data:
+            current, stored = matchRestartKeys(
+                [int(label) for label in data["slaveNodeLabels"]], [node.label for node in self.slaveNodes]
+            )
+        else:
+            current = stored = np.arange(self.nSlaves)
 
         if "tangentialForceConverged" in data:
-            areas = self.tributaryAreas[:, None]
-            force = np.asarray(data["tangentialForceConverged"])
+            areas = self.tributaryAreas[current, None]
+            force = np.asarray(data["tangentialForceConverged"])[stored]
             traction = np.divide(force, areas, out=np.zeros_like(force), where=areas > 0)
-            self._friction.setRestartData({"frictionTractionConverged": traction})
+            self._friction.setRestartData(
+                {"frictionTractionConverged": traction}, current, np.arange(len(current), dtype=int)
+            )
         else:
-            self._friction.setRestartData(data)
-        self._lambdaN[:] = data["lambdaN"]
+            self._friction.setRestartData(data, current, stored)
+        self._lambdaN[current] = np.asarray(data["lambdaN"])[stored]

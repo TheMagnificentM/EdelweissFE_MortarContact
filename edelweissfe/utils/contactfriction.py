@@ -164,6 +164,26 @@ def characteristicFacetSize(surfaceMeasure: float, nFacets: int, nDim: int) -> f
     return (surfaceMeasure / nFacets) ** (1.0 / (nDim - 1))
 
 
+def matchRestartKeys(storedKeys, currentKeys) -> tuple[np.ndarray, np.ndarray]:
+    """Match the contact points of a checkpoint to the current ones by key -- a node label, or a
+    tuple of node labels and a quadrature point index -- for a restart whose points need not be in
+    the same order or of the same number (e.g. after a topology replay of an AMR run).
+
+    Returns
+    -------
+    tuple
+        ``(current, stored)`` index arrays: point ``current[i]`` receives entry ``stored[i]`` of the
+        checkpoint. Points without a counterpart are left out.
+    """
+
+    storedIndex = {key: i for i, key in enumerate(storedKeys)}
+    pairs = [(i, storedIndex[key]) for i, key in enumerate(currentKeys) if key in storedIndex]
+    if not pairs:
+        return np.zeros(0, dtype=int), np.zeros(0, dtype=int)
+    current, stored = zip(*pairs)
+    return np.array(current, dtype=int), np.array(stored, dtype=int)
+
+
 class CoulombFriction:
     """The penalty-regularised Coulomb law and the frictional state of the contact points of one
     constraint.
@@ -675,16 +695,25 @@ class CoulombFriction:
             "frictionActiveConverged": self.activeConverged.astype(float),
         }
 
-    def setRestartData(self, data: dict[str, np.ndarray]):
+    def setRestartData(self, data: dict[str, np.ndarray], current=None, stored=None):
         """Restore the converged frictional history from :meth:`restartData`. A checkpoint that holds
-        only the traction leaves pressure and contact status at rest."""
+        only the traction leaves pressure and contact status at rest.
 
-        self.tractionConverged[:] = data["frictionTractionConverged"]
-        self.tractionCurrent[:] = data["frictionTractionConverged"]
+        ``current`` and ``stored`` optionally select which point of this state receives which entry
+        of the checkpoint (see :func:`matchRestartKeys`); by default the two are taken to be in the
+        same order and of the same size.
+        """
+
+        if current is None:
+            current = stored = slice(None)
+        traction = np.asarray(data["frictionTractionConverged"])
+        self.tractionConverged[current] = traction[stored]
+        self.tractionCurrent[current] = traction[stored]
         if "frictionPressureConverged" in data:
-            self.pressureConverged[:] = data["frictionPressureConverged"]
-            self.pressureCurrent[:] = data["frictionPressureConverged"]
-            self.activeConverged[:] = np.asarray(data["frictionActiveConverged"]) > 0.5
+            pressure = np.asarray(data["frictionPressureConverged"])
+            self.pressureConverged[current] = pressure[stored]
+            self.pressureCurrent[current] = pressure[stored]
+            self.activeConverged[current] = np.asarray(data["frictionActiveConverged"])[stored] > 0.5
 
     # ------------------------------------------------------------------ output
 

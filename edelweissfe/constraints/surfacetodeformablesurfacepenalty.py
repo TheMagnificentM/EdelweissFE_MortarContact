@@ -41,6 +41,7 @@ from edelweissfe.utils.contactfriction import (
     CoulombFriction,
     characteristicFacetSize,
     frictionCoefficientField,
+    matchRestartKeys,
     slipToleranceField,
     tangentPenaltyField,
 )
@@ -298,6 +299,7 @@ class Constraint(ConstraintBase, MeshDependent):
 
         self.name = name
         self.journal = journal
+        self._model = model
         self._lastSeenTopologyVersion = model.topologyVersion
         model.registerMeshDependent(self)
 
@@ -447,6 +449,10 @@ class Constraint(ConstraintBase, MeshDependent):
             )
 
         self._referenceCoordsFacets = [np.array([n.coordinates for n in el.nodes]) for el in self.facetElements]
+        # Two facets within this distance of each other count as equally close (see updateConnectivity).
+        self._tieTolerance = 1e-10 * characteristicFacetSize(
+            float(sum(np.sum(w) for w in self._slaveIntegrationWeights)), max(len(self._slaveFacets), 1), self.nDim
+        )
         self._masterParentRefCoords = [
             np.array([n.coordinates for n in el.parentFaceNodes]) for el in self.facetElements
         ]
@@ -554,7 +560,13 @@ class Constraint(ConstraintBase, MeshDependent):
             bestWeights = None
             for i in candidatesPerPoint[p]:
                 weights, distance = closestPointFunction(slavePointCoords[p], *facetCoords[i])
-                if distance < bestDistance:
+                # A tie up to the rounding of the coordinates goes to the first (lowest-index) facet,
+                # not to whichever of them the last bits of the converged solution happen to favour:
+                # the parallel element assembly is reproducible only up to rounding, and a contact
+                # point on the seam between two facets of different parent faces would otherwise
+                # switch its distribution basis from run to run (measured on the AMR contact deck of
+                # tests/test_contact_amr_restart.py: 5e-6 between two identical runs, 1e-16 with it).
+                if distance < bestDistance - self._tieTolerance:
                     bestDistance, bestFacet, bestWeights = distance, i, weights
 
             if bestFacet is not None and (self.searchDistance is None or bestDistance <= self.searchDistance):
@@ -1065,15 +1077,39 @@ class Constraint(ConstraintBase, MeshDependent):
             )
 
     def getRestartData(self) -> dict[str, np.ndarray] | None:
-        """The converged frictional history; ``None`` without friction, where there is none. The
-        frozen projection is recomputed by the first connectivity update after a restart."""
+        """The converged frictional history per contact point, with the point keys (the labels of
+        its slave facet's nodes and its quadrature point index); ``None`` without friction, where
+        there is none. The frozen projection is recomputed by the first connectivity update after a
+        restart."""
 
-        return self._friction.restartData() if self._friction.enabled else None
+        if not self._friction.enabled:
+            return None
+        return {**self._friction.restartData(), "pointKeys": self._pointKeyLabels()}
 
     def setRestartData(self, data: dict[str, np.ndarray]):
-        """Restore the converged frictional history."""
+        """Restore the converged frictional history. Called after the topology replay of an AMR run
+        re-created the refined mesh but before any solver refreshed the mesh dependents, so the
+        constraint first catches up with the refined surfaces (:meth:`refresh`) and then matches the
+        checkpoint to its points by key."""
 
-        self._friction.setRestartData(data)
+        self.refreshIfMeshChanged(self._model)
+
+        if "pointKeys" in data:
+            current, stored = matchRestartKeys(
+                [tuple(int(v) for v in row) for row in np.asarray(data["pointKeys"])],
+                [tuple(int(v) for v in row) for row in self._pointKeyLabels()],
+            )
+            self._friction.setRestartData(data, current, stored)
+        else:
+            self._friction.setRestartData(data)
+
+    def _pointKeyLabels(self) -> np.ndarray:
+        """``(nPoints, nFacetNodes + 1)``: the node labels of each point's slave facet and its
+        quadrature point index -- the key the frictional history is carried by."""
+
+        if not self.nPoints:
+            return np.zeros((0, 1), dtype=int)
+        return np.array([[node.label for node in nodes] + [q] for nodes, q in self._pointKeys], dtype=int)
 
     def getSlaveNodalNormalForces(self) -> np.ndarray:
         """The normal component of the contact force delivered to each slave surface node.

@@ -37,6 +37,7 @@ from edelweissfe.config.phenomena import getFieldSize
 from edelweissfe.constraints.base.constraintbase import ConstraintBase
 from edelweissfe.journal.journal import Journal
 from edelweissfe.models.femodel import FEModel
+from edelweissfe.models.meshdependent import MeshDependent
 from edelweissfe.sets.nodeset import NodeSet
 from edelweissfe.timesteppers.timestep import TimeStep
 from edelweissfe.utils.caseinsensitivedict import CaseInsensitiveDict
@@ -44,6 +45,7 @@ from edelweissfe.utils.contactfriction import (
     CoulombFriction,
     characteristicFacetSize,
     frictionCoefficientField,
+    matchRestartKeys,
     slipToleranceField,
     tangentPenaltyField,
 )
@@ -645,7 +647,7 @@ _triangleGaussWeights = np.array(
 )
 
 
-class Constraint(ConstraintBase):
+class Constraint(ConstraintBase, MeshDependent):
     """A segment-to-segment mortar contact constraint between two deformable surfaces.
 
     The module docstring above states the formulation, its sign convention and the three ways the
@@ -686,6 +688,9 @@ class Constraint(ConstraintBase):
 
         self.journal = journal
         self.model = model
+        # AMR: rebuilt from the regenerated facets at the next refresh (see refresh).
+        self._lastSeenTopologyVersion = model.topologyVersion
+        model.registerMeshDependent(self)
         # Resolving names, coercing values and filling in defaults is the schema's job, done once
         # here so that a direct call from a test and the route through
         # fromConstraintDefinition see the same rules.
@@ -704,47 +709,7 @@ class Constraint(ConstraintBase):
         self._nonMortarSurfaceSetName = non_mortar_surf_name
         self._mortarSurfaceSetName = mortar_surf_name
 
-        self.nonMortarFacets = self._collectFacets(model, non_mortar_surf_name, "Non-mortar")
-        self.mortarFacets = self._collectFacets(model, mortar_surf_name, "Mortar")
-
-        # Identify nodes. First-seen order, so the node numbering of the contact system is a
-        # function of the facet set alone and not of dictionary iteration order.
-        self.nonMortarNodes = []
-        for el in self.nonMortarFacets:
-            for node in el.nodes:
-                if node not in self.nonMortarNodes:
-                    self.nonMortarNodes.append(node)
-
-        self.mortarNodes = []
-        for el in self.mortarFacets:
-            for node in el.nodes:
-                if node not in self.mortarNodes:
-                    self.mortarNodes.append(node)
-
-        # The formulation assumes a fixed pair of DISJOINT surfaces. A node listed
-        # on both of them is not merely questionable input, it makes the system
-        # singular: for coinciding facets C = D holds exactly, hence the weak gap
-        # g_I = -sum_K D_IK (x_K.n) + sum_J C_IJ (x_J.n) vanishes identically for
-        # every configuration, and the corresponding lambda row of K cancels out
-        # the moment such a node becomes active. Without this check the user only
-        # sees an unintelligible linear-solver failure.
-        # NOTE: this rules out MISDECLARED surfaces, not self-contact. Genuine
-        # self-contact would additionally require an exclusion rule for a facet's
-        # own and adjacent facets, an unambiguous nodal normal at doubly
-        # classified nodes and a dynamic surface pairing; it is out of scope here.
-        shared_nodes = set(self.nonMortarNodes) & set(self.mortarNodes)
-        if shared_nodes:
-            labels = sorted(node.label for node in shared_nodes)
-            raise ValueError(
-                f"MortarContact '{name}': non-mortar surface '{non_mortar_surf_name}' and mortar "
-                f"surface '{mortar_surf_name}' share {len(labels)} node(s): {labels}. "
-                f"The two contact surfaces must be disjoint - coinciding facets yield an "
-                f"identically vanishing weak gap and thus a singular system."
-            )
-
-        self._nodes = self.nonMortarNodes + self.mortarNodes
-        self.nNonMortarNodes = len(self.nonMortarNodes)
-        self.nMortarNodes = len(self.mortarNodes)
+        self._identifySurfaces(model)
 
         # ------------------------------------------------------------------
         # FORMULATION. Two ways to enforce the same discrete constraint g_A = 0,
@@ -763,10 +728,7 @@ class Constraint(ConstraintBase):
                 f"Valid choices are 'lagrange' (default) and 'penalty'."
             )
 
-        self.nMultipliers = self.nNonMortarNodes if self.formulation == "lagrange" else 0
-        self._nDof = self.sizeField * len(self._nodes) + self.nMultipliers
-
-        self._fieldsOnNodes = [[self.field]] * len(self._nodes)
+        self._updateFootprint()
         self.active = True
 
         # Semi-smooth-Newton complementarity parameter of the normal contact NCP
@@ -836,36 +798,7 @@ class Constraint(ConstraintBase):
                 "Set formulation=penalty to use it.",
             )
 
-        # Node index lookups for fast access
-        self.nodeToGlobalIndex = {node: i for i, node in enumerate(self._nodes)}
-        self.nonMortarNodeToIndex = {node: i for i, node in enumerate(self.nonMortarNodes)}
-        self.mortarNodeToIndex = {node: i for i, node in enumerate(self.mortarNodes)}
-
-        # Undeformed coordinates of all constraint nodes (slaves first, then masters)
-        self._X = np.array([node.coordinates for node in self._nodes])
-
-        # Largest extent of the non-mortar surface in any coordinate direction, taken once from the
-        # undeformed configuration. It is the length this constraint measures other lengths against
-        # wherever an absolute bound would otherwise have to be invented - the noise floor of the
-        # weighted gap, and the margin of the orientation check. Taking it undeformed is deliberate:
-        # a tolerance that moved with the solution would make a state's admissibility depend on how
-        # it was reached.
-        slaveCoordinates = self._X[: self.nNonMortarNodes]
-        self._interfaceDiameter = float(np.max(np.ptp(slaveCoordinates, axis=0))) if len(slaveCoordinates) else 0.0
-
-        # Precompute undeformed normals
-        self.undeformedNormals = self.computeNormals()
-
-        # The orientation of the contact facets is an INPUT property: it decides
-        # the direction of n_I and with it the sign of gap and pressure. Nothing
-        # downstream can recover from getting it wrong - a slave normal pointing
-        # into its own body turns the contact into an adhesive bond that transmits
-        # tension. Two independent checks, both diagnostic rather than fatal,
-        # because a legitimate mesh may be split, non-manifold at its border, or
-        # deliberately one-sided.
-        self._checkFacetWinding(self.nonMortarFacets, non_mortar_surf_name)
-        self._checkFacetWinding(self.mortarFacets, mortar_surf_name)
-        self._checkSurfacesFaceEachOther()
+        self._deriveNodalGeometry()
 
         # Initialize PDASS variables
         self.activeSet = np.zeros(self.nNonMortarNodes, dtype=bool)
@@ -929,6 +862,97 @@ class Constraint(ConstraintBase):
         # patch-test suite before being wired up; the counts are recorded in the
         # documentation.
 
+    def _identifySurfaces(self, model: FEModel):
+        """Collect the contact elements of both sides and the non-mortar and mortar nodes from the
+        two element sets. Called at construction and again after an AMR refinement regenerated the
+        facets (see :meth:`refresh`)."""
+
+        self.nonMortarFacets = self._collectFacets(model, self._nonMortarSurfaceSetName, "Non-mortar")
+        self.mortarFacets = self._collectFacets(model, self._mortarSurfaceSetName, "Mortar")
+
+        # Identify nodes. First-seen order, so the node numbering of the contact system is a
+        # function of the facet set alone and not of dictionary iteration order.
+        self.nonMortarNodes = []
+        for el in self.nonMortarFacets:
+            for node in el.nodes:
+                if node not in self.nonMortarNodes:
+                    self.nonMortarNodes.append(node)
+
+        self.mortarNodes = []
+        for el in self.mortarFacets:
+            for node in el.nodes:
+                if node not in self.mortarNodes:
+                    self.mortarNodes.append(node)
+
+        # The formulation assumes a fixed pair of DISJOINT surfaces. A node listed
+        # on both of them is not merely questionable input, it makes the system
+        # singular: for coinciding facets C = D holds exactly, hence the weak gap
+        # g_I = -sum_K D_IK (x_K.n) + sum_J C_IJ (x_J.n) vanishes identically for
+        # every configuration, and the corresponding lambda row of K cancels out
+        # the moment such a node becomes active. Without this check the user only
+        # sees an unintelligible linear-solver failure.
+        # NOTE: this rules out MISDECLARED surfaces, not self-contact. Genuine
+        # self-contact would additionally require an exclusion rule for a facet's
+        # own and adjacent facets, an unambiguous nodal normal at doubly
+        # classified nodes and a dynamic surface pairing; it is out of scope here.
+        shared_nodes = set(self.nonMortarNodes) & set(self.mortarNodes)
+        if shared_nodes:
+            labels = sorted(node.label for node in shared_nodes)
+            raise ValueError(
+                f"MortarContact '{self._name}': non-mortar surface '{self._nonMortarSurfaceSetName}' and mortar "
+                f"surface '{self._mortarSurfaceSetName}' share {len(labels)} node(s): {labels}. "
+                f"The two contact surfaces must be disjoint - coinciding facets yield an "
+                f"identically vanishing weak gap and thus a singular system."
+            )
+
+        self._nodes = self.nonMortarNodes + self.mortarNodes
+        self.nNonMortarNodes = len(self.nonMortarNodes)
+        self.nMortarNodes = len(self.mortarNodes)
+
+    def _updateFootprint(self):
+        """The degrees of freedom of the contact system: the field on every contact node, plus one
+        multiplier per non-mortar node under formulation=lagrange."""
+
+        self.nMultipliers = self.nNonMortarNodes if self.formulation == "lagrange" else 0
+        self._nDof = self.sizeField * len(self._nodes) + self.nMultipliers
+        self._fieldsOnNodes = [[self.field]] * len(self._nodes)
+
+    def _deriveNodalGeometry(self):
+        """Everything derived from the contact nodes in the undeformed configuration: the index
+        lookups, the reference coordinates, the interface diameter, the undeformed normals, and the
+        orientation checks of the two surfaces."""
+
+        # Node index lookups for fast access
+        self.nodeToGlobalIndex = {node: i for i, node in enumerate(self._nodes)}
+        self.nonMortarNodeToIndex = {node: i for i, node in enumerate(self.nonMortarNodes)}
+        self.mortarNodeToIndex = {node: i for i, node in enumerate(self.mortarNodes)}
+
+        # Undeformed coordinates of all constraint nodes (slaves first, then masters)
+        self._X = np.array([node.coordinates for node in self._nodes])
+
+        # Largest extent of the non-mortar surface in any coordinate direction, taken once from the
+        # undeformed configuration. It is the length this constraint measures other lengths against
+        # wherever an absolute bound would otherwise have to be invented - the noise floor of the
+        # weighted gap, and the margin of the orientation check. Taking it undeformed is deliberate:
+        # a tolerance that moved with the solution would make a state's admissibility depend on how
+        # it was reached.
+        slaveCoordinates = self._X[: self.nNonMortarNodes]
+        self._interfaceDiameter = float(np.max(np.ptp(slaveCoordinates, axis=0))) if len(slaveCoordinates) else 0.0
+
+        # Precompute undeformed normals
+        self.undeformedNormals = self.computeNormals()
+
+        # The orientation of the contact facets is an INPUT property: it decides
+        # the direction of n_I and with it the sign of gap and pressure. Nothing
+        # downstream can recover from getting it wrong - a slave normal pointing
+        # into its own body turns the contact into an adhesive bond that transmits
+        # tension. Two independent checks, both diagnostic rather than fatal,
+        # because a legitimate mesh may be split, non-manifold at its border, or
+        # deliberately one-sided.
+        self._checkFacetWinding(self.nonMortarFacets, self._nonMortarSurfaceSetName)
+        self._checkFacetWinding(self.mortarFacets, self._mortarSurfaceSetName)
+        self._checkSurfacesFaceEachOther()
+
     def _warnOnce(self, key: str, message: str):
         """Emit a runtime diagnostic at most once per constraint instance and cause.
 
@@ -971,6 +995,15 @@ class Constraint(ConstraintBase):
         nodeSets = getattr(model, "nodeSets", None)
         if nodeSets is None:
             return
+        if getattr(self, "_ownsNonMortarNodeSet", False):
+            # Ours, published at construction: brought back into the order of the contact system
+            # after a refinement (which also rewrites every tracked node set, this one included).
+            current = nodeSets.get(setName)
+            if current is None:
+                nodeSets[setName] = NodeSet(setName, list(self.nonMortarNodes))
+            else:
+                current.replaceMembers(list(self.nonMortarNodes))
+            return
         if setName in nodeSets:
             self._warnOnce(
                 "node_set_exists",
@@ -980,6 +1013,114 @@ class Constraint(ConstraintBase):
             )
             return
         nodeSets[setName] = NodeSet(setName, list(self.nonMortarNodes))
+        self._ownsNonMortarNodeSet = True
+
+    # ------------------------------------------------------------------ AMR
+
+    def refresh(self, model: FEModel, change) -> bool:
+        """Rebuild the contact system from the regenerated facets after an AMR refinement touched
+        either surface, carrying every nodal state over by ``Node`` identity.
+
+        The surface element generator regenerates ALL facets of a refined surface as new elements
+        (``facets=wholeFace`` included), on the solid's own ``Node`` objects -- so a node that
+        survives the refinement is the same object before and after, and a new node is one that did
+        not exist. What is carried over for a retained non-mortar node: the frictional history
+        (traction, pressure, contact status), the augmented pressure estimate, the reference gap
+        vector of the objective slip correction, and under formulation=lagrange its converged
+        multiplier. A new node starts at rest. Everything geometric -- segmentation, coupling
+        matrices, normals, tolerances -- is invalidated and rebuilt at the next assembly from the
+        last converged configuration, exactly as at a regular increment.
+
+        Under formulation=lagrange the number of multipliers follows the non-mortar nodes, so the
+        constraint's scalar variables are re-created (see
+        :meth:`~edelweissfe.models.femodel.FEModel.reassignScalarVariablesOfConstraint`).
+
+        Returns True if either surface was touched: the DOF footprint changed, so the solver must
+        rebuild its equation system (:meth:`updateConnectivity` alone never says so).
+        """
+
+        recipes = getattr(model, "contactFacetRecipes", {})
+        touched = False
+        for setName in (self._nonMortarSurfaceSetName, self._mortarSurfaceSetName):
+            recipe = recipes.get(setName)
+            if recipe is not None and change.touchesSurface(recipe[0]):
+                touched = True
+            if setName in getattr(change, "changedElementSets", ()):
+                touched = True
+        if not touched:
+            return False
+
+        oldNonMortarNodes = list(self.nonMortarNodes)
+        oldMultipliers = (
+            np.array([variable.value for variable in self.scalarVariables])
+            if self.formulation == "lagrange" and len(self.scalarVariables) == len(oldNonMortarNodes)
+            else None
+        )
+
+        self._identifySurfaces(model)
+        self._updateFootprint()
+        self._invalidateGeometry()
+        self._deriveNodalGeometry()
+        self._remapNodalState(oldNonMortarNodes)
+        self._publishNonMortarNodeSet(model)
+
+        if self.formulation == "lagrange":
+            variables = model.reassignScalarVariablesOfConstraint(self)
+            if oldMultipliers is not None:
+                old = dict(zip(oldNonMortarNodes, oldMultipliers))
+                for node, variable in zip(self.nonMortarNodes, variables):
+                    variable.value = old.get(node, 0.0)
+
+        if self.journal is not None:
+            self.journal.message(
+                f"contact '{self._name}': rebuilt after a mesh refinement, {self.nNonMortarNodes} non-mortar and "
+                f"{self.nMortarNodes} mortar nodes ({len(oldNonMortarNodes)} non-mortar before)",
+                self.identification,
+                level=1,
+            )
+        return True
+
+    def _invalidateGeometry(self):
+        """Drop every cache derived from the contact surfaces, so that the next assembly rebuilds the
+        frozen geometry from scratch."""
+
+        for attribute in (
+            "_nonMortarNeighbourCache",
+            "currentNormals",
+            "currentD",
+            "currentC",
+            "currentNodalWeights",
+            "currentDNonzero",
+            "currentDRow",
+            "currentCNonzero",
+            "currentCRow",
+        ):
+            self.__dict__.pop(attribute, None)
+        self._geometryStale = True
+        self._explicitStabilityFactor = None
+        # A new attempt of the current increment as far as the per-increment bookkeeping goes.
+        self.lastTimeStepKey = None
+
+    def _remapNodalState(self, oldNonMortarNodes: list):
+        """Carry the per-node state over to the current non-mortar nodes by ``Node`` identity; a new
+        node starts at rest."""
+
+        index = {node: i for i, node in enumerate(oldNonMortarNodes)}
+        newToOld = np.array([index.get(node, -1) for node in self.nonMortarNodes], dtype=int)
+        kept = newToOld >= 0
+
+        def remapped(array, fill):
+            result = np.full((self.nNonMortarNodes,) + array.shape[1:], fill, dtype=array.dtype)
+            result[kept] = array[newToOld[kept]]
+            return result
+
+        self.activeSet = remapped(self.activeSet, False)
+        self.augmentedMultipliers = remapped(self.augmentedMultipliers, 0.0)
+        self.augmentedMultipliersConverged = remapped(self.augmentedMultipliersConverged, 0.0)
+        self.currentWeakGap = remapped(self.currentWeakGap, 0.0)
+        self.nodalMultipliers = remapped(self.nodalMultipliers, 0.0)
+        self.frictionGapReference = remapped(self.frictionGapReference, np.nan)
+        self._friction.remap(oldNonMortarNodes, self.nonMortarNodes)
 
     @staticmethod
     def _collectFacets(model: FEModel, elementSetName: str, side: str) -> list:
@@ -2837,32 +2978,59 @@ class Constraint(ConstraintBase):
         return np.divide(self.currentWeakGap, weights, out=np.zeros(self.nNonMortarNodes), where=covered)
 
     def getRestartData(self) -> dict[str, np.ndarray] | None:
-        """The converged frictional history and augmented pressure estimate.
+        """The converged frictional history, the augmented pressure estimate and, under
+        formulation=lagrange, the multipliers -- each per non-mortar node, together with the node
+        labels they belong to.
 
         Everything else -- the frozen geometry, the active set, the derived stiffnesses -- is rebuilt
         from the restored solution at the first assembly after a restart. The reference gap vector
         comes along so that the objective correction of the first rebuild after the restart has
-        something to compare against.
+        something to compare against. The multipliers are also scalar variables of the model, but
+        those are restored by name, i.e. by index, which after a refinement no longer identifies a
+        node; the labels do.
         """
 
-        return {
+        data = {
             **self._friction.restartData(),
             "frictionGapReference": self.frictionGapReference,
             "augmentedMultipliersConverged": self.augmentedMultipliersConverged,
+            "nonMortarNodeLabels": np.array([node.label for node in self.nonMortarNodes], dtype=int),
         }
+        if self.formulation == "lagrange":
+            data["lagrangeMultipliers"] = np.array([variable.value for variable in self.scalarVariables])
+        return data
 
     def setRestartData(self, data: dict[str, np.ndarray]):
-        """Restore the converged frictional history and augmented pressure estimate.
+        """Restore the state of :meth:`getRestartData`.
 
-        A checkpoint written before the objective slip correction existed holds only the traction;
-        the correction then starts at the first rebuild after the restart instead.
+        Called by :meth:`~edelweissfe.models.femodel.FEModel.readRestart` after the topology replay
+        of an AMR run has re-created the refined mesh, but before any solver has refreshed the mesh
+        dependents -- so the constraint first catches up with the refined surfaces itself, and then
+        matches the checkpoint to its non-mortar nodes by label. A checkpoint without labels is taken
+        to be in the current node order; one written before the objective slip correction existed
+        holds only the traction, and the correction then starts at the first rebuild after the
+        restart instead.
         """
 
-        self._friction.setRestartData(data)
+        self.refreshIfMeshChanged(self.model)
+
+        if "nonMortarNodeLabels" in data:
+            current, stored = matchRestartKeys(
+                [int(label) for label in data["nonMortarNodeLabels"]], [node.label for node in self.nonMortarNodes]
+            )
+        else:
+            current = stored = np.arange(self.nNonMortarNodes)
+
+        self._friction.setRestartData(data, current, stored)
         if "frictionGapReference" in data:
-            self.frictionGapReference[:] = data["frictionGapReference"]
-        self.augmentedMultipliersConverged[:] = data["augmentedMultipliersConverged"]
-        self.augmentedMultipliers[:] = data["augmentedMultipliersConverged"]
+            self.frictionGapReference[current] = np.asarray(data["frictionGapReference"])[stored]
+        augmented = np.asarray(data["augmentedMultipliersConverged"])[stored]
+        self.augmentedMultipliersConverged[current] = augmented
+        self.augmentedMultipliers[current] = augmented
+        if "lagrangeMultipliers" in data and self.formulation == "lagrange":
+            multipliers = np.asarray(data["lagrangeMultipliers"])
+            for i, j in zip(current, stored):
+                self.scalarVariables[i].value = multipliers[j]
 
     def _stabilityFactor(self, lumpedMass: np.ndarray) -> float:
         """The stiffness-independent part R of this constraint's stability bound.
