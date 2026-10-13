@@ -30,7 +30,6 @@ Created on Sun Jul 23 21:03:23 2017
 
 @author: Matthias Neuner
 """
-
 from collections import defaultdict
 
 import numpy as np
