@@ -105,10 +105,11 @@ node is *closed*, it carries no pressure, and the augmented outer loop has nothi
 
 **A closed node is an active node**, in both branches. The complementarity function has a kink where
 its indicator vanishes -- :math:`p_I = 0` together with a gap that is zero up to the noise floor --
-and a semi-smooth Newton method may use any element of the generalized derivative there: Ito and
-Kunisch (2003, Proposition 1.1) give the derivative of :math:`\max(0, y)` as 1 for :math:`y > 0`, 0
-for :math:`y < 0` and an arbitrary :math:`\delta` at :math:`y = 0`. The choice is free for the
-convergence theory but not in practice. Putting the kink on the inactive side removes every closed
+and a semi-smooth Newton method may use any element of the generalized derivative there:
+Hintermüller, Ito and Kunisch (2002, Eq. 3.2, Lemma 3.1 and Remark 3.1) give the derivative of
+:math:`\max(0, y)` as 1 for :math:`y > 0`, 0 for :math:`y < 0` and an arbitrary :math:`\delta` at
+:math:`y = 0`; their own active-set strategy is the one with :math:`\delta = 0`. The choice is free
+for the local convergence result but not in practice. Putting the kink on the inactive side removes every closed
 node from the tangent, and a body carried by the contact alone then has a singular tangent whenever
 its gap is exactly closed -- at a cold start from a touching configuration, and at the start of every
 increment that follows a load-free one, which resolves an initial interference to exactly zero. The
@@ -230,9 +231,11 @@ With ``mu > 0`` the ``penalty`` formulation adds Coulomb friction, regularised b
 penalty in the same way the normal condition is. The law -- elastic stick predictor, radial return
 onto the cone, consistent tangent, history, anti-chattering freeze, ``slipTolerance`` -- is the one
 all contact formulations of EdelweissFE share (:mod:`~edelweissfe.utils.contactfriction`, described in
-the *Coulomb friction* section of :doc:`contacttheory`); it is the law of Yang, Laursen and Meng
-(2005), their Eqs. (39) and (47)--(49), in the three-dimensional form of Puso, Laursen and Solberg
-(2008), their Eqs. (16)--(21), with the return map of Wriggers (2006), Box 14. It needs no unknowns
+the *Coulomb friction* section of :doc:`contacttheory`): the penalty-regularised law with the
+traction as history and the radial return of Simo and Laursen (1992), Eqs. (3.9) and
+(3.12)--(3.14), and Wriggers (2006), Eqs. (10.121)--(10.126) and Box 14; in the mortar setting it is
+the law of Yang, Laursen and Meng (2005), their Eqs. (39) and (47)--(49), in the three-dimensional
+form of Puso, Laursen and Solberg (2008), their Eqs. (16)--(21). It needs no unknowns
 of its own and is therefore available under the implicit and the explicit solvers alike;
 ``formulation=lagrange`` with ``mu > 0`` is refused. What is mortar-specific is how a non-mortar
 node maps onto that law, and the objective slip correction below.
@@ -269,7 +272,7 @@ penetrating pair turns the weighted gap vector :math:`g_I = \sum_K D_{IK} x_K - 
 and reads as a slip of about :math:`\theta` times the penalty gap, which in stick would accumulate
 over the increments. The objective measure of Yang et al., Eq. (47), and of Gitterle et al. (2010),
 Eq. (53), :math:`-(D_{n+1} - D_n) x_s + (C_{n+1} - C_n) x_m`, differs from the frozen one by exactly
-the change of :math:`g_I`, and the coupling matrices of the end of an increment are what the next
+the change of :math:`g_I` (Yang et al., Eqs. (45)--(46); Gitterle et al., Eqs. (50)--(51)), and the coupling matrices of the end of an increment are what the next
 geometry rebuild computes. The accepted traction is therefore corrected there (the optional gap
 correction of the shared history transport),
 
@@ -496,7 +499,7 @@ factor is exactly one -- which is their point as well: once the weighting is in 
 difference between slave mortar integrals in inner and boundary elements", and the separate
 treatment of a boundary element that the second part would otherwise need "can be skipped".
 
-One generalisation is this implementation's own. Cichosz and Bischoff define the weighting factor
+EdelweissFE generalises the weighting in one respect. Cichosz and Bischoff define the weighting factor
 parametrically, as the reciprocal of :math:`\int N_k \,\mathrm{d}\xi` over the covered interval,
 which for their straight two-node elements returns the row to the whole-element value. The ratio of
 the two PHYSICAL integrals used here lands on the same value for those elements and extends to a
@@ -505,10 +508,9 @@ curved facet, whose Jacobian does not cancel out of a parametric expression.
 For a fixed active set the weighting is a rescaling of the constraint and the displacement solution
 is identical. Across the active-set decision it is not. The activation test compares the pressure
 against :math:`c_n` times the normalised gap; the gap is invariant under the rescaling and the
-pressure is not, so a node close to the threshold can switch differently. This is an improvement
-rather than a side effect: before the rescaling the quantity entering that comparison at a thinly
-covered node was a force divided by a vanishing area, set against a genuine pressure on the other
-side of the test. Measured on a curved indenter, three nodes at the edge of the contact zone move,
+pressure is not, so a node close to the threshold can switch differently. That is intended: without
+the rescaling the quantity entering that comparison at a thinly covered node would be a force
+divided by a vanishing area, set against a genuine pressure on the other side of the test. Measured on a curved indenter, three nodes at the edge of the contact zone move,
 by at most 3.4 % of the peak pressure, while the agreement with the analytical Hertz solution stays
 at 1.0 %.
 
@@ -634,11 +636,13 @@ penetration is :math:`p/\varepsilon_N` at every node, so the pressure a uniform 
 uniform. Measured on the two-block patch test, the relative pressure spread is
 :math:`1.7\cdot10^{-12}` on a *non-conforming* mesh, with a pure penalty and no augmentation.
 
-The scale factor is the :math:`\zeta_A` of Yang, Laursen & Meng (2005), their Eqs. (36) and (37),
-which is :math:`1/\sum_D n_{AD} = 1/D_{AA}` and is introduced there, in their words, "to cause the
-gap function :math:`g_A` to have the proper units of length, which is of crucial importance when
-implementing penalty methods in particular". Their Section 8.1 passes the patch test on
-non-conforming meshes to machine precision with a penalty.
+The scale factor is the :math:`\kappa_A` of Yang, Laursen & Meng (2005), their Eqs. (36) and (37),
+:math:`1/\sum_D n_{AD}`, the row sum of the slave mortar matrix in the reference configuration,
+introduced there, in their words, "to cause the gap function :math:`g_A` to have the proper units
+of length, which is of crucial importance when implementing penalty methods in particular". Here it
+is the nodal weight :math:`|D_{II}|` of the current geometry rebuild, which is that row sum for the
+dual basis. Their Section 8.1 passes the patch test on non-conforming meshes to machine precision
+with a penalty (in two dimensions).
 
 **Why only the stiffness is divided, not the gap.** :math:`D_{II}` cannot be assumed to stay away
 from zero -- a partially covered CONQUAD9, a CONQUAD8 corner at :math:`\alpha = 1/3` and the sliver
@@ -669,7 +673,7 @@ Choosing the parameters
   uniform over the interface; the contact *pressure* stays constant, which is what makes the patch
   test pass at any finite stiffness. Switching ``augmentedLagrange`` on at the same stiffness
   brings the displacement error to 3e-11, four orders better, and removes the dependence on the
-  stiffness altogether. Pure penalty is now a reasonable choice where the compliance is acceptable,
+  stiffness altogether. Pure penalty is a reasonable choice where the compliance is acceptable,
   and it is the only one an explicit solver can integrate.
 
 * ``cn`` enters the activation test only. It is purely algorithmic -- the opening vanishes at an
@@ -690,8 +694,11 @@ Choosing the parameters
   characteristic face size, :math:`\varepsilon_N = 100\,E/h`. No nodal weight enters that rule, and
   none should: the weights differ by a factor of four across an ordinary interface, so a mean weight
   cannot stand in for them; the per-node normalisation belongs in the stiffness and is applied
-  there. That derivation is an engineering rule of this implementation rather than an established
-  value, and the derived number is reported. With ``augmentedLagrange`` enabled the converged result does not depend on it
+  there. The literature gives the scale of the value, not the value: Wriggers (2006), Remark 6.4,
+  finds that a penalty "at least 100 times EA" is needed even in a two-bar example and that it has
+  to be chosen as a function of the mesh size, and Ghesquière-Diérickx et al. (2026), Eq. (12),
+  quote :math:`\alpha E/h` with :math:`\alpha` between :math:`10^1` and :math:`10^4` as the common
+  guideline. The derived number is reported. With ``augmentedLagrange`` enabled the converged result does not depend on it
   at all; it then only sets how fast the outer loop converges.
 
   **Under explicit dynamics it is bounded from above** and is derived from a different rule
@@ -743,8 +750,8 @@ instead, for reasons given in the next section.
 The reference is deliberately the converged state and not the incoming iterate: solvers
 extrapolate the previous increment before the first assembly, and freezing at that predictor would
 make the converged contact solution depend on a solver switch that must not influence it. A
-cutback re-attempt resets the frozen state along with everything else, since the geometry of a
-diverged attempt belongs to that attempt.
+cutback re-attempt starts from the same converged state, and so from the same frozen geometry; the
+per-increment bookkeeping is reset with it.
 
 Routing the rebuild through the tick rather than through a new increment number is what separates
 the two cadences. The per-increment bookkeeping -- the active set, the augmentation counter, the
@@ -757,10 +764,10 @@ re-segmentation happening underneath the iteration.
 
 **The active set is re-decided in every Newton iteration.** This is the semi-smooth Newton method,
 and it is what gives the active set superlinear convergence rather than a fixed-point character.
-Two safeguards surround it, both necessary and both reported when they fire:
+Three safeguards surround it:
 
-* the set is frozen for the remainder of an increment once it has settled, so that the iteration
-  can converge on a fixed set rather than chase a moving one;
+* the set is frozen for the remainder of an increment once it has settled -- unchanged over two
+  iterations -- so that the iteration can converge on a fixed set rather than chase a moving one;
 * it is also frozen when a discrete state already visited in this increment recurs, because a cycle
   would otherwise repeat indefinitely without either converging or failing;
 * and a hard cap of 20 iterations remains as a last resort. Reaching it is reported, because the
@@ -773,10 +780,12 @@ for every other constraint:
 * ``augmentConstraint`` runs one outer iteration after the Newton loop of the increment has
   converged -- never inside it, since it is the converged violation that is being corrected. It
   returns whether another equilibrium iteration is needed.
-* ``requiresCorrectionBeforeConvergence`` reports that the constraint has changed its own state
-  since the last correction, so the increment may not be declared converged on it. Without this an
-  increment can be accepted at iteration 0 on the extrapolated state: the field-correction criterion
-  is then satisfied by an ABSENT correction rather than a small one.
+* ``requiresCorrectionBeforeConvergence`` is true on the first assembly of an increment under
+  ``formulation=penalty``, whose pressure is a function of the state rather than an unknown: the
+  forces of the extrapolated state that opens the increment have never been equilibrated, so the
+  increment may not be declared converged on them. Without this an increment can be accepted at
+  iteration 0: the field-correction criterion is then satisfied by an ABSENT correction rather than
+  a small one.
 
 **The multipliers are ordinary scalar variables** of the model. They are assembled into the global
 system, they appear in restart state, and they are part of what the regression runner compares
@@ -838,7 +847,8 @@ than quietly reinterpreted.
 
 * ``lagrange`` needs its multipliers as unknowns of a system an explicit increment never solves.
   They would also carry no inertia, so the explicit update would never move them: the constraint
-  would appear active in every output and enforce nothing. The explicit dynamic solver already
+  would appear active in every output and enforce nothing (Wriggers 2006, p. 352: "there is no mass
+  associated with the Lagrange multipliers"). The explicit dynamic solver already
   refuses any constraint carrying its own scalar variables, and the constraint repeats the refusal
   at its own explicit entry point.
 * ``augmentedLagrange`` is the dangerous one. Its outer update runs from ``augmentConstraint``,
@@ -867,8 +877,8 @@ The stability limit on the penalty stiffness
 
 An explicit solver derives its critical time step from the elements -- a wave speed and a
 characteristic length per element, the CFL condition of the MESH. A penalty contact adds its own
-frequency on top of that, and it is *not* in that estimate; the solver's own documentation says as
-much. A stiffness chosen for accuracy can therefore put the integration past the stability limit
+frequency on top of that, and it is *not* in that estimate (Wriggers 2006, p. 352: stiff penalty
+springs make the Courant criterion lead to small time steps). A stiffness chosen for accuracy can therefore put the integration past the stability limit
 with nothing to report it. Measured on ``NEDMortarContact`` with everything else held fixed:
 
 .. list-table::
@@ -888,7 +898,7 @@ with nothing to report it. Measured on ``NEDMortarContact`` with everything else
    * - :math:`5 \cdot 10^{3}`
      - :math:`4.38 \cdot 10^{-3}`
 
-The bound the constraint now imposes follows from the structure of its own stiffness. The penalty
+The bound the constraint imposes follows from the structure of its own stiffness. The penalty
 contribution of one non-mortar node is RANK ONE,
 
 .. math::
@@ -900,7 +910,7 @@ contribution of one non-mortar node is RANK ONE,
 so the assembled contact stiffness is :math:`\boldsymbol{K} = \varepsilon_N \sum_I
 \lvert D_{II}\rvert^{-1} \boldsymbol{v}_I \boldsymbol{v}_I^{\mathsf T}`, and Gershgorin's theorem
 bounds the largest eigenvalue of :math:`\boldsymbol{M}^{-1}\boldsymbol{K}` by the largest scaled
-absolute row sum:
+absolute row sum, as in Ghesquière-Diérickx et al. (2026), Eq. (18), after Kulak (1989):
 
 .. math::
    :label: mortar-stability-factor
@@ -916,8 +926,7 @@ sets the stable increment.
 
 :math:`R` carries the geometry and the inertia and not the stiffness, which is what makes it usable
 in both directions. With the central-difference stability limit :math:`\Delta t_{cr} =
-2/\sqrt{\lambda_{\max}}` and the stability-assured condition :math:`\omega^2 \le \lambda_{\max}` of
-Kwon et al. (Eqs. 20--22 of the reference below),
+2/\sqrt{\lambda_{\max}}` (Kwon et al., Eqs. 20--21; Ghesquière-Diérickx et al., Eq. 17),
 
 .. math::
 
@@ -932,7 +941,9 @@ direction to err in. The exact rank-one eigenvalue :math:`\kappa_I \, \boldsymbo
 soon as two nodes share a degree of freedom, which is the normal case. Every non-mortar node is
 counted, not only the currently active ones: the active set changes from increment to increment,
 and a bound that held only for the set that happened to be active when it was computed would not be
-a bound.
+a bound (Ghesquière-Diérickx et al. likewise include all potential contact facets). The bound covers
+the contact on its own: the solver takes the smaller of it and the elements' own critical time
+step, which is not a bound of the elements and the contact together.
 
 **What the constraint does with it.** Two cases, and neither of them is silent:
 
@@ -943,25 +954,29 @@ a bound.
   is the same idea as the ``SOFT=1`` contact of LS-DYNA, which takes its stiffness from the nodal
   masses and the time step rather than from the material constants, except that here it follows
   from the eigenvalue bound above rather than from a rule of thumb. On ``NEDMortarContact`` it
-  lands at :math:`6.8 \cdot 10^{5}`, against the :math:`5 \cdot 10^{5}` that was found by hand.
+  lands at :math:`6.8 \cdot 10^{5}`.
 * ``penaltyStiffness`` **given.** The value is honoured, and measured against the bound. An
   exceedance is reported together with the time increment that would carry it and the stiffness
   that this increment would. Reported rather than refused, because the bound is conservative and
   refusing would block models that are in fact stable.
 
 The reported bound is also returned to the solver through
-``ConstraintBase.computeCriticalTimeStepForExplicitDynamics``, which is new and defaults to
-infinity, so that a solver can take the minimum over its constraints as it does over its elements.
-Every other constraint inherits that default and is unaffected; the other penalty contact
-formulations of EdelweissFE carry the same hazard and have deliberately not been changed.
+``ConstraintBase.computeCriticalTimeStepForExplicitDynamics``, which defaults to infinity, so that a
+solver can take the minimum over its constraints as it does over its elements. Every other
+constraint inherits that default; the node-to-surface and the integrated penalty contact do not
+override it, so their penalty stiffness is not covered by the solver's time step.
 
 .. rubric:: References for this section
 
 * Y.-J. Kwon, J.-G. Kim, S. S. Cho, J. A. González: *A General Bipenalty Formulation for Explicit
   Contact-Impact Analysis With a Parameter Selection Criterion.* International Journal for
-  Numerical Methods in Engineering 126 (2025) e7614. The stability-assured condition used above is
-  their Eqs. (20)--(22); their Table 1 is why the criterion is taken from this work rather than
-  from the earlier one-dimensional ones, which have no three-dimensional form.
+  Numerical Methods in Engineering 126 (2025) e7614. -- The central-difference stability limit,
+  Eqs. (20)--(21).
+* T. Ghesquière-Diérickx, J.-F. Molinari, G. Anciaux: *Stability of extrinsic cohesive-zone model
+  with penalty-based contact in explicit dynamic fragmentation simulations*, Mechanics of Materials
+  215 (2026) 105581.
+  -- The penalty scale :math:`\alpha E/h`, Eq. (12); the critical time step and its Gershgorin bound
+  over all potential contact facets, Eqs. (17)--(18), after Kulak (1989).
 * LS-DYNA support documentation, *SOFT option* and *Contact stiffness calculation*,
   https://www.dynasupport.com/howtos/contact/soft-option -- the ``SOFT=1`` stiffness, taken from
   the nodal masses and the global time step, which is the practical precedent for the derivation
@@ -1001,6 +1016,17 @@ re-closed state is exact again to 8e-16 -- so the active set can empty and refil
 weight, coverage, multiplier and force across the interface; ``MortarContactPunchEdge`` is the same
 configuration with the favourable choice of sides, where the coverage is exactly 1.000 at every node
 and the multipliers run from 9.33 in the interior to 23.01 at the rim.
+
+``MortarContactTilted`` has an interface that is partly closed and partly open, with nodes that
+have a counterpart and are nevertheless separated; ``tests/test_mortarsignorini.py`` checks the
+Signorini conditions of its converged state.
+
+**Friction** is covered by ``MortarContactFrictionSlide``, a pressed block dragged across a larger
+one under the implicit solver so that every contact node passes from stick into slip, and by
+``NEDMortarContactFriction``, the same under explicit dynamics; ``tests/test_mortarfriction.py``
+checks that the drag ends on the friction cone and that the explicit run transmits a frictional
+force. The consistency of the friction law across the three contact formulations is checked in
+``tests/test_contactfriction_consistency.py``.
 
 **The penalty branch and the outer loop** are covered by ``MortarContactPenaltyHexa20``, the
 quadratic patch test with the multipliers eliminated. It is the only deck that reaches the two
@@ -1155,9 +1181,16 @@ that a reader checking a single line does not have to reconstruct which work it 
   frictional sliding*, International Journal for Numerical Methods in Engineering 62 (2005),
   1183--1225. -- The penalty-regularised Coulomb law of the friction option, its trial state and
   return map, Eqs. (39) and (47)--(49); and the nodal scale factor of the penalty normalisation.
-* P. Wriggers: *Computational Contact Mechanics*, 2nd ed., Springer, 2006. -- The return map of the
-  friction law, Box 14, and the non-symmetric slip tangent, Eq. (10.113); the transfer of the
-  frictional history to the nodes a mesh refinement creates, Section 14.7.2, Eqs. (14.83)--(14.86).
+* J. C. Simo, T. A. Laursen: *An augmented Lagrangian treatment of contact problems involving
+  friction*, Computers & Structures 42 (1992), 97--116. -- The penalty-regularised friction law,
+  Eqs. (3.9.1)--(3.9.5), and its trial state with the traction as history and radial return,
+  Eqs. (3.12)--(3.14); no friction without pressure, p. 104.
+* P. Wriggers: *Computational Contact Mechanics*, 2nd ed., Springer, 2006. -- The radial return of
+  the friction law, Section 10.5.2, Eqs. (10.121)--(10.126) and Box 14; the non-symmetric slip
+  tangent, p. 359 with Eq. (9.47); the penalty parameter as a function of the mesh size, Remark 6.4;
+  the projected multiplier update, Eq. (10.79); Lagrange multipliers and stiff penalties under
+  explicit time integration, p. 352; the transfer of the frictional history to the nodes a mesh
+  refinement creates, Section 14.7.2, Eqs. (14.83)--(14.86).
 * D. Perić, Ch. Hochard, M. Dutko, D. R. J. Owen: *Transfer operators for evolving meshes in small
   strain elasto-plasticity*, Computer Methods in Applied Mechanics and Engineering 137 (1996)
   331--344. -- Remark 4.3: a transferred state need not satisfy the yield condition; here, the
@@ -1189,11 +1222,9 @@ that a reader checking a single line does not have to reconstruct which work it 
 * T. De Luca, F. Facchinei, C. Kanzow: *A semismooth equation approach to the solution of nonlinear
   complementarity problems*, Mathematical Programming 75 (1996), 407--439.
 * M. Hintermüller, K. Ito, K. Kunisch: *The primal-dual active set strategy as a semismooth Newton
-  method*, SIAM Journal on Optimization 13 (2002), 865--888.
-* K. Ito, K. Kunisch: *Semi-smooth Newton methods for variational inequalities of the first kind*,
-  ESAIM: Mathematical Modelling and Numerical Analysis 37 (2003), 41--62. -- Proposition 1.1: the
-  generalized derivative of the max operator, with an arbitrary value where its argument vanishes;
-  the basis for treating a closed node as active.
+  method*, SIAM Journal on Optimization 13 (2002), 865--888. -- Eq. (3.2), Lemma 3.1 and
+  Remark 3.1: the generalized derivative of the max operator, with an arbitrary value where its
+  argument vanishes; the basis for treating a closed node as active.
 * S. Hüeber, B. I. Wohlmuth: *A primal-dual active set strategy for non-linear multibody contact
   problems*, Computer Methods in Applied Mechanics and Engineering 194 (2005), 3147--3166. -- The
   lower end of the admissible band for the complementarity parameter, and its linear dependence on

@@ -350,8 +350,11 @@ Predictor--corrector (radial return)
    \boldsymbol{t}^{trial} \rVert}, & \text{otherwise (slip: radial return onto the cone)}
    \end{cases}
 
-The tangential modulus :math:`\varepsilon_T` is a traction per unit slip: constant
-(``tangentPenalty``, by default the formulation's normal penalty modulus) or, with ``slipTolerance``,
+This is the penalty-regularised Coulomb law with the converged traction as history (Simo & Laursen
+1992, Eqs. 3.9 and 3.12--3.14) and the radial return onto the cone (Wriggers 2006, Section 10.5.2,
+Eqs. 10.121--10.126 and Box 14). The tangential modulus :math:`\varepsilon_T` is a traction per unit
+slip: constant (``tangentPenalty``, by default the formulation's normal penalty modulus, one
+parameter for normal contact and stick as in Wriggers 2006, p. 236) or, with ``slipTolerance``,
 proportional to the pressure, :math:`\varepsilon_T = \mu p / (\texttt{slipTolerance}\, h)` with
 :math:`h` the mean facet size of the slave surface (Abaqus' penalty friction). A sticking point then
 slips elastically by up to :math:`\texttt{slipTolerance}\, h` however lightly it is loaded, which
@@ -359,8 +362,8 @@ keeps the stick/slip state from being decided by noise on lightly loaded interfa
 ``slipTolerance`` is refused under explicit dynamics, where a pressure-dependent modulus is not
 bounded by the stability limit.
 
-A point without pressure carries no friction and contributes nothing to the tangent; it is reported
-as slipping. As :math:`p \to 0` the slip branch caps the traction at :math:`\mu p \to 0`, so the
+A point without pressure carries no friction (Simo & Laursen 1992, p. 104) and contributes nothing
+to the tangent; it is reported as slipping. As :math:`p \to 0` the slip branch caps the traction at :math:`\mu p \to 0`, so the
 frictional force is continuous through gap activation. The *tangent* is only continuous there if the
 normal stiffness vanishes at activation -- the quadratic-law argument above.
 
@@ -413,7 +416,8 @@ With :math:`\hat{\boldsymbol{s}} = \boldsymbol{t}^{trial} / \lVert \boldsymbol{t
 In stick with a constant modulus the tangent is symmetric positive semi-definite,
 :math:`A \varepsilon_T (\boldsymbol{c} \otimes \boldsymbol{c}^T) \otimes \bar{\boldsymbol{P}}`. The
 :math:`\partial \boldsymbol{t}_T / \partial p` term couples the tangential force to the normal
-pressure and makes the slip tangent nonsymmetric (Wriggers 2006, Eq. 10.113). The linear solvers used
+pressure and makes the slip tangent nonsymmetric (Simo & Laursen 1992, p. 106; Wriggers 2006,
+p. 359 with Eq. 9.47). The linear solvers used
 by the implicit solver operate on general unsymmetric matrices (e.g. the PARDISO interface runs
 ``mtype = 11``), so no symmetrization is applied. The tangent is verified against finite differences
 of the assembled residual for the shared law alone and for each formulation, and one drag computed
@@ -606,9 +610,12 @@ resultant-exact (:math:`4 w_c + 4 w_m = A`) and non-negative, the mismatch per n
 Exact consistency would require :math:`w_c = -A/12`, i.e. a penalty spring that attracts. The
 weighting is the modified serendipity shape function set
 :math:`\tilde N_{\text{mid}} = N_{\text{mid}} + \tfrac{1}{2}(N_{c_1} + N_{c_2})`,
-:math:`\tilde N_{\text{corner}} = 0` of Puso, Laursen & Solberg (CMAME 197, 2008), which the same
-authors and Popp, Wohlmuth & Wall (SISC 2012) introduce for exactly this reason in quadratic mortar
-contact. Reducing the residual :math:`A/12` any further requires integrating a pressure *field*
+:math:`\tilde N_{\text{corner}} = 0`. The defect it addresses is the one Puso, Laursen & Solberg
+(CMAME 197, 2008, Eq. 29) show for quadratic mortar contact: the serendipity corner function is not
+positive, so a corner node of two flat, separated surfaces reports a gap of the wrong sign; they
+resort to piecewise linear multipliers. Popp, Wohlmuth, Gee & Wall (SISC 2012, Eq. 4.5) restore the
+positivity in mortar contact by a basis transformation that moves part of the edge functions onto
+the corners -- the opposite direction to this weighting, which is not theirs. Reducing the residual :math:`A/12` any further requires integrating a pressure *field*
 against the parent face's own quadratic shape functions (segment-to-segment/mortar), which this
 formulation does not do.
 
@@ -873,8 +880,8 @@ non-matching interface, and the integrand is discontinuous inside a slave facet 
 assigned master facet changes, so that quadrature error does not shrink under refinement of the
 rule. Exactness on non-matching meshes requires integrating over *clipped* slave-master segments
 and enforcing the constraint weakly through a multiplier field -- mortar (Puso & Laursen 2004;
-for the quadratic dual basis, whose construction uses the very same modified shape functions as
-``nodalWeights=serendipityOptimal``, Popp, Wohlmuth & Wall, SISC 2012). The measured spread of
+for the quadratic dual basis, built on a transformed set of serendipity shape functions, Popp,
+Wohlmuth, Gee & Wall, SISC 2012). The measured spread of
 :math:`\sim 0.5` on a 3x3-on-2x2 interface remains this project's tripwire for that step, and
 :mod:`~edelweissfe.constraints.tie` would share the same clipping layer.
 
