@@ -227,40 +227,41 @@ Friction
 ~~~~~~~~
 
 With ``mu > 0`` the ``penalty`` formulation adds Coulomb friction, regularised by a tangential
-penalty in the same way the normal condition is: an elastic stick predictor and a radial return onto
-the friction cone at every non-mortar node. It is the law of Yang, Laursen and Meng (2005), their
-Eqs. (39) and (47)--(49), in the three-dimensional form of Puso, Laursen and Solberg (2008), their
-Eqs. (16)--(21), with the return map of Wriggers (2006), Box 14. It needs no unknowns of its own and
-is therefore available under the implicit and the explicit solvers alike; ``formulation=lagrange``
-with ``mu > 0`` is refused.
+penalty in the same way the normal condition is. The law -- elastic stick predictor, radial return
+onto the cone, consistent tangent, history, anti-chattering freeze, ``slipTolerance`` -- is the one
+all contact formulations of EdelweissFE share (:mod:`~edelweissfe.utils.contactfriction`, described in
+the *Coulomb friction* section of :doc:`contacttheory`); it is the law of Yang, Laursen and Meng
+(2005), their Eqs. (39) and (47)--(49), in the three-dimensional form of Puso, Laursen and Solberg
+(2008), their Eqs. (16)--(21), with the return map of Wriggers (2006), Box 14. It needs no unknowns
+of its own and is therefore available under the implicit and the explicit solvers alike;
+``formulation=lagrange`` with ``mu > 0`` is refused. What is mortar-specific is how a non-mortar
+node maps onto that law, and the objective slip correction below.
 
 The weighted slip increment is built from the same weights as the weighted gap, :math:`w_a = D_{IK}`
 on the non-mortar and :math:`w_a = -C_{IJ}` on the mortar nodes, projected onto the tangent plane
-:math:`P_T = I - n_I \otimes n_I` of the frozen nodal normal:
+:math:`P_T = I - n_I \otimes n_I` of the frozen nodal normal. Divided by :math:`|D_{II}|` it is the
+pointwise slip of the node, so the node enters the shared law as a contact point with
 
 .. math::
 
-   s_I = P_T \sum_a w_a \, \Delta u_a ,\qquad
-   t^{tr}_I = P_T \, t_{I,n} - \frac{\varepsilon_T}{|D_{II}|} \, s_I ,
+   c = \frac{w}{|D_{II}|}, \qquad A = |D_{II}|, \qquad
+   \Delta u_T = P_T \sum_a c_a \, \Delta u_a = \frac{s_I}{|D_{II}|},
 
+   t^{tr}_I = P_T \, t_{I,n} - \varepsilon_T \, \Delta u_T ,\qquad
    t_I = \begin{cases}
    t^{tr}_I & |t^{tr}_I| \le \mu p_I \quad \text{(stick)} \\
    \mu p_I \, t^{tr}_I / |t^{tr}_I| & \text{otherwise (slip)}
    \end{cases}
 
 :math:`\Delta u` is the increment since the last converged state under the implicit solvers and one
-time step's displacement under the explicit one; the history :math:`t_{I,n}` is promoted in
-``acceptLastState`` only, so a cutback re-attempt starts from the last accepted traction. The
-division by :math:`|D_{II}|` makes :math:`\varepsilon_T` (``tangentPenalty``, by default the
-resolved :math:`\varepsilon_N`) a pointwise modulus exactly like :math:`\varepsilon_N`: a sticking
-node carries :math:`\varepsilon_T` times the relative tangential displacement, and accumulates at
-most :math:`\mu p / \varepsilon_T` of elastic slip. The nodal forces are :math:`w_a t_I`. The old
-traction is re-projected onto the current tangent plane at every assembly, and discarded where a
-geometry rebuild turns the nodal normal by more than 30 degrees.
-
-The tangent is the exact derivative of that law with the geometry frozen, as for the normal part.
-It is symmetric in stick and non-symmetric in slip, where the cone radius :math:`\mu p` couples the
-tangential force to the normal gap (Wriggers 2006, Eq. 10.113).
+time step's displacement under the explicit one. :math:`\varepsilon_T` (``tangentPenalty``, by
+default the resolved :math:`\varepsilon_N`) is a pointwise modulus exactly like
+:math:`\varepsilon_N`: a sticking node carries :math:`\varepsilon_T` times the relative tangential
+displacement. The nodal forces :math:`A\,c_a t_I = w_a t_I` are the gradient of the convex stick
+energy, so the sign of :math:`D_{II}` needs no special treatment: only its magnitude enters. A node
+counts as without pressure -- no friction, no tangent -- within the noise floor of the weighted gap.
+The characteristic facet size of ``slipTolerance`` is taken from the mortar weights at the first
+geometry rebuild, :math:`h = (\sum_I |D_{II}| / n_{facets})^{1/(d-1)}`.
 
 Within an increment the slip measure is the frozen-geometry one, :math:`D \Delta u_s - C \Delta u_m`,
 which keeps the tangent exact. On its own it is not objective: a rigid rotation :math:`\theta` of a
@@ -269,7 +270,8 @@ and reads as a slip of about :math:`\theta` times the penalty gap, which in stic
 over the increments. The objective measure of Yang et al., Eq. (47), and of Gitterle et al. (2010),
 Eq. (53), :math:`-(D_{n+1} - D_n) x_s + (C_{n+1} - C_n) x_m`, differs from the frozen one by exactly
 the change of :math:`g_I`, and the coupling matrices of the end of an increment are what the next
-geometry rebuild computes. The accepted traction is therefore corrected there,
+geometry rebuild computes. The accepted traction is therefore corrected there (the optional gap
+correction of the shared history transport),
 
 .. math::
 
@@ -281,35 +283,13 @@ slip is then the objective one; what remains is the error of the frozen normal, 
 increment and not accumulated. A pure slide of a flat pair leaves :math:`g_I` unchanged and is not
 corrected. Measured on two blocks rotated rigidly in stick by 0.01 per increment, the frozen measure
 alone leaves :math:`0.7\,p\,\varepsilon_T/\varepsilon_N` after seven increments, the corrected one
-never more than the single increment's :math:`0.1`.
+never more than the single increment's :math:`0.1`. The node-to-surface and integrated formulations
+need no such correction: their reprojection onto the closest point is itself the objective frame.
 
-The tangential modulus is constant by default. With ``slipTolerance`` it is proportional to the
-pressure instead, :math:`\varepsilon_T = \mu p / \gamma_{crit}` with the elastic slip
-:math:`\gamma_{crit}` = ``slipTolerance`` times the characteristic facet size -- the penalty friction
-of Abaqus, whose default slip tolerance is 0.005. A sticking node then slips elastically by up to
-:math:`\gamma_{crit}` whatever its pressure. With a constant modulus that range is
-:math:`\mu p / \varepsilon_T`, which on a lightly loaded interface is far below one Newton
-correction (about 1e-7 mm against 1e-5 mm in the first increments of the POT pull-out), so that the
-stick/slip state is decided by noise and the tangent jumps with it. The pressure dependence adds a
-term :math:`b\,\partial p/\partial u` with :math:`b = \mu/(\gamma_{crit} |D_{II}|)` to the stick and
-the slip tangent. It is refused under explicit dynamics, where a modulus that grows with the pressure
-is not covered by the stability bound.
-
-A node without pressure -- closed, but within the noise floor of the gap -- carries no friction and
-adds nothing to the tangent. A stick spring there would tie the surfaces together over a cone of
-radius zero, which on the shaft of a pull-out is every closed node at the start of every increment.
-
-The stick/slip state is iterated together with the displacements. To keep Newton from chattering
-between the two branches -- the problem the multiplier-based friction of the earlier branches never
-got rid of -- the state of an increment is frozen once it chatters: the first three iterations are
-always free, after that a state that recurs after a change freezes it, and from the sixth iteration
-on any change does. Frozen means that a slipping node stays slipping, in the direction it had when
-frozen, while a sticking node may still go to slip (and its direction is frozen with it). Holding the
-direction and not only the state keeps the frozen law smooth; a node held in slip with a free
-direction obeys the unregularised :math:`\mu p\,\mathrm{sign}(s)`, on which Newton does not
-converge. The state can then only change in one direction, so the iteration terminates, and no
-traction ever leaves the cone; a node held in slip although its predictor fell back inside the cone
-is reported when the increment is accepted.
+With a constant modulus the elastic range :math:`\mu p / \varepsilon_T` is, on a lightly loaded
+interface, far below one Newton correction (about 1e-7 mm against 1e-5 mm in the first increments of
+the POT pull-out), so that the stick/slip state is decided by noise; ``slipTolerance`` (0.005 in the
+POT decks) is the remedy there.
 
 The nodal results -- pressure, frictional traction, stick/slip state and opening -- are available
 through ``getNormalPressures``, ``getTangentialTractions``, ``getSlipStates`` and ``getGaps``,
