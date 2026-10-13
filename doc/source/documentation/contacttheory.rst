@@ -1005,6 +1005,16 @@ within a facet, over quadrature points, so a ``fromExpression`` output
 reading them cannot be tied to a node set -- use a reduction, or ``getSlaveNodalNormalForces()``,
 which is node-ordered like the accessors above.
 
+Both constraints, like the mortar constraint, are mesh dependents: after an h-adaptive refinement of
+either surface they rebind to the regenerated facets and carry their history over by identity -- the
+slave node for node-to-surface, the slave facet's nodes and the quadrature point for the integrated
+formulation. On a restart of a refined run the topology replay re-creates the refined surfaces before
+the contact state is restored, and ``setRestartData`` first catches up with them and then matches the
+checkpoint by node labels, respectively point keys (``tests/test_contact_amr_restart.py``). Ties in
+the integrated formulation's closest-facet search are broken within :math:`10^{-10} h` towards the
+lowest facet index, so that a point on a seam between two parent faces does not switch its
+distribution basis with the rounding of the converged solution.
+
 .. _contact-explicit-dynamics:
 
 Explicit dynamics

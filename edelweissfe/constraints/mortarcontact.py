@@ -661,6 +661,12 @@ class Constraint(ConstraintBase, MeshDependent):
     multiplier variable per non-mortar node to the global system, which is what makes that
     formulation a saddle-point problem.
 
+    The constraint is a :class:`~edelweissfe.models.meshdependent.MeshDependent`: after an h-adaptive
+    refinement of either surface it rebuilds its contact system from the regenerated facets and
+    carries every nodal state over by node identity (see :meth:`refresh`), and a restart of a refined
+    run restores that state onto the replayed refined surfaces by node label (see
+    :meth:`setRestartData`).
+
     Parameters
     ----------
     name

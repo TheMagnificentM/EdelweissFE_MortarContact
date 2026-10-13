@@ -784,6 +784,40 @@ against its reference -- which is why a ``formulation=lagrange`` deck checks the
 and not only the displacements.
 
 
+Mesh refinement and restart
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**The constraint follows an h-adaptive refinement of either surface.** It is a
+:class:`~edelweissfe.models.meshdependent.MeshDependent`: when a refinement touches the solid
+elements under one of its surfaces, the surface element generator regenerates every contact element
+of that surface (``facets=wholeFace`` included) on the solids' own nodes, and the constraint rebuilds
+its contact system from the new element sets -- node lists, degrees of freedom, reference
+coordinates, undeformed normals -- before the next increment. The frozen geometry is discarded and
+rebuilt at the next assembly from the last converged configuration, exactly as at an ordinary
+connectivity tick. Every per-node state is carried over by node identity, since a node that survives
+the refinement is the same object before and after: the frictional history, the augmented pressure
+estimate, the reference gap vector of the objective slip correction and, under
+``formulation=lagrange``, the converged multiplier. A node created by the refinement starts at rest.
+The number of multipliers follows the non-mortar nodes, so the constraint re-creates its scalar
+variables itself; the refresh reports a changed footprint and the solver rebuilds its equation
+system. Hanging nodes of the refined surface take part like any other node, their degrees of freedom
+eliminated by the hanging-node constraint of the refinement.
+
+**A restart reproduces the refined interface and its state.** The checkpoint holds the refinement
+history; reading it replays the refinements, so the resumed model has the refined surfaces again,
+and only then is the contact state restored. Since that happens before any solver has refreshed the
+mesh dependents, the constraint first catches up with the refined surfaces itself and then matches
+the checkpoint to its non-mortar nodes by node label -- including the multipliers, which as scalar
+variables are restored by name, i.e. by index, and no longer identify a node once the surface was
+refined. The node-to-surface and the integrated contact constraints do the same, by slave node and
+by slave facet and quadrature point.
+
+Both are verified end to end in ``tests/test_contact_amr_restart.py``: a frictional drag during
+which both contact surfaces are refined, with every contact formulation, and the same run truncated
+after the refinement and resumed from its checkpoint, which ends with the displacements of the
+uninterrupted run.
+
+
 Explicit dynamics with the mortar
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
