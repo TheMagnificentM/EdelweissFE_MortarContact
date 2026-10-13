@@ -184,6 +184,26 @@ def matchRestartKeys(storedKeys, currentKeys) -> tuple[np.ndarray, np.ndarray]:
     return np.array(current, dtype=int), np.array(stored, dtype=int)
 
 
+def frozenNormalsForRestart(frozenNormals: list, nDim: int) -> np.ndarray:
+    """The frozen normals of the contact points as an ``(nPoints, nDim)`` array for a checkpoint,
+    NaN where a point has none."""
+
+    rows = np.full((len(frozenNormals), nDim), np.nan)
+    for k, normal in enumerate(frozenNormals):
+        if normal is not None:
+            rows[k] = normal
+    return rows
+
+
+def restoreFrozenNormals(frozenNormals: list, stored: np.ndarray, current, storedIndex) -> None:
+    """Write the checkpointed normals ``stored`` (see :func:`frozenNormalsForRestart`) back into the
+    list ``frozenNormals``: point ``current[i]`` receives row ``storedIndex[i]``, ``None`` for NaN."""
+
+    for k, j in zip(current, storedIndex):
+        row = np.asarray(stored[j], dtype=float)
+        frozenNormals[k] = None if np.isnan(row[0]) else row.copy()
+
+
 class CoulombFriction:
     """The penalty-regularised Coulomb law and the frictional state of the contact points of one
     constraint.

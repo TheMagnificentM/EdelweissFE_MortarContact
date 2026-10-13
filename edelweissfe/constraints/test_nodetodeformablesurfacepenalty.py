@@ -149,6 +149,44 @@ class TestNodeToSurfaceFriction(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             constraint.applyConstraintExplicit(U, U, np.zeros(constraint.nDof), None)
 
+    def test_a_restart_keeps_the_crease_decision_of_the_uninterrupted_run(self):
+        """The frozen normals are history: the first connectivity update after a restart compares
+        against them whether a point slid over a crease and loses its frictional history. Here the
+        last normals are turned by 90 degrees, so the uninterrupted run discards the history; the
+        restarted one must do the same, which it does only if the checkpoint carries the normals."""
+
+        constraint = self._constraint(mu=10.0)
+        U = self._slide(constraint, 1e-5)
+        self._forces(constraint, U, U)
+        constraint.acceptLastState()
+        held = np.linalg.norm(constraint._friction.tractionConverged, axis=1) > 0.0
+        self.assertTrue(held.any(), "no frictional history -- test is vacuous")
+        for k, normal in enumerate(constraint._frozenNormals):
+            if normal is not None:
+                constraint._frozenNormals[k] = np.cross(
+                    normal, [0.0, 0.0, 1.0] if abs(normal[2]) < 0.9 else [1.0, 0.0, 0.0]
+                )
+                constraint._frozenNormals[k] /= np.linalg.norm(constraint._frozenNormals[k])
+        checkpoint = {k: v.copy() for k, v in constraint.getRestartData().items()}
+
+        model, slaveSurface, masterSurface = twoBlockModel(self.journal, penetration=0.05)
+        restored = NodeToSurfaceContact(
+            "theContact",
+            model,
+            slaveSurface,
+            masterSurface,
+            self.journal,
+            configuration=NodeToDeformableSurfacePenaltySchema(
+                penalty=1.0e4, searchDistance=1.0, sliding="small", contactType="quadratic", mu=10.0
+            ),
+        )
+        restored.setRestartData(checkpoint)
+
+        constraint.updateConnectivity(constraint._model)
+        restored.updateConnectivity(model)
+        np.testing.assert_array_equal(constraint._friction.tractionConverged[held], 0.0)
+        np.testing.assert_array_equal(restored._friction.tractionConverged, constraint._friction.tractionConverged)
+
     def test_a_force_checkpoint_is_restored_as_traction(self):
         constraint = self._constraint(mu=0.3)
         force = np.tile([1.0, 0.0, 0.0], (constraint.nSlaves, 1))

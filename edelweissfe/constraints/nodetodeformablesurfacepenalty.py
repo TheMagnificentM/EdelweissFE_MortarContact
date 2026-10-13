@@ -41,7 +41,9 @@ from edelweissfe.utils.contactfriction import (
     CoulombFriction,
     characteristicFacetSize,
     frictionCoefficientField,
+    frozenNormalsForRestart,
     matchRestartKeys,
+    restoreFrozenNormals,
     slipToleranceField,
     tangentPenaltyField,
 )
@@ -1020,16 +1022,20 @@ class Constraint(ConstraintBase, MeshDependent):
 
     def getRestartData(self) -> dict[str, np.ndarray]:
         """Return the converged frictional and augmented-Lagrange-multiplier history per slave node,
-        together with the slave node labels.
+        the frozen normals of the last connectivity update and the slave node labels.
 
-        ``_assignedFacetIdx``, ``_gapCurrent``, ``_frozenWeights``/``_frozenNormals`` are excluded:
-        they are recomputed from scratch every increment by :meth:`updateConnectivity` /
-        :meth:`applyConstraint` from the (already-restored) node positions, before they are read,
-        so they carry no cross-increment history of their own."""
+        The normals are history too: the next :meth:`updateConnectivity` compares the new ones
+        against them to decide whether a node slid over a crease of the master surface, which
+        discards its frictional history (:meth:`CoulombFriction.carry
+        <edelweissfe.utils.contactfriction.CoulombFriction.carry>`). ``_assignedFacetIdx``,
+        ``_gapCurrent`` and ``_frozenWeights`` are excluded: they are recomputed by
+        :meth:`updateConnectivity` / :meth:`applyConstraint` from the restored node positions before
+        they are read."""
 
         return {
             **self._friction.restartData(),
             "lambdaN": self._lambdaN,
+            "frozenNormals": frozenNormalsForRestart(self._frozenNormals, self.nDim),
             "slaveNodeLabels": np.array([node.label for node in self.slaveNodes], dtype=int),
         }
 
@@ -1062,3 +1068,5 @@ class Constraint(ConstraintBase, MeshDependent):
         else:
             self._friction.setRestartData(data, current, stored)
         self._lambdaN[current] = np.asarray(data["lambdaN"])[stored]
+        if "frozenNormals" in data:
+            restoreFrozenNormals(self._frozenNormals, data["frozenNormals"], current, stored)

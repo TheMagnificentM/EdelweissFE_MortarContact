@@ -722,6 +722,44 @@ class TestIntegratedSurfaceFriction(unittest.TestCase):
         np.testing.assert_array_equal(restored._friction.tractionConverged, constraint._friction.tractionConverged)
         self.assertIsNone(self._constraint().getRestartData(), "no friction, no restart data")
 
+    def test_a_restart_keeps_the_crease_decision_of_the_uninterrupted_run(self):
+        """The frozen normals are history: the first connectivity update after a restart compares
+        against them whether a point slid over a crease and loses its frictional history. Here the
+        last normals are turned by 90 degrees, so the uninterrupted run discards the history; the
+        restarted one must do the same, which it does only if the checkpoint carries the normals."""
+
+        constraint = self._constraint(mu=10.0)
+        U = self._slide(constraint, 1e-5)
+        self._forces(constraint, U, U)
+        constraint.acceptLastState()
+        held = np.linalg.norm(constraint._friction.tractionConverged, axis=1) > 0.0
+        self.assertTrue(held.any(), "no frictional history -- test is vacuous")
+        for k, normal in enumerate(constraint._frozenNormals):
+            if normal is not None:
+                constraint._frozenNormals[k] = np.cross(
+                    normal, [0.0, 0.0, 1.0] if abs(normal[2]) < 0.9 else [1.0, 0.0, 0.0]
+                )
+                constraint._frozenNormals[k] /= np.linalg.norm(constraint._frozenNormals[k])
+        checkpoint = {k: v.copy() for k, v in constraint.getRestartData().items()}
+
+        model, slaveSurface, masterSurface = twoBlockModel(self.journal, penetration=0.05)
+        restored = IntegratedContact(
+            "theContact",
+            model,
+            slaveSurface,
+            masterSurface,
+            self.journal,
+            configuration=SurfaceToDeformableSurfacePenaltySchema(
+                penalty=1.0e4, searchDistance=1.0, contactType="quadratic", mu=10.0
+            ),
+        )
+        restored.setRestartData(checkpoint)
+
+        constraint.updateConnectivity(constraint._model)
+        restored.updateConnectivity(model)
+        np.testing.assert_array_equal(constraint._friction.tractionConverged[held], 0.0)
+        np.testing.assert_array_equal(restored._friction.tractionConverged, constraint._friction.tractionConverged)
+
     def test_slip_tolerance_is_refused_explicitly(self):
         constraint = self._constraint(mu=0.3, slipTolerance=0.005)
         U = np.zeros(constraint.nDof)

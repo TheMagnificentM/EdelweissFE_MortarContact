@@ -41,7 +41,9 @@ from edelweissfe.utils.contactfriction import (
     CoulombFriction,
     characteristicFacetSize,
     frictionCoefficientField,
+    frozenNormalsForRestart,
     matchRestartKeys,
+    restoreFrozenNormals,
     slipToleranceField,
     tangentPenaltyField,
 )
@@ -1083,20 +1085,26 @@ class Constraint(ConstraintBase, MeshDependent):
             )
 
     def getRestartData(self) -> dict[str, np.ndarray] | None:
-        """The converged frictional history per contact point, with the point keys (the labels of
-        its slave facet's nodes and its quadrature point index); ``None`` without friction, where
-        there is none. The frozen projection is recomputed by the first connectivity update after a
-        restart."""
+        """The converged frictional history per contact point, the frozen normals of the last
+        connectivity update and the point keys (the labels of its slave facet's nodes and its
+        quadrature point index); ``None`` without friction, where there is no history. The normals
+        are history of the friction law: the next :meth:`updateConnectivity` compares the new ones
+        against them to decide whether a point slid over a crease of the master surface. The rest of
+        the frozen projection is recomputed by the first connectivity update after a restart."""
 
         if not self._friction.enabled:
             return None
-        return {**self._friction.restartData(), "pointKeys": self._pointKeyLabels()}
+        return {
+            **self._friction.restartData(),
+            "frozenNormals": frozenNormalsForRestart(self._frozenNormals, self.nDim),
+            "pointKeys": self._pointKeyLabels(),
+        }
 
     def setRestartData(self, data: dict[str, np.ndarray]):
-        """Restore the converged frictional history. Called after the topology replay of an AMR run
-        re-created the refined mesh but before any solver refreshed the mesh dependents, so the
-        constraint first catches up with the refined surfaces (:meth:`refresh`) and then matches the
-        checkpoint to its points by key."""
+        """Restore the converged frictional history and the frozen normals. Called after the
+        topology replay of an AMR run re-created the refined mesh but before any solver refreshed
+        the mesh dependents, so the constraint first catches up with the refined surfaces
+        (:meth:`refresh`) and then matches the checkpoint to its points by key."""
 
         self.refreshIfMeshChanged(self._model)
 
@@ -1105,9 +1113,11 @@ class Constraint(ConstraintBase, MeshDependent):
                 [tuple(int(v) for v in row) for row in np.asarray(data["pointKeys"])],
                 [tuple(int(v) for v in row) for row in self._pointKeyLabels()],
             )
-            self._friction.setRestartData(data, current, stored)
         else:
-            self._friction.setRestartData(data)
+            current = stored = np.arange(self.nPoints)
+        self._friction.setRestartData(data, current, stored)
+        if "frozenNormals" in data:
+            restoreFrozenNormals(self._frozenNormals, data["frozenNormals"], current, stored)
 
     def _pointKeyLabels(self) -> np.ndarray:
         """``(nPoints, nFacetNodes + 1)``: the node labels of each point's slave facet and its
