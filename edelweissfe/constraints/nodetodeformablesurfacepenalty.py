@@ -37,6 +37,13 @@ from edelweissfe.models.femodel import FEModel
 from edelweissfe.models.meshdependent import MeshDependent
 from edelweissfe.sets.elementset import ElementSet
 from edelweissfe.timesteppers.timestep import TimeStep
+from edelweissfe.utils.contactfriction import (
+    CoulombFriction,
+    characteristicFacetSize,
+    frictionCoefficientField,
+    slipToleranceField,
+    tangentPenaltyField,
+)
 from edelweissfe.utils.facetcontactgeometry import (
     closestFacetCandidates,
     line2ClosestPoint,
@@ -63,19 +70,6 @@ tick -- no separate wiring needed. A retained slave node (same across the rebuil
 identity) keeps its frictional history and augmented-Lagrange multiplier; a newly exposed one
 starts at rest.
 """
-
-# Angular threshold separating a *continuous* drift of the frozen contact frame between two
-# increments (the slave staying on its facet, or crossing onto a smoothly adjacent one of a curved
-# but adequately resolved master surface) from a genuine *crease* of the master surface, used in
-# updateConnectivity to decide whether the frictional history may still be rotated into the newly
-# frozen tangent plane. 30 degrees is the customary smooth-versus-sharp feature angle of surface
-# geometry processing and of contact surface smoothing, and it separates the two regimes with a
-# comfortable margin on both sides: a smooth surface of curvature radius R facetted with facet size
-# h changes its normal by about h / R between neighboring facets, i.e. by less than 10 degrees for
-# any surface resolved finely enough for a meaningful contact pressure distribution, while the
-# creases of engineering geometries (45 degree chamfers, 90 degree steps, notch flanks) change it
-# by 45 degrees and more.
-_cosOfSmoothNormalChangeLimit = np.cos(np.deg2rad(30.0))
 
 
 @dataclass(frozen=True)
@@ -136,22 +130,14 @@ class NodeToDeformableSurfacePenaltySchema:
         dtype=str,
         default="finite",
     )
-    mu: float = schemaField(
-        description="The Coulomb friction coefficient. Requires sliding=small; mu=0 disables "
-        "friction. Strongly recommended in combination with type=quadratic: the quadratic law's "
-        "contact stiffness vanishes continuously at gap activation, keeping the frictional "
-        "tangent continuous for slave nodes lifting off/touching down -- with type=linear, the "
-        "activation stiffness jump scaled by mu makes Newton prone to limit-cycling at such "
-        "events.",
-        dtype=float,
-        default=0.0,
+    mu: float = frictionCoefficientField(
+        " Requires sliding=small. Strongly recommended in combination with type=quadratic: the "
+        "quadratic law's contact stiffness vanishes continuously at gap activation, keeping the "
+        "frictional tangent continuous for slave nodes lifting off/touching down -- with type=linear, "
+        "the activation stiffness jump scaled by mu makes Newton prone to limit-cycling at such events."
     )
-    tangentPenalty: float | None = schemaField(
-        description="The tangential penalty stiffness per unit slave surface area for frictional "
-        "stick. Defaults to the normal penalty.",
-        dtype=float,
-        default=None,
-    )
+    tangentPenalty: float = tangentPenaltyField("penalty")
+    slipTolerance: float = slipToleranceField()
     augmentedLagrange: bool = schemaField(
         description="Augment the penalty force with a per-slave normal traction multiplier, "
         "updated once per increment on acceptance (incremental Uzawa: lambda <- min(0, lambda + "
@@ -305,17 +291,21 @@ class Constraint(ConstraintBase, MeshDependent):
     the appropriate formulation for small-deformation applications, and the required basis for
     friction.
 
-    Coulomb friction (``mu > 0``, requires ``sliding=small``) uses an elastic-predictor/
-    radial-return corrector in the frozen tangent frame: the tangential force history (promoted
-    on increment acceptance via :meth:`acceptLastState`, rotated into the new tangent plane on
-    reassignment) plus the tangential penalty stiffness times the incremental relative slip forms
-    the stick predictor, capped at ``mu * N`` on the friction cone. The consistent tangent is
-    symmetric in stick and nonsymmetric on slip (normal-tangential coupling). Combine with
-    ``type=quadratic`` (see the ``mu`` option documentation). Rotating the history is only
-    admissible as long as the frozen tangent plane changes continuously between the increments;
-    a slave sliding over a genuine crease of the master surface (normal change beyond
-    ``_cosOfSmoothNormalChangeLimit``) restarts its frictional history instead, keeping its normal
-    traction multiplier.
+    Coulomb friction (``mu > 0``, requires ``sliding=small``) is the law shared by all contact
+    formulations (:class:`~edelweissfe.utils.contactfriction.CoulombFriction`), evaluated in the
+    frozen tangent frame: each slave node is a contact point with the coefficients ``c = [1, -N_1,
+    ..., -N_k]`` of its frozen projection, the measure ``A`` of its tributary area and the pressure
+    ``p = -f_n / A`` (including the augmented multiplier). The traction history (promoted on
+    increment acceptance via :meth:`acceptLastState`, rotated into the new tangent plane on
+    reassignment) plus the tangential modulus times the incremental relative slip forms the stick
+    predictor, capped at ``mu * p`` on the friction cone. The consistent tangent is symmetric in
+    stick and nonsymmetric on slip (normal-tangential coupling). Combine with ``type=quadratic``
+    (see the ``mu`` option documentation). Rotating the history is only admissible as long as the
+    frozen tangent plane changes continuously between the increments; a slave sliding over a
+    genuine crease of the master surface (normal change beyond 30 degrees) restarts its frictional
+    history instead, keeping its normal traction multiplier. ``slipTolerance`` (a pressure-
+    proportional tangential modulus) and the anti-chattering freeze of the stick/slip state are
+    those of the shared law; the characteristic facet size is the mean slave facet size.
 
     With ``augmentedLagrange=True`` (requires ``sliding=small``), a per-slave normal traction
     multiplier augments the penalty force. It is constant within an increment (zero tangent
@@ -401,19 +391,32 @@ class Constraint(ConstraintBase, MeshDependent):
             raise ValueError(f"Constraint sliding '{self.sliding}' is not supported. Use 'finite' or 'small'.")
         self._validateMasterWeightTransforms()
 
-        self.mu = configuration.mu
-        if self.mu < 0.0:
-            raise ValueError("The friction coefficient mu must be non-negative.")
+        self.nDim = model.domainSize
+
+        # The friction law and the per-slave frictional state (traction history, stick/slip state)
+        # are the ones shared by all contact formulations. The traction is the force per tributary
+        # area, so the history does not depend on how finely the slave surface is resolved.
+        self._friction = CoulombFriction(
+            self.nSlaves,
+            self.nDim,
+            configuration.mu,
+            configuration.tangentPenalty,
+            configuration.slipTolerance,
+            owner=name,
+        )
+        self.mu = self._friction.mu
         if self.mu > 0.0 and self.sliding != "small":
             raise ValueError(
                 "Coulomb friction (mu > 0) requires sliding=small: the frictional predictor/"
                 "corrector operates in the frozen tangent frame of the small-sliding formulation."
             )
-        self.tangentPenalty = configuration.tangentPenalty if configuration.tangentPenalty is not None else self.penalty
-        if self.mu > 0.0 and self.tangentPenalty <= 0.0:
-            raise ValueError(
-                "The tangential penalty must be positive when mu > 0: a non-positive tangentPenalty "
-                "silently disables the frictional stick response."
+        if self._friction.enabled and self._friction.slipTolerance > 0.0:
+            h = characteristicFacetSize(float(np.sum(self.tributaryAreas)), len(self.slaveFacetElements), self.nDim)
+            self._friction.setCharacteristicLength(h)
+            self.journal.message(
+                f"friction with slipTolerance = {self._friction.slipTolerance:.4g}: elastic slip "
+                f"gamma_crit = {self._friction.elasticSlip:.4g} (h = {h:.4g}), eps_T = mu * p / gamma_crit",
+                name,
             )
 
         self.augmentedLagrange = configuration.augmentedLagrange
@@ -422,8 +425,6 @@ class Constraint(ConstraintBase, MeshDependent):
                 "augmentedLagrange requires sliding=small: the multiplier force acts along the "
                 "frozen gap gradient of the small-sliding formulation."
             )
-
-        self.nDim = model.domainSize
 
         self._referenceCoordsSlaves = np.array([n.coordinates for n in self.slaveNodes])
         self._referenceCoordsFacets = [np.array([n.coordinates for n in el.nodes]) for el in self.facetElements]
@@ -434,12 +435,6 @@ class Constraint(ConstraintBase, MeshDependent):
         # clamped closest-point weights on the assigned facet, and the facet's unit normal.
         self._frozenWeights = [None] * self.nSlaves
         self._frozenNormals = [None] * self.nSlaves
-
-        # Frictional history: tangential force exerted on each slave node, at the last converged
-        # state and at the current Newton iterate (the latter is only a scratch value, promoted to
-        # converged by acceptLastState()).
-        self._tangentialForceConverged = np.zeros((self.nSlaves, self.nDim))
-        self._tangentialForceCurrent = np.zeros((self.nSlaves, self.nDim))
 
         # Augmented-Lagrange state: per-slave normal traction multiplier (a force, <= 0 in
         # contact), plus the gap of the current Newton iterate as a scratch value for the Uzawa
@@ -521,7 +516,10 @@ class Constraint(ConstraintBase, MeshDependent):
             # clamped weights are non-negative by construction. Facet, weights, and normal are
             # frozen for the whole increment, making the gap linear in the displacement DOFs.
             closestPointFunction = tria3ClosestPoint if self.nDim == 3 else line2ClosestPoint
-            nSlavesWithDiscardedHistory = 0
+            # The frozen normals before and after the update, NaN where there is none, for the
+            # transport of the frictional history into the new tangent planes.
+            previousNormals = np.full((self.nSlaves, self.nDim), np.nan)
+            newNormals = np.full((self.nSlaves, self.nDim), np.nan)
             candidatesPerSlave = closestFacetCandidates(slaveCoords, facetCoords, self.searchDistance)
             for s in range(self.nSlaves):
                 bestDistance = np.inf
@@ -541,52 +539,35 @@ class Constraint(ConstraintBase, MeshDependent):
                     weightTransform = self.facetElements[bestFacet].weightTransform
                     self._frozenWeights[s] = bestWeights if weightTransform is None else weightTransform @ bestWeights
                     normal, _ = facetNormalAndMeasure(facetCoords[bestFacet])
-                    previousNormal = self._frozenNormals[s]
+                    if self._frozenNormals[s] is not None:
+                        previousNormals[s] = self._frozenNormals[s]
+                    newNormals[s] = normal
                     self._frozenNormals[s] = normal
-
-                    if previousNormal is None or previousNormal.dot(normal) >= _cosOfSmoothNormalChangeLimit:
-                        # Rotate the frictional history into the new frozen tangent plane; the frame
-                        # changes only slightly per increment in a small-deformation setting. Nothing
-                        # to rotate if the slave was out of contact in the last increment (no
-                        # previous normal): its history has been zeroed then, respectively at
-                        # construction.
-                        projectorOntoTangentPlane = np.eye(self.nDim) - np.outer(normal, normal)
-                        self._tangentialForceConverged[s] = (
-                            projectorOntoTangentPlane @ self._tangentialForceConverged[s]
-                        )
-                    else:
-                        # The new frozen tangent plane is *not* a small perturbation of the one the
-                        # frictional history was accumulated in: the slave has slid over a genuine
-                        # crease of the master surface (or its facet has rotated far beyond what the
-                        # small-sliding formulation assumes). Rotating the history here would
-                        # silently discard the -- possibly dominant -- part of it that now points
-                        # along the new normal, leaving a stick predictor unrelated to the actual
-                        # frictional state, so the history is discarded instead and the slave enters
-                        # the increment like a fresh contact on the new face. This is cheap where it
-                        # is wrong and right where it matters: a slave in genuine stick does not
-                        # move, hence cannot cross a crease in the first place, while a *slipping*
-                        # slave is returned onto the cone |f_T| = mu * N within the same increment,
-                        # independently of its history. The normal traction multiplier is retained:
-                        # it is a frame-independent magnitude acting along the freshly frozen gap
-                        # gradient, and the contact pressure does not vanish just because the slave
-                        # slid over a corner -- releasing it (as done below on loss of contact)
-                        # would only undo the converged Uzawa progress and let the penetration
-                        # spike again.
-                        self._tangentialForceConverged[s] = 0.0
-                        nSlavesWithDiscardedHistory += 1
                 else:
                     self._frozenWeights[s] = None
                     self._frozenNormals[s] = None
-                    self._tangentialForceConverged[s] = 0.0
                     self._lambdaN[s] = 0.0
 
-            if self.mu > 0.0 and nSlavesWithDiscardedHistory > 0:
-                self.journal.message(
-                    f"{nSlavesWithDiscardedHistory} slave nodes crossed a crease of the master "
-                    "surface; their frictional history was discarded",
-                    self.name,
-                    level=2,
+            if self._friction.enabled:
+                # Rotate the frictional history into the new frozen tangent planes (the frame changes
+                # only slightly per increment in a small-deformation setting), and discard it for a
+                # slave that lost its facet or slid over a genuine crease of the master surface (see
+                # CoulombFriction.carry). The normal traction multiplier is retained at a crease: it
+                # is a frame-independent magnitude acting along the freshly frozen gap gradient, and
+                # the contact pressure does not vanish just because the slave slid over a corner --
+                # releasing it (as done above on loss of contact) would only undo the converged Uzawa
+                # progress and let the penetration spike again.
+                assigned = np.array([a is not None for a in newAssignment], dtype=bool)
+                nSlavesWithDiscardedHistory = self._friction.carry(
+                    newNormals, previousNormals, assigned, normalPenalty=self.penalty
                 )
+                if nSlavesWithDiscardedHistory > 0:
+                    self.journal.message(
+                        f"{nSlavesWithDiscardedHistory} slave nodes crossed a crease of the master "
+                        "surface; their frictional history was discarded",
+                        self.name,
+                        level=2,
+                    )
         else:
             facetCentroids = np.array([np.mean(c, axis=0) for c in facetCoords])
             for s in range(self.nSlaves):
@@ -681,7 +662,7 @@ class Constraint(ConstraintBase, MeshDependent):
         """Rebuild the slave-side node list/tributary areas from the regenerated facet set,
         preserving frictional history and the AL multiplier of retained slave nodes by identity."""
 
-        oldTangential = dict(zip(self.slaveNodes, self._tangentialForceConverged))
+        oldSlaveNodes = self.slaveNodes
         oldLambda = dict(zip(self.slaveNodes, self._lambdaN))
 
         self.slaveFacetElements = list(model.elementSets[self._slaveSurfaceSetName])
@@ -695,8 +676,7 @@ class Constraint(ConstraintBase, MeshDependent):
         self.nSlaves = len(self.slaveNodes)
         self._referenceCoordsSlaves = np.array([n.coordinates for n in self.slaveNodes])
 
-        self._tangentialForceConverged = np.array([oldTangential.get(n, np.zeros(self.nDim)) for n in self.slaveNodes])
-        self._tangentialForceCurrent = np.zeros((self.nSlaves, self.nDim))
+        self._friction.remap(oldSlaveNodes, self.slaveNodes)
         self._lambdaN = np.array([oldLambda.get(n, 0.0) for n in self.slaveNodes])
         self._gapCurrent = np.zeros(self.nSlaves)
         self._normalForceCurrent = np.zeros(self.nSlaves)
@@ -783,6 +763,7 @@ class Constraint(ConstraintBase, MeshDependent):
         """Forces without a tangent, by running the one loop with ``K=None``. Overrides the base
         implementation to avoid constructing an unused tangent matrix container."""
 
+        self._friction.checkExplicitIntegrability()
         self.applyConstraint(U_np, dU, PExt, None, timeStep)
 
     def applyConstraint(
@@ -796,6 +777,9 @@ class Constraint(ConstraintBase, MeshDependent):
         """Evaluate the contact forces, and the tangent unless ``K`` is None."""
 
         self.totalNormalForce = 0.0
+        friction = self._friction.enabled
+        if friction:
+            self._friction.beginEvaluation(timeStep)
 
         localOffset = 0
         activeIdx = 0
@@ -803,7 +787,8 @@ class Constraint(ConstraintBase, MeshDependent):
             pStart = localOffset
             localOffset += self.nDim
 
-            self._tangentialForceCurrent[s] = 0.0
+            if friction:
+                self._friction.markOpen(s)
             self._normalForceCurrent[s] = 0.0
 
             if self._assignedFacetIdx[s] is None:
@@ -884,15 +869,27 @@ class Constraint(ConstraintBase, MeshDependent):
                 if H is not None:
                     KLocal += f_n * H
 
-            if self.mu > 0.0:
-                PFriction, KFriction = self._computeFriction(
-                    s, c, nBar, f_n, stiffness, w, dU, pIdcs, fIdcs, computeTangent=(KLocal is not None)
+            globalIdcs = pIdcs + fIdcs
+
+            area = self.tributaryAreas[s]
+            if friction and area > 0.0:
+                # The slave node as a contact point of the shared law: coefficients c, measure A, the
+                # frozen normal, and the pressure p = -f_n / A with dp/dU = -stiffness * w / A.
+                PFriction, KFriction = self._friction.evaluatePoint(
+                    s,
+                    c,
+                    area,
+                    nBar,
+                    -f_n / area,
+                    (-stiffness / area) * w,
+                    dU[globalIdcs],
+                    self.penalty,
+                    computeTangent=(KLocal is not None),
                 )
                 PLocal += PFriction
                 if KLocal is not None:
                     KLocal += KFriction
 
-            globalIdcs = pIdcs + fIdcs
             PExt[globalIdcs] += PLocal
 
             if KLocal is not None:
@@ -904,6 +901,9 @@ class Constraint(ConstraintBase, MeshDependent):
             self._normalForceCurrent[s] = f_n
             self.totalNormalForce += f_n
             activeIdx += 1
+
+        if friction:
+            self._friction.freezeIfChattering(self._friction.iteration)
 
     def getNormalPressures(self) -> np.ndarray:
         """The current per-slave normal contact pressures (positive in compression), ordered like
@@ -920,14 +920,16 @@ class Constraint(ConstraintBase, MeshDependent):
     def getTangentialTractions(self) -> np.ndarray:
         """The current per-slave tangential (frictional) traction magnitudes, ordered like the
         surface element generator's ``<prefix>_nodes`` node set of the slave surface. 0 for a
-        slave node with a degenerate (zero-area) tributary area, rather than NaN."""
+        slave node with a degenerate (zero-area) tributary area."""
 
-        return np.divide(
-            np.linalg.norm(self._tangentialForceCurrent, axis=1),
-            self.tributaryAreas,
-            out=np.zeros_like(self.tributaryAreas),
-            where=self.tributaryAreas > 0,
-        )
+        return self._friction.tractionMagnitudes()
+
+    def getSlipStates(self) -> np.ndarray:
+        """The current per-slave stick/slip state as a float for output -- 0 open, 1 stick, 2 slip --
+        ordered like the ``<prefix>_nodes`` node set of the slave surface. Always 0 without
+        friction."""
+
+        return self._friction.slipStates()
 
     def getGaps(self) -> np.ndarray:
         """The current per-slave gaps (negative when penetrating; only meaningful for
@@ -936,76 +938,23 @@ class Constraint(ConstraintBase, MeshDependent):
 
         return self._gapCurrent.copy()
 
-    def _computeFriction(
-        self,
-        s: int,
-        c: np.ndarray,
-        nBar: np.ndarray,
-        f_n: float,
-        stiffness: float,
-        w: np.ndarray,
-        dU: np.ndarray,
-        pIdcs: list,
-        fIdcs: list,
-        computeTangent: bool = True,
-    ) -> tuple[np.ndarray, np.ndarray | None]:
-        """Coulomb friction in the frozen small-sliding frame: elastic (stick) predictor from the
-        converged tangential force and the incremental tangential relative displacement, radial
-        return onto the friction cone ``|f_T| <= mu * N`` on slip.
-
-        Returns the local external-force contribution and the local stiffness contribution
-        ``K = -dPExt_dU`` (nonsymmetric on slip), in the same ``[slave, facet nodes]`` block
-        layout as the normal contact contribution.
-
-        The incremental relative displacement maps through the constant matrix
-        ``G = kron(c, I)`` (``u_rel = xs - sum_a NBar_a xa``), so ``G.T M G = kron(outer(c, c), M)``
-        and ``G.T v = kron(c, v)`` -- the same structure that gives ``w = kron(c, nBar)``.
-        """
-
-        nDim = self.nDim
-        weights = self._frozenWeights[s]
-
-        projectorOntoTangentPlane = np.eye(nDim) - np.outer(nBar, nBar)
-        kTangent = self.tangentPenalty * self.tributaryAreas[s]
-
-        dURelative = dU[pIdcs] - weights @ dU[fIdcs].reshape((len(weights), nDim))
-        stickForce = self._tangentialForceConverged[s] - kTangent * (projectorOntoTangentPlane @ dURelative)
-
-        normalForceMagnitude = -f_n
-        slipLimit = self.mu * normalForceMagnitude
-        stickForceMagnitude = np.linalg.norm(stickForce)
-
-        if stickForceMagnitude <= slipLimit:
-            tangentialForce = stickForce
-            # d(stickForce)_d(dURelative) = -kTangent * projector; K = -G.T dfT_dU G
-            KFriction = np.kron(np.outer(c, c), kTangent * projectorOntoTangentPlane) if computeTangent else None
-        else:
-            slipDirection = stickForce / stickForceMagnitude
-            tangentialForce = slipLimit * slipDirection
-            if computeTangent:
-                # dfT_dU = slipDirection * mu * dN_dU + slipLimit * dSlipDirection_dU, with
-                # dN_dU = -stiffness * w and dSlipDirection_dU built from the stick predictor;
-                # the first term makes KFriction nonsymmetric (normal-tangential coupling).
-                KFriction = self.mu * stiffness * np.outer(np.kron(c, slipDirection), w)
-                KFriction += np.kron(
-                    np.outer(c, c),
-                    (slipLimit * kTangent / stickForceMagnitude)
-                    * ((np.eye(nDim) - np.outer(slipDirection, slipDirection)) @ projectorOntoTangentPlane),
-                )
-            else:
-                KFriction = None
-
-        self._tangentialForceCurrent[s] = tangentialForce
-        PFriction = np.kron(c, tangentialForce)
-        return PFriction, KFriction
-
     def acceptLastState(self):
-        """Promote the tangential forces of the last (converged) Newton iterate to the frictional
+        """Promote the tangential tractions of the last (converged) Newton iterate to the frictional
         history, and perform the incremental Uzawa update of the normal traction multipliers.
         Called by :meth:`~edelweissfe.models.femodel.FEModel.advanceToTime` upon increment
         acceptance."""
 
-        self._tangentialForceConverged[:] = self._tangentialForceCurrent
+        if self._friction.enabled:
+            insideCone, turnedAway = self._friction.accept()
+            if insideCone or turnedAway:
+                self.journal.message(
+                    f"the stick/slip state chattered and was frozen; {insideCone} slave node(s) were accepted "
+                    f"in slip although their stick predictor lies inside the friction cone, {turnedAway} with a "
+                    "predictor more than 30 degrees away from the frozen slip direction. They carry the full "
+                    "friction mu*p in the frozen direction; smaller increments, or a slipTolerance, remove it.",
+                    self.name,
+                    level=1,
+                )
 
         if self.augmentedLagrange:
             for s in range(self.nSlaves):
@@ -1032,7 +981,7 @@ class Constraint(ConstraintBase, MeshDependent):
                 self._lambdaN[s] = min(0.0, self._lambdaN[s] + penaltyForcePart)
 
     def getRestartData(self) -> dict[str, np.ndarray]:
-        """Return the converged frictional-force and augmented-Lagrange-multiplier history.
+        """Return the converged frictional and augmented-Lagrange-multiplier history.
 
         ``_assignedFacetIdx``, ``_gapCurrent``, ``_frozenWeights``/``_frozenNormals`` are excluded:
         they are recomputed from scratch every increment by :meth:`updateConnectivity` /
@@ -1040,12 +989,20 @@ class Constraint(ConstraintBase, MeshDependent):
         so they carry no cross-increment history of their own."""
 
         return {
-            "tangentialForceConverged": self._tangentialForceConverged,
+            **self._friction.restartData(),
             "lambdaN": self._lambdaN,
         }
 
     def setRestartData(self, data: dict[str, np.ndarray]):
-        """Restore the converged frictional-force and augmented-Lagrange-multiplier history."""
+        """Restore the converged frictional and augmented-Lagrange-multiplier history. A checkpoint
+        written while the history was still stored as a nodal force (``tangentialForceConverged``)
+        is converted to the traction by the tributary areas."""
 
-        self._tangentialForceConverged[:] = data["tangentialForceConverged"]
+        if "tangentialForceConverged" in data:
+            areas = self.tributaryAreas[:, None]
+            force = np.asarray(data["tangentialForceConverged"])
+            traction = np.divide(force, areas, out=np.zeros_like(force), where=areas > 0)
+            self._friction.setRestartData({"frictionTractionConverged": traction})
+        else:
+            self._friction.setRestartData(data)
         self._lambdaN[:] = data["lambdaN"]

@@ -97,45 +97,51 @@ def _hexa20Coordinates(yOffset: float) -> list:
     return corners + [0.5 * (corners[a] + corners[b]) for a, b in _HEXA20_EDGES]
 
 
+def twoBlockModel(journal: Journal, penetration: float, nodalWeights: str = "facetConsistent") -> tuple:
+    """Two hexa20 cubes meeting at y = 0, the lower one overlapping the upper by ``penetration``,
+    with the lower block's Ymax face as slave and the upper block's Ymin face as master, both as
+    contact facet sets. Shared by the tests of the facet-based contact formulations.
+
+    Returns
+    -------
+    tuple
+        ``(model, slaveSurface, masterSurface)``.
+    """
+
+    model = FEModel(3)
+    label = 1
+    elements = {}
+    with model.topologyChanges():
+        for key, yOffset in (("upper", 0.0), ("lower", -_SIDE + penetration)):
+            nodes = []
+            for x in _hexa20Coordinates(yOffset):
+                node = Node(label, x)
+                model.nodes[label] = node
+                nodes.append(node)
+                label += 1
+            (elNumber,) = model.reserveElementNumbers(1)
+            element = DisplacementElement("C3D20", elNumber)
+            element.setNodes(nodes)
+            model.createElement(element)
+            elements[key] = element
+
+        model.surfaces["masterFace"] = {_YMIN: ElementSet("m", [elements["upper"]])}
+        model.surfaces["slaveFace"] = {_YMAX: ElementSet("s", [elements["lower"]])}
+
+        masterSetName, _ = buildContactFacets(model, "masterFace", "mst", "midside", nodalWeights, journal)
+        slaveSetName, _ = buildContactFacets(model, "slaveFace", "slv", "midside", nodalWeights, journal)
+
+    return model, model.elementSets[slaveSetName], model.elementSets[masterSetName]
+
+
 class TestIntegratedSurfaceContact(unittest.TestCase):
     def setUp(self):
         self.journal = Journal()
 
     def _twoBlockModel(self, penetration: float, nodalWeights: str = "facetConsistent") -> tuple:
-        """Two hexa20 cubes meeting at y = 0, the lower one overlapping the upper by
-        ``penetration``, with the lower block's Ymax face as slave and the upper block's Ymin face
-        as master.
+        """See :func:`twoBlockModel`."""
 
-        Returns
-        -------
-        tuple
-            ``(model, slaveSurface, masterSurface)``.
-        """
-
-        model = FEModel(3)
-        label = 1
-        elements = {}
-        with model.topologyChanges():
-            for key, yOffset in (("upper", 0.0), ("lower", -_SIDE + penetration)):
-                nodes = []
-                for x in _hexa20Coordinates(yOffset):
-                    node = Node(label, x)
-                    model.nodes[label] = node
-                    nodes.append(node)
-                    label += 1
-                (elNumber,) = model.reserveElementNumbers(1)
-                element = DisplacementElement("C3D20", elNumber)
-                element.setNodes(nodes)
-                model.createElement(element)
-                elements[key] = element
-
-            model.surfaces["masterFace"] = {_YMIN: ElementSet("m", [elements["upper"]])}
-            model.surfaces["slaveFace"] = {_YMAX: ElementSet("s", [elements["lower"]])}
-
-            masterSetName, _ = buildContactFacets(model, "masterFace", "mst", "midside", nodalWeights, self.journal)
-            slaveSetName, _ = buildContactFacets(model, "slaveFace", "slv", "midside", nodalWeights, self.journal)
-
-        return model, model.elementSets[slaveSetName], model.elementSets[masterSetName]
+        return twoBlockModel(self.journal, penetration, nodalWeights)
 
     def _constraint(self, model, slaveSurface, masterSurface, **options) -> IntegratedContact:
         configuration = SurfaceToDeformableSurfacePenaltySchema(
