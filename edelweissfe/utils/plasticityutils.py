@@ -87,7 +87,7 @@ def tensorLogarithmEig(A):
     np.ndarray
         The tensor logarithm of A."""
 
-    (x, V) = lin.eigh(A)
+    x, V = lin.eigh(A)
     A_ = np.diag(np.log(x))
     return V @ A_ @ V.T
 
@@ -225,7 +225,7 @@ def tensorLogarithm(A):
     np.ndarray
         The tensor logarithm of A."""
 
-    (E, x, counts) = computeEigenprojections(A)
+    E, x, counts = computeEigenprojections(A)
     logXi = np.log(x)
     if counts == 3:  # no eigenvalues are the same
         logA = np.zeros([3, 3])
@@ -252,7 +252,7 @@ def dTensorLog_dA(A):
     np.ndarray
         The derivative of the tensor logarithm at A."""
 
-    (E, x, counts) = computeEigenprojections(A)
+    E, x, counts = computeEigenprojections(A)
     y = np.log(x)
     Ie = np.eye(3)
     IS = 1 / 2 * (np.einsum("ik,jl->ijkl", Ie, Ie) + np.einsum("il,jk->ijkl", Ie, Ie))

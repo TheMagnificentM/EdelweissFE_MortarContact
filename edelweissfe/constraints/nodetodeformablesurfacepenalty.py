@@ -42,6 +42,7 @@ from edelweissfe.utils.contactfriction import (
     characteristicFacetSize,
     frictionCoefficientField,
     frozenNormalsForRestart,
+    historyInterpolation,
     matchRestartKeys,
     restoreFrozenNormals,
     slipToleranceField,
@@ -51,6 +52,7 @@ from edelweissfe.utils.facetcontactgeometry import (
     closestFacet,
     closestFacetCandidates,
     edgeOrVertexNormal,
+    facetHistoryPatches,
     facetSurfaceBoundary,
     liesOnSurfaceBoundary,
     line2ClosestPoint,
@@ -74,8 +76,9 @@ source solid elements are refined mid-run (e.g. by :mod:`~edelweissfe.modelmodif
 hadaptivity`), it regenerates that side's facets from the current (refined) ``*surface`` definition
 and rebinds its cached facet list/reference coordinates at its own next :meth:`updateConnectivity`
 tick -- no separate wiring needed. A retained slave node (same across the rebuild, by ``Node``
-identity) keeps its frictional history and augmented-Lagrange multiplier; a newly exposed one
-starts at rest.
+identity) keeps its frictional history and augmented-Lagrange multiplier; a new one takes the
+frictional history interpolated from the old slave facet it lies on, with the parent face's shape
+functions (Wriggers 2006, Eq. 14.86), and starts without multiplier.
 """
 
 
@@ -634,7 +637,8 @@ class Constraint(ConstraintBase, MeshDependent):
         :attr:`~edelweissfe.models.femodel.FEModel.contactFacetRecipes`) and rebind the cached
         per-slave/per-facet arrays to match. A currently-tracked slave node keeps its frictional
         history and augmented-Lagrange multiplier (keyed on ``Node`` identity, since AMR reuses the
-        same ``Node`` objects for retained nodes); a newly exposed slave starts at rest. Per-slave
+        same ``Node`` objects for retained nodes); a new slave node takes the frictional history
+        interpolated from the old surface (see :meth:`_rebindSlave`). Per-slave
         facet assignment, frozen weights and normals are simply re-sized to the new slave count --
         the next :meth:`updateConnectivity` (called right before this, every increment) recomputes
         them from the current geometry regardless, so there is no stale-index window."""
@@ -690,17 +694,21 @@ class Constraint(ConstraintBase, MeshDependent):
             )
 
     def _setTieTolerance(self) -> None:
-        """Two facets within this distance of each other count as equally close (see closestFacet)."""
+        """The mean slave facet size ``h``, and the distance within which two facets count as equally
+        close (see closestFacet)."""
 
-        self._tieTolerance = 1e-10 * characteristicFacetSize(
+        self._facetSize = characteristicFacetSize(
             float(np.sum(self.tributaryAreas)), max(len(self.slaveFacetElements), 1), self.nDim
         )
+        self._tieTolerance = 1e-10 * self._facetSize
 
     def _rebindSlave(self, model: FEModel) -> None:
-        """Rebuild the slave-side node list/tributary areas from the regenerated facet set,
-        preserving frictional history and the AL multiplier of retained slave nodes by identity."""
+        """Rebuild the slave-side node list/tributary areas from the regenerated facet set. Retained
+        slave nodes keep their frictional history and AL multiplier (by identity); new ones take the
+        frictional history interpolated from the old surface and start without multiplier."""
 
         oldSlaveNodes = self.slaveNodes
+        oldSlaveFacets = self.slaveFacetElements
         oldLambda = dict(zip(self.slaveNodes, self._lambdaN))
 
         self.slaveFacetElements = list(model.elementSets[self._slaveSurfaceSetName])
@@ -715,7 +723,20 @@ class Constraint(ConstraintBase, MeshDependent):
         self._referenceCoordsSlaves = np.array([n.coordinates for n in self.slaveNodes])
         self._setTieTolerance()
 
-        self._friction.remap(oldSlaveNodes, self.slaveNodes)
+        # A retained node keeps its history; a new one takes it interpolated from the old slave
+        # facet it lies on (Wriggers 2006, Eq. 14.86).
+        interpolation = (
+            historyInterpolation(
+                self._referenceCoordsSlaves,
+                self.slaveNodes,
+                oldSlaveNodes,
+                facetHistoryPatches(oldSlaveFacets),
+                0.1 * self._facetSize,
+            )
+            if self._friction.enabled
+            else None
+        )
+        self._friction.remap(oldSlaveNodes, self.slaveNodes, interpolation)
         self._lambdaN = np.array([oldLambda.get(n, 0.0) for n in self.slaveNodes])
         self._gapCurrent = np.zeros(self.nSlaves)
         self._normalForceCurrent = np.zeros(self.nSlaves)

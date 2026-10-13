@@ -480,3 +480,56 @@ def liesOnSurfaceBoundary(nodes: list, weights: np.ndarray, boundary: tuple[set,
     if len(support) == 2 and len(nodes) == 3:
         return frozenset(support) in boundaryEdges
     return False
+
+
+def facetHistoryPatches(facets: list) -> list:
+    """The old slave facets of a node-based contact as patches for
+    :func:`~edelweissfe.utils.contactfriction.historyInterpolation`: a point is located on its
+    closest facet, and the history is interpolated from the nodes of the facet's parent face with
+    the parent face's shape functions at that location (Wriggers 2006, Eq. 14.86) -- from the facet's
+    own nodes with its barycentric weights where the facet carries no parent face."""
+
+    from edelweissfe.utils.parentfacegeometry import parentFaceShapeFunctions
+
+    patches = []
+    for facet in facets:
+        coordinates = np.array([node.coordinates for node in facet.nodes])
+        closestPoint = tria3ClosestPoint if len(coordinates) == 3 else line2ClosestPoint
+
+        def locate(point, facet=facet, coordinates=coordinates, closestPoint=closestPoint):
+            weights, distance = closestPoint(point, *coordinates)
+            if facet.parentFaceType is None:
+                return distance, list(facet.nodes), weights
+            parametric = weights @ facet.vertexParametricCoords
+            return distance, list(facet.parentFaceNodes), parentFaceShapeFunctions(facet.parentFaceType, parametric)
+
+        patches.append((coordinates.mean(axis=0), locate))
+    return patches
+
+
+def facetQuadraturePointPatches(facets: list, nQuadraturePoints: int, pointKey) -> list:
+    """The old slave facets of the integrated contact as patches for
+    :func:`~edelweissfe.utils.contactfriction.historyInterpolation`, whose history sits at the
+    quadrature points rather than at nodes. Over each old facet, a linear field in its barycentric
+    coordinates is fitted to the values at its quadrature points by least squares (Wriggers 2006,
+    Eqs. 14.32-14.33, with the facet as the patch; a constant one for a single point), and evaluated
+    where the new point lies on the facet. ``pointKey(facet, q)`` gives the key of quadrature point
+    ``q`` of an old facet."""
+
+    from edelweissfe.utils.parentfacegeometry import facetQuadratureRule
+
+    patches = []
+    for facet in facets:
+        coordinates = np.array([node.coordinates for node in facet.nodes])
+        closestPoint = tria3ClosestPoint if len(coordinates) == 3 else line2ClosestPoint
+        barycentric, _ = facetQuadratureRule(len(coordinates), nQuadraturePoints)
+        nTerms = len(coordinates) if nQuadraturePoints >= len(coordinates) else 1
+        fit = np.linalg.pinv(np.hstack([np.ones((len(barycentric), 1)), barycentric[:, 1:nTerms]]))
+        keys = [pointKey(facet, q) for q in range(nQuadraturePoints)]
+
+        def locate(point, coordinates=coordinates, closestPoint=closestPoint, fit=fit, keys=keys, nTerms=nTerms):
+            weights, distance = closestPoint(point, *coordinates)
+            return distance, keys, np.concatenate([[1.0], weights[1:nTerms]]) @ fit
+
+        patches.append((coordinates.mean(axis=0), locate))
+    return patches

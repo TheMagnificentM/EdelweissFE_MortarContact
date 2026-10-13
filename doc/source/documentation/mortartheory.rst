@@ -793,11 +793,20 @@ elements under one of its surfaces, the surface element generator regenerates ev
 of that surface (``facets=wholeFace`` included) on the solids' own nodes, and the constraint rebuilds
 its contact system from the new element sets -- node lists, degrees of freedom, reference
 coordinates, undeformed normals -- before the next increment. The frozen geometry is discarded and
-rebuilt at the next assembly from the last converged configuration, exactly as at an ordinary
-connectivity tick. Every per-node state is carried over by node identity, since a node that survives
-the refinement is the same object before and after: the frictional history, the augmented pressure
-estimate, the reference gap vector of the objective slip correction and, under
-``formulation=lagrange``, the converged multiplier. A node created by the refinement starts at rest.
+rebuilt at the next assembly from the last converged configuration. A node that survives the
+refinement is the same object before and after, and keeps its state: the frictional history, the
+augmented pressure estimate, the active-set entry, the reference gap vector of the objective slip
+correction and, under ``formulation=lagrange``, the converged multiplier. A node created by the
+refinement takes the frictional history (traction, pressure, contact status) and the augmented
+pressure estimate interpolated from the old non-mortar element it lies on, with that element's shape
+functions at its location (Wriggers 2006, Section 14.7.2, Eqs. 14.83-14.86); its active-set entry
+and multiplier start at zero and are found by the first iteration. At the first rebuild after the
+refinement the history is carried into the new tangent planes and returned onto the cone of its
+pressure, since a transferred traction need not satisfy the slip condition (Perić et al. 1996,
+Remark 4.3), but without the objective slip correction: its reference gap vector belongs to the old
+coupling matrices, and the difference would be the change of discretisation, not slip. The penalty
+stiffness derived from the element size and the characteristic length of ``slipTolerance`` are
+determined once, on the surfaces of the first assembly, and stay as they are.
 The number of multipliers follows the non-mortar nodes, so the constraint re-creates its scalar
 variables itself; the refresh reports a changed footprint and the solver rebuilds its equation
 system. Hanging nodes of the refined surface take part like any other node, their degrees of freedom
@@ -809,13 +818,16 @@ and only then is the contact state restored. Since that happens before any solve
 mesh dependents, the constraint first catches up with the refined surfaces itself and then matches
 the checkpoint to its non-mortar nodes by node label -- including the multipliers, which as scalar
 variables are restored by name, i.e. by index, and no longer identify a node once the surface was
-refined. The node-to-surface and the integrated contact constraints do the same, by slave node and
-by slave facet and quadrature point.
+refined, and the nodal normals of the last rebuild, against which the first rebuild after the
+restart checks for a crease. The node-to-surface and the integrated contact constraints do the same,
+by slave node and by slave facet and quadrature point.
 
-Both are verified end to end in ``tests/test_contact_amr_restart.py``: a frictional drag during
-which both contact surfaces are refined, with every contact formulation, and the same run truncated
-after the refinement and resumed from its checkpoint, which ends with the displacements of the
-uninterrupted run.
+Both are verified end to end in ``tests/test_contact_amr_restart.py``, with the node-to-surface
+constraint, the integrated constraint, the mortar penalty formulation with friction and the mortar
+Lagrange formulation: a frictional drag during which both contact surfaces are refined; the same run
+truncated after the refinement and resumed from its checkpoint, which ends with the displacements of
+the uninterrupted run; and a traction field linear in the coordinates, imposed before each
+refinement, which every new point carries exactly afterwards.
 
 
 Explicit dynamics with the mortar
@@ -1144,7 +1156,12 @@ that a reader checking a single line does not have to reconstruct which work it 
   1183--1225. -- The penalty-regularised Coulomb law of the friction option, its trial state and
   return map, Eqs. (39) and (47)--(49); and the nodal scale factor of the penalty normalisation.
 * P. Wriggers: *Computational Contact Mechanics*, 2nd ed., Springer, 2006. -- The return map of the
-  friction law, Box 14, and the non-symmetric slip tangent, Eq. (10.113).
+  friction law, Box 14, and the non-symmetric slip tangent, Eq. (10.113); the transfer of the
+  frictional history to the nodes a mesh refinement creates, Section 14.7.2, Eqs. (14.83)--(14.86).
+* D. Perić, Ch. Hochard, M. Dutko, D. R. J. Owen: *Transfer operators for evolving meshes in small
+  strain elasto-plasticity*, Computer Methods in Applied Mechanics and Engineering 137 (1996)
+  331--344. -- Remark 4.3: a transferred state need not satisfy the yield condition; here, the
+  transferred traction is returned onto the friction cone after a mesh refinement.
 * M. Gitterle, A. Popp, M. W. Gee, W. A. Wall: *Finite deformation frictional mortar contact using a
   semi-smooth Newton method with consistent linearization*, International Journal for Numerical
   Methods in Engineering 84 (2010), 543--571. -- The objective weighted slip increment, Eq. (53),

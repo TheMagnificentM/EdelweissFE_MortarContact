@@ -48,7 +48,9 @@ import numpy as np
 import pytest
 
 from edelweissfe.drivers.inputfiledrivensimulation import finiteElementSimulation
+from edelweissfe.utils.contactfriction import CoulombFriction
 from edelweissfe.utils.inputfileparser import parseInputFile
+from edelweissfe.utils.parentfacegeometry import facetQuadratureRule
 
 pytest.importorskip("edelweissfe.elements.marmotelement.element", reason="the AMR decks use Marmot elements")
 
@@ -245,3 +247,53 @@ def test_restart_after_refinement_matches_the_uninterrupted_run(formulation, tmp
     np.testing.assert_allclose(resumed.nodeFields["displacement"]["U"], referenceU, atol=1e-9)
     for name, variable in reference.scalarVariables.items():
         assert resumed.scalarVariables[name].value == pytest.approx(variable.value, abs=1e-6), name
+
+
+def _linearTraction(X: np.ndarray) -> np.ndarray:
+    """A tangential traction field linear in the reference coordinates (the interface is z = const)."""
+
+    X = np.atleast_2d(X)
+    return np.stack([1.0 + 2.0 * X[:, 0] + 3.0 * X[:, 1], -1.0 + X[:, 0] - X[:, 1], 0.0 * X[:, 0]], axis=1)
+
+
+def _pointCoordinates(key) -> np.ndarray:
+    """The reference position of a contact point from its key: a slave node, or a slave facet's nodes
+    and the index of a quadrature point of the default rule."""
+
+    if isinstance(key, tuple):
+        nodes, q = key
+        barycentric, _ = facetQuadratureRule(len(nodes), 3)
+        return barycentric[q] @ np.array([node.coordinates for node in nodes])
+    return np.asarray(key.coordinates)
+
+
+@pytest.mark.parametrize("formulation", ["nodeToSurface", "integrated", "mortarPenalty"])
+def test_refinement_transfers_a_linear_traction_field_exactly(formulation, tmp_path, monkeypatch):
+    """A refinement keeps the history of the points it retains and interpolates it for those it
+    creates (Wriggers 2006, Eq. 14.86). The patch test of that transfer: a traction field linear in
+    the reference coordinates, imposed on every old point right before each refinement, is carried
+    by every new point exactly."""
+
+    transfers = []
+    original = CoulombFriction.remap
+
+    def remap(self, oldKeys, newKeys, interpolation=None):
+        oldX = np.array([_pointCoordinates(key) for key in oldKeys])
+        self.tractionConverged[:] = _linearTraction(oldX)
+        self.pressureConverged[:] = 10.0
+        self.activeConverged[:] = True
+        original(self, oldKeys, newKeys, interpolation)
+        newX = np.array([_pointCoordinates(key) for key in newKeys])
+        transfers.append(
+            (np.abs(self.tractionConverged - _linearTraction(newX)).max(), len(set(newKeys) - set(oldKeys)))
+        )
+
+    monkeypatch.setattr(CoulombFriction, "remap", remap)
+    path = tmp_path / "full.inp"
+    path.write_text(_deck(formulation, _STEP_1 + _step2(1)))
+    _run(path)
+
+    assert transfers, "no refinement -- test is vacuous"
+    assert sum(nNew for _, nNew in transfers) > 0, "no new contact point -- test is vacuous"
+    for error, _ in transfers:
+        assert error < 1e-10

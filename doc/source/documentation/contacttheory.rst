@@ -370,9 +370,14 @@ the traction of the converged iterate is promoted to the history. At every conne
 history is projected onto the new frozen tangent plane and returned onto the cone of the accepted
 pressure; it is discarded where a point loses its contact partner or where its normal turns by more
 than 30 degrees (a crease of the master surface: projecting would drop the part that now points
-along the new normal). Across a mesh refinement it is carried over by identity -- the slave node for
-node-to-surface, the slave facet's nodes and the quadrature point index for the integrated
-formulation -- and a new point starts at rest.
+along the new normal). Across a mesh refinement a point that the refinement keeps -- the same slave
+node for node-to-surface, the same slave facet and quadrature point for the integrated formulation
+-- keeps its history, and a new point takes it interpolated from the old surface at its location:
+from the nodes of the old slave facet's parent face with its shape functions (Wriggers 2006, Section
+14.7.2, Eq. 14.86), respectively from a linear field fitted by least squares to the quadrature points
+of the old slave facet (Wriggers 2006, Eqs. 14.32-14.33). A transferred traction need not lie in the
+cone of its pressure (Perić et al. 1996, Remark 4.3); the next connectivity update projects and
+returns it like any other.
 
 **Anti-chattering.** A Newton iteration on the non-smooth Coulomb law can flip points near the cone
 boundary back and forth between stick and slip. The first three iterations of an increment are left
@@ -1026,9 +1031,10 @@ reading them cannot be tied to a node set -- use a reduction, or ``getSlaveNodal
 which is node-ordered like the accessors above.
 
 Both constraints, like the mortar constraint, are mesh dependents: after an h-adaptive refinement of
-either surface they rebind to the regenerated facets and carry their history over by identity -- the
-slave node for node-to-surface, the slave facet's nodes and the quadrature point for the integrated
-formulation. On a restart of a refined run the topology replay re-creates the refined surfaces before
+either surface they rebind to the regenerated facets, keep the history of the points the refinement
+keeps and interpolate it for the points it creates (see the friction section above). The checkpoint
+holds the frictional history and the frozen normals of the last connectivity update, which the next
+update compares against for the crease test. On a restart of a refined run the topology replay re-creates the refined surfaces before
 the contact state is restored, and ``setRestartData`` first catches up with them and then matches the
 checkpoint by node labels, respectively point keys (``tests/test_contact_amr_restart.py``).
 

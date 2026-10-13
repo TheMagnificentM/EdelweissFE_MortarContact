@@ -42,6 +42,7 @@ from edelweissfe.utils.contactfriction import (
     characteristicFacetSize,
     frictionCoefficientField,
     frozenNormalsForRestart,
+    historyInterpolation,
     matchRestartKeys,
     restoreFrozenNormals,
     slipToleranceField,
@@ -51,6 +52,7 @@ from edelweissfe.utils.facetcontactgeometry import (
     closestFacet,
     closestFacetCandidates,
     edgeOrVertexNormal,
+    facetQuadraturePointPatches,
     facetSurfaceBoundary,
     liesOnSurfaceBoundary,
     line2ClosestPoint,
@@ -264,8 +266,10 @@ class Constraint(ConstraintBase, MeshDependent):
     elements are refined mid-run, it rebuilds that side from the regenerated facets at its own next
     :meth:`updateConnectivity` tick. Quadrature points, unlike nodes, have no identity of their own,
     so the frictional history is keyed by the nodes of its slave facet and the quadrature point
-    index: a slave facet that survives the retiling unchanged keeps the history of its points, the
-    points of a newly created facet start at rest.
+    index: a slave facet that survives the retiling unchanged keeps the history of its points, and
+    a point of a newly created facet takes the history interpolated from the quadrature points of
+    the old facet it lies on (Wriggers 2006, Section 14.7.2; see
+    :func:`~edelweissfe.utils.facetcontactgeometry.facetQuadraturePointPatches`).
 
     Parameters
     ----------
@@ -368,6 +372,7 @@ class Constraint(ConstraintBase, MeshDependent):
             The element set of master contact facets.
         """
 
+        oldSlaveFacets = getattr(self, "_slaveFacets", None)
         self._slaveFacets = list(slaveSurface)
         self.facetElements = list(masterSurface)
 
@@ -446,7 +451,36 @@ class Constraint(ConstraintBase, MeshDependent):
         if self._pointKeys is None:
             self._friction.resize(self.nPoints)
         else:
-            self._friction.remap(self._pointKeys, pointKeys)
+            # A point of a retained slave facet keeps its history; a point of a new facet takes it
+            # interpolated from the quadrature points of the old facet it lies on (Wriggers 2006,
+            # Section 14.7.2).
+            interpolation = None
+            if self._friction.enabled:
+                newPointCoords = (
+                    np.concatenate(
+                        [
+                            self._slaveShapeFunctions[f] @ self._slaveParentRefCoords[f]
+                            for f in range(len(self._slaveFacets))
+                        ]
+                    )
+                    if self._slaveFacets
+                    else np.zeros((0, self.nDim))
+                )
+                h = characteristicFacetSize(
+                    float(sum(np.sum(w) for w in self._slaveIntegrationWeights)),
+                    max(len(self._slaveFacets), 1),
+                    self.nDim,
+                )
+                interpolation = historyInterpolation(
+                    newPointCoords,
+                    pointKeys,
+                    self._pointKeys,
+                    facetQuadraturePointPatches(
+                        oldSlaveFacets, self.nQuadraturePoints, lambda facet, q: (tuple(facet.nodes), q)
+                    ),
+                    0.1 * h,
+                )
+            self._friction.remap(self._pointKeys, pointKeys, interpolation)
         self._pointKeys = pointKeys
         if self._friction.enabled and self._friction.slipTolerance > 0.0 and self._slaveFacets:
             surfaceMeasure = float(sum(np.sum(w) for w in self._slaveIntegrationWeights))

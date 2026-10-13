@@ -27,6 +27,7 @@
 #  ---------------------------------------------------------------------
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 from edelweissfe.utils.schema import schemaField
 
@@ -184,6 +185,71 @@ def matchRestartKeys(storedKeys, currentKeys) -> tuple[np.ndarray, np.ndarray]:
     return np.array(current, dtype=int), np.array(stored, dtype=int)
 
 
+def historyInterpolation(
+    newPoints: np.ndarray, newKeys: list, oldKeys: list, oldPatches: list, maxDistance: float
+) -> dict:
+    """How the frictional history of the points a mesh refinement created is interpolated from the
+    points of the old surface.
+
+    A refinement transfers the history of every point it keeps unchanged and has to interpolate it
+    for every point it creates, with the shape functions of the old element that contains the new
+    point (Wriggers 2006, Section 14.7.2, Eqs. 14.83-14.86, pp. 452-454; Peric et al. 1996,
+    Section 4.1). Each old patch -- an old facet, or a parent face -- knows where a point lies in it
+    and returns the interpolation weights over its own points.
+
+    Parameters
+    ----------
+    newPoints
+        ``(nNew, nDim)`` the reference coordinates of the new points.
+    newKeys
+        The keys of the new points; one that is also an old key is kept, not interpolated.
+    oldKeys
+        The keys of the old points, in the order of the old state arrays.
+    oldPatches
+        ``(centroid, locate)`` per old patch: ``locate(point)`` returns ``(distance, keys, weights)``
+        -- the distance of the point from the patch, the keys of the old points the patch
+        interpolates from, and their weights -- or ``None`` where the patch cannot locate the point.
+    maxDistance
+        A point farther than this from every patch is not interpolated (it starts at rest).
+
+    Returns
+    -------
+    dict
+        New point index -> ``(old point indices, weights)``, for the new points that were located.
+        Weights of patch points without history are dropped and the rest renormalised.
+    """
+
+    oldIndex = {key: i for i, key in enumerate(oldKeys)}
+    if not oldPatches:
+        return {}
+    centroids = np.array([centroid for centroid, _ in oldPatches])
+    tree = cKDTree(centroids)
+    nNeighbours = min(8, len(oldPatches))
+
+    interpolation = {}
+    for k, key in enumerate(newKeys):
+        if key in oldIndex:
+            continue
+        _, nearest = tree.query(newPoints[k], k=nNeighbours)
+        best = None
+        for patch in np.atleast_1d(nearest):
+            located = oldPatches[patch][1](newPoints[k])
+            if located is not None and (best is None or located[0] < best[0]):
+                best = located
+        if best is None or best[0] > maxDistance:
+            continue
+        _, keys, weights = best
+        pairs = [(oldIndex[key], weight) for key, weight in zip(keys, weights) if key in oldIndex]
+        total = sum(weight for _, weight in pairs)
+        if not pairs or abs(total) < 1e-12:
+            continue
+        interpolation[k] = (
+            np.array([i for i, _ in pairs], dtype=int),
+            np.array([weight for _, weight in pairs]) / total,
+        )
+    return interpolation
+
+
 def frozenNormalsForRestart(frozenNormals: list, nDim: int) -> np.ndarray:
     """The frozen normals of the contact points as an ``(nPoints, nDim)`` array for a checkpoint,
     NaN where a point has none."""
@@ -307,10 +373,15 @@ class CoulombFriction:
         self.frozenSlip = np.zeros(nPoints, dtype=bool)
         self.startIncrementAttempt()
 
-    def remap(self, oldKeys: list, newKeys: list):
+    def remap(self, oldKeys: list, newKeys: list, interpolation: dict | None = None):
         """Carry the converged history over to a new set of points, matched by key (e.g. the
         ``Node`` objects of a slave surface after a mesh refinement). A point whose key is new
-        starts at rest."""
+        takes the history interpolated from the old points as given by ``interpolation`` (see
+        :func:`historyInterpolation`) -- traction and pressure as the weighted sums, the contact
+        status where the weighted status is more than one half -- or, without an entry there,
+        starts at rest. The interpolated traction is projected onto the new tangent plane and
+        returned onto the cone of the interpolated pressure by the next :meth:`carry`, since a
+        transferred state need not satisfy the slip condition (Peric et al. 1996, Remark 4.3)."""
 
         oldIndex = {key: i for i, key in enumerate(oldKeys)}
         traction, pressure, active = self.tractionConverged, self.pressureConverged, self.activeConverged
@@ -321,6 +392,11 @@ class CoulombFriction:
                 self.tractionConverged[i] = traction[j]
                 self.pressureConverged[i] = pressure[j]
                 self.activeConverged[i] = active[j]
+            elif interpolation is not None and i in interpolation:
+                indices, weights = interpolation[i]
+                self.tractionConverged[i] = weights @ traction[indices]
+                self.pressureConverged[i] = max(0.0, float(weights @ pressure[indices]))
+                self.activeConverged[i] = float(weights @ active[indices]) > 0.5
         self.tractionCurrent[:] = self.tractionConverged
 
     def markOpen(self, k):

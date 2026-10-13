@@ -45,6 +45,7 @@ from edelweissfe.utils.contactfriction import (
     CoulombFriction,
     characteristicFacetSize,
     frictionCoefficientField,
+    historyInterpolation,
     matchRestartKeys,
     slipToleranceField,
     tangentPenaltyField,
@@ -557,6 +558,40 @@ def isConvexPolygon(poly_2d, tol: float = 1e-14) -> bool:
     return True
 
 
+def _facetHistoryPatches(facets: list, dim: int) -> list:
+    """The old non-mortar facets as patches for
+    :func:`~edelweissfe.utils.contactfriction.historyInterpolation`: a point is mapped into a facet's
+    natural coordinates (the isoparametric map inverted iteratively, as Wriggers 2006 notes for
+    Eq. 14.85), and the nodal history is interpolated with the facet's shape functions there
+    (Eq. 14.86). A point outside the facet's reference domain is not located by it."""
+
+    patches = []
+    for el in facets:
+        coordinates = np.array([node.coordinates for node in el.nodes])[:, :dim]
+        if dim == 3:
+            normal = np.cross(coordinates[1] - coordinates[0], coordinates[-1] - coordinates[0])
+            normal /= np.linalg.norm(normal)
+            origin = coordinates.mean(axis=0)
+            t1, t2 = tangentBasis(normal)
+            planeCoordinates = toPlaneCoordinates(coordinates, origin, t1, t2)
+        else:
+            origin = t1 = t2 = None
+            planeCoordinates = coordinates
+
+        def locate(
+            point, el=el, coordinates=coordinates, planeCoordinates=planeCoordinates, origin=origin, t1=t1, t2=t2
+        ):
+            planePoint = point[:dim] if origin is None else toPlaneCoordinates(point[None, :dim], origin, t1, t2)[0]
+            local, converged = mapPlaneToNatural(el, planeCoordinates, planePoint)
+            if not converged or not isInsideReferenceElement(el, local, 1e-6):
+                return None
+            shapeFunctions = el.getShapeFunctions(local)
+            return float(np.linalg.norm(shapeFunctions @ coordinates - point[:dim])), list(el.nodes), shapeFunctions
+
+        patches.append((coordinates.mean(axis=0), locate))
+    return patches
+
+
 def isInsideReferenceElement(el, local_coords, tol: float = 1e-10) -> bool:
     """Whether a natural coordinate lies in the element's reference domain (up to ``tol``).
 
@@ -859,6 +894,8 @@ class Constraint(ConstraintBase, MeshDependent):
         # over |D_II|, as of the last geometry rebuild; NaN where it was not defined. Its change from
         # one rebuild to the next is what turns the frozen slip into the objective one.
         self.frictionGapReference = np.full((self.nNonMortarNodes, model.domainSize), np.nan)
+        # Set by a mesh refinement: the next rebuild carries the history without the correction.
+        self._discretisationChanged = False
 
         self._publishNonMortarNodeSet(model)
 
@@ -1031,11 +1068,14 @@ class Constraint(ConstraintBase, MeshDependent):
         (``facets=wholeFace`` included), on the solid's own ``Node`` objects -- so a node that
         survives the refinement is the same object before and after, and a new node is one that did
         not exist. What is carried over for a retained non-mortar node: the frictional history
-        (traction, pressure, contact status), the augmented pressure estimate, the reference gap
-        vector of the objective slip correction, and under formulation=lagrange its converged
-        multiplier. A new node starts at rest. Everything geometric -- segmentation, coupling
-        matrices, normals, tolerances -- is invalidated and rebuilt at the next assembly from the
-        last converged configuration, exactly as at a regular increment.
+        (traction, pressure, contact status), the augmented pressure estimate, the active-set entry,
+        the reference gap vector of the objective slip correction, and under formulation=lagrange
+        its converged multiplier. A new node takes the frictional history and the augmented estimate
+        interpolated from the old facet it lies on (see :meth:`_remapNodalState`). Everything
+        geometric -- segmentation, coupling matrices, normals, tolerances -- is invalidated and
+        rebuilt at the next assembly from the last converged configuration, and the history is
+        carried into the new tangent planes there without the objective slip correction, whose
+        reference belongs to the old discretisation.
 
         Under formulation=lagrange the number of multipliers follows the non-mortar nodes, so the
         constraint's scalar variables are re-created (see
@@ -1057,6 +1097,7 @@ class Constraint(ConstraintBase, MeshDependent):
             return False
 
         oldNonMortarNodes = list(self.nonMortarNodes)
+        oldNonMortarFacets = list(self.nonMortarFacets)
         oldMultipliers = (
             np.array([variable.value for variable in self.scalarVariables])
             if self.formulation == "lagrange" and len(self.scalarVariables) == len(oldNonMortarNodes)
@@ -1067,7 +1108,7 @@ class Constraint(ConstraintBase, MeshDependent):
         self._updateFootprint()
         self._invalidateGeometry()
         self._deriveNodalGeometry()
-        self._remapNodalState(oldNonMortarNodes)
+        self._remapNodalState(oldNonMortarNodes, oldNonMortarFacets)
         self._publishNonMortarNodeSet(model)
 
         if self.formulation == "lagrange":
@@ -1107,9 +1148,12 @@ class Constraint(ConstraintBase, MeshDependent):
         # A new attempt of the current increment as far as the per-increment bookkeeping goes.
         self.lastTimeStepKey = None
 
-    def _remapNodalState(self, oldNonMortarNodes: list):
-        """Carry the per-node state over to the current non-mortar nodes by ``Node`` identity; a new
-        node starts at rest."""
+    def _remapNodalState(self, oldNonMortarNodes: list, oldNonMortarFacets: list):
+        """Carry the per-node state over to the current non-mortar nodes. A retained node keeps its
+        state (by ``Node`` identity). A new node takes its frictional history and its augmented
+        pressure estimate interpolated from the old facet it lies on, with that facet's shape
+        functions (Wriggers 2006, Section 14.7.2, Eq. 14.86); its active-set entry, weak gap and
+        multiplier start at rest, being recomputed by the first iteration rather than history."""
 
         index = {node: i for i, node in enumerate(oldNonMortarNodes)}
         newToOld = np.array([index.get(node, -1) for node in self.nonMortarNodes], dtype=int)
@@ -1120,13 +1164,29 @@ class Constraint(ConstraintBase, MeshDependent):
             result[kept] = array[newToOld[kept]]
             return result
 
+        diameters = [float(np.max(np.ptp([n.coordinates for n in el.nodes], axis=0))) for el in oldNonMortarFacets]
+        interpolation = historyInterpolation(
+            np.array([node.coordinates for node in self.nonMortarNodes]),
+            self.nonMortarNodes,
+            oldNonMortarNodes,
+            _facetHistoryPatches(oldNonMortarFacets, self.model.domainSize),
+            0.1 * float(np.mean(diameters)) if diameters else 0.0,
+        )
+
+        def interpolated(array, fill):
+            result = remapped(array, fill)
+            for k, (indices, weights) in interpolation.items():
+                result[k] = weights @ array[indices]
+            return result
+
         self.activeSet = remapped(self.activeSet, False)
-        self.augmentedMultipliers = remapped(self.augmentedMultipliers, 0.0)
-        self.augmentedMultipliersConverged = remapped(self.augmentedMultipliersConverged, 0.0)
+        self.augmentedMultipliers = interpolated(self.augmentedMultipliers, 0.0)
+        self.augmentedMultipliersConverged = interpolated(self.augmentedMultipliersConverged, 0.0)
         self.currentWeakGap = remapped(self.currentWeakGap, 0.0)
         self.nodalMultipliers = remapped(self.nodalMultipliers, 0.0)
         self.frictionGapReference = remapped(self.frictionGapReference, np.nan)
-        self._friction.remap(oldNonMortarNodes, self.nonMortarNodes)
+        self._discretisationChanged = True
+        self._friction.remap(oldNonMortarNodes, self.nonMortarNodes, interpolation)
 
     @staticmethod
     def _collectFacets(model: FEModel, elementSetName: str, side: str) -> list:
@@ -2914,7 +2974,14 @@ class Constraint(ConstraintBase, MeshDependent):
         self.frictionGapReference[:] = gap
 
         # NaN where the gap vector is not defined on both sides: such a node is left as it is.
-        self._friction.carry(self.currentNormals, previousNormals, deltaGap=gap - previousGap, normalPenalty=self.epsN)
+        # Across a mesh refinement the reference belongs to the old discretisation (other D, C and
+        # normals), and the difference would be no slip at all: the history is then carried into
+        # the new tangent planes without a correction.
+        deltaGap = gap - previousGap
+        if self._discretisationChanged:
+            deltaGap = np.where(np.isfinite(gap), 0.0, np.nan)
+            self._discretisationChanged = False
+        self._friction.carry(self.currentNormals, previousNormals, deltaGap=deltaGap, normalPenalty=self.epsN)
 
     def acceptLastState(self):
         """Promote the tangential tractions of the converged iterate to the frictional history.
@@ -2999,6 +3066,11 @@ class Constraint(ConstraintBase, MeshDependent):
         data = {
             **self._friction.restartData(),
             "frictionGapReference": self.frictionGapReference,
+            "frictionNormals": (
+                np.asarray(self.currentNormals, dtype=float)
+                if getattr(self, "currentNormals", None) is not None
+                else np.full((self.nNonMortarNodes, self.model.domainSize), np.nan)
+            ),
             "augmentedMultipliersConverged": self.augmentedMultipliersConverged,
             "nonMortarNodeLabels": np.array([node.label for node in self.nonMortarNodes], dtype=int),
         }
@@ -3030,6 +3102,12 @@ class Constraint(ConstraintBase, MeshDependent):
         self._friction.setRestartData(data, current, stored)
         if "frictionGapReference" in data:
             self.frictionGapReference[current] = np.asarray(data["frictionGapReference"])[stored]
+            # the reference belongs to the refined mesh it was written on
+            self._discretisationChanged = False
+        if "frictionNormals" in data:
+            normals = np.full((self.nNonMortarNodes, self.model.domainSize), np.nan)
+            normals[current] = np.asarray(data["frictionNormals"])[stored]
+            self._restoredFrictionNormals = normals
         augmented = np.asarray(data["augmentedMultipliersConverged"])[stored]
         self.augmentedMultipliersConverged[current] = augmented
         self.augmentedMultipliers[current] = augmented
@@ -3335,6 +3413,9 @@ class Constraint(ConstraintBase, MeshDependent):
         # Last converged state - see the reference-configuration note above.
         U_ref = U_np - dU
         previousNormals = getattr(self, "currentNormals", None)
+        if previousNormals is None:
+            # The normals of the last rebuild before a restart, if the checkpoint held them.
+            previousNormals = self.__dict__.pop("_restoredFrictionNormals", None)
         self.currentNormals = self.computeNormals(U_ref)
         D_full, C_full = self.computeMortarCouplingMatrices(U_ref)
         # The FULL (element-locally sparse) D matrix is used for forces,

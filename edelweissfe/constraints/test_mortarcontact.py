@@ -1455,6 +1455,11 @@ class TestFriction(unittest.TestCase):
         np.testing.assert_allclose(restored.frictionPressureConverged, constraint.frictionPressureConverged)
         np.testing.assert_array_equal(restored.frictionActiveConverged, constraint.frictionActiveConverged)
         np.testing.assert_array_equal(restored.frictionGapReference, constraint.frictionGapReference)
+        # the normals of the last rebuild, which the first rebuild after the restart compares against
+        # for the crease test
+        np.testing.assert_array_equal(restored._restoredFrictionNormals, constraint.currentNormals)
+        self._assemble(restored, U, np.zeros_like(U), _frozenTimeStep(2))
+        self.assertFalse(hasattr(restored, "_restoredFrictionNormals"), "the restored normals were not used")
 
     # ------------------------------------------------------------------ objective slip
 
