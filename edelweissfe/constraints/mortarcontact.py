@@ -167,6 +167,11 @@ under-transmits the contact force by more than an order of magnitude on a real p
 satisfying a single-state unit test that merely checks that a PRESCRIBED multiplier produces
 matching forces. A correct condensation would need the constraint interface to replace rows rather
 than only add to them.
+
+MEASUREMENTS quoted in the comments of this module name the case they were taken on. A deck or test
+of this repository is named as such; the other names (``Control_Tests``, ``06_active_set_pdass``,
+``hertz_hex20_*``, "the contact study") refer to the verification study of this constraint that is
+kept with its LaTeX documentation, outside this repository.
 """
 
 
@@ -333,7 +338,7 @@ def mapPlaneToNatural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
     test can never be satisfied. The least-squares step nevertheless returns the
     exact orthogonal projection after the first pass; without an update-based test
     the loop just burns all max_iter passes to return it. Measured on the test
-    suite before this criterion was added: 189 of 780476 calls "failed" this way,
+    suite with a residual criterion instead: 189 of 780476 calls "failed" this way,
     every one of them a 2D call at an open gap, every returned coordinate exact.
 
     The update test is also the scale-invariant one - the natural coordinate is
@@ -757,9 +762,9 @@ class Constraint(ConstraintBase, MeshDependent):
         # sharing the entire geometric pipeline above and below:
         #   'lagrange'  saddle point, the nodal multipliers are unknowns of the
         #               global system.
-        #   'penalty'   the multipliers are eliminated and follow the weighted gap,
-        #               a pressure proportional to the weighted gap, optionally
-        #               corrected inside an augmented Lagrangian outer loop.
+        #   'penalty'   the multipliers are eliminated: the pressure is eps_N times
+        #               the pointwise penetration g_I/|D_II|, optionally corrected
+        #               inside an augmented Lagrangian outer loop.
         # Only the LAGRANGE branch needs additional scalar unknowns.
         # ------------------------------------------------------------------
         self.formulation = str(kwargs["formulation"]).strip().lower()
@@ -782,13 +787,12 @@ class Constraint(ConstraintBase, MeshDependent):
         self.c_n = float(kwargs["cn"])
         self._derive_c_n = self.c_n <= 0.0
 
-        # Penalty parameter kappa of t_A = kappa*g_A. Like c_n it carries a unit, so
-        # a non-positive value means "derive it" - here not at the first assembly but
-        # inside the geometry block, because the rule needs the nodal weights.
         # eps_N, a POINTWISE penalty modulus: a pressure per unit opening, the same
         # quantity (and the same unit) as the ``penalty`` of the two node/segment penalty
-        # constraints. It is NOT the kappa of the weighted form -- see _resolveEpsN and
-        # the "Penalty form" section of mortartheory.rst for why that form was left.
+        # constraints. Like c_n it carries a unit, so a non-positive value means "derive
+        # it" - here not at the first assembly but inside the geometry block, because the
+        # rule needs the nodal weights (see _resolveEpsN and the "Penalty form" section of
+        # mortartheory.rst).
         self.epsN = float(kwargs["penaltyStiffness"])
         self._derive_epsN = self.epsN <= 0.0
         self.useAugmentedLagrange = bool(kwargs["augmentedLagrange"])
@@ -1459,10 +1463,13 @@ class Constraint(ConstraintBase, MeshDependent):
     def _resolveEpsN(self):
         """Derive the penalty modulus eps_N of p_I = eps_N * penetration_I.
 
-        THIS RULE IS NOT AN ESTABLISHED ONE. The penalty form itself prescribes no way
-        of choosing its parameter. What follows is the engineering rule of this
-        implementation, reported once so it stays checkable, and overridable with the
-        `penaltyStiffness` keyword.
+        The penalty form itself prescribes no value of its parameter; what the literature gives
+        is its scale. Wriggers (2006), Remark 6.4, pp. 119-120, finds that even a two-bar example
+        "needs a penalty number which is at least 100 times EA", and concludes that the penalty
+        parameter has to be chosen "as a function of the mesh size"; Ghesquiere-Dierickx et al.
+        (2026), Eq. (12), state the common guideline k = alpha E/h with alpha of 10^1 to 10^4.
+        The rule below is one such choice, reported once so it stays checkable, and overridable
+        with the `penaltyStiffness` keyword.
 
         The rule. eps_N is a POINTWISE contact stiffness per unit area -- the classical
         parameter of a penalty form, and the same quantity as the ``penalty`` of the two
@@ -1484,11 +1491,10 @@ class Constraint(ConstraintBase, MeshDependent):
         weights themselves: sum_I D_II = |gamma| is the covered interface measure
         (row-sum identity), so h = (|gamma|/nFacets)^(1/(dim-1)).
 
-        NO NODAL WEIGHT ENTERS HERE any more. It used to, as a mean over the interface,
-        because the stiffness was a single kappa multiplying the weighted gap; the weight
-        now sits per node in :meth:`_nodalPenaltyStiffness`, which is the only place it
-        belongs -- a MEAN weight cannot stand in for weights that differ by a factor of
-        four across the interface, and using one is exactly what made the patch test fail.
+        NO NODAL WEIGHT ENTERS HERE. The weight sits per node in
+        :meth:`_nodalPenaltyStiffness`, which is the only place it belongs -- a MEAN weight
+        cannot stand in for weights that differ by a factor of four across the interface, and
+        using one makes the contact patch test fail.
 
         With the augmented Lagrangian enabled the converged solution does not depend
         on kappa at all (the outer loop drives the constraint violation
@@ -1500,8 +1506,9 @@ class Constraint(ConstraintBase, MeshDependent):
         # time integrator. The rule below chooses the largest stiffness that the current time
         # increment can carry, which is the same idea LS-DYNA's SOFT=1 contact uses -- a stiffness
         # from the nodal masses and the time step rather than from the material -- except that
-        # here it follows from the eigenvalue bound of Kwon et al. (2024), Eqs. (20)-(22), rather
-        # than from a rule of thumb:
+        # here it follows from the central-difference stability limit dt_cr = 2/sqrt(lambda_max)
+        # (Kwon et al. 2025, Eqs. (20)-(21); Ghesquiere-Dierickx et al. 2026, Eq. (17)), with
+        # lambda_max bounded by Gershgorin's theorem (see _stabilityFactor):
         #
         #     omega^2 = kappa * R <= lambda_max = 4/dt^2   =>   kappa <= 4/(dt^2 R)
         #
@@ -2172,9 +2179,9 @@ class Constraint(ConstraintBase, MeshDependent):
         which is Eq. (18) of Puso, Laursen & Solberg (2008), advanced - as they require -
         only "once convergence of the Newton-Raphson loop is achieved", after which
         equilibrium is re-established with the updated estimate. The projection onto
-        p >= 0 is this implementation's own release condition, where they instead let
-        the contact-status step decide; a node whose augmented pressure would turn
-        tensile is simply inactive.
+        p >= 0 is the projected first-order update of Wriggers (2006), Eq. (10.79), p. 339,
+        where Puso et al. instead let the contact-status step decide; a node whose augmented
+        pressure would turn tensile is simply inactive.
 
         Termination monitors the change of the multiplier estimate from one
         augmentation to the next, as a
@@ -2287,12 +2294,13 @@ class Constraint(ConstraintBase, MeshDependent):
         # The reference formulations do not freeze at all: they re-evaluate D, M and the nodal
         # normals in every Newton iteration and carry their linearizations in K (Popp, Gitterle,
         # Gee & Wall 2010, Section 4.3 and Appendix A; Gitterle et al. 2010 does the same for the
-        # frictional case). That is the target state (see the "The tangent" section of the mortar
-        # theory page), not what is done here.
+        # frictional case). This implementation freezes the geometry instead (see the "The
+        # tangent" section of the mortar theory page).
         #
         # Note what this is NOT. Popp et al. measure an "incomplete linearization" in their Table I
         # -- a LIVE geometry carried with a tangent that omits the linearizations of the nodal
-        # normal and of D and M -- and it costs them 52 Newton steps against 8. Here the geometry
+        # normal and of D and M -- and it costs them 52 Newton steps against 16 for the same
+        # fixed-point active-set strategy with the full linearization. Here the geometry
         # is FROZEN, so the assembled tangent is exact for the residual that is actually assembled
         # (measured: max|K - K_FD| / max|K| = 5.3e-10). The Newton rate is therefore not what
         # suffers; the cost is a consistency error of the increment itself, first order in its
@@ -2320,10 +2328,9 @@ class Constraint(ConstraintBase, MeshDependent):
         x_master = coords[nSlave:]
 
         # ----------------------------------------------------------------------
-        # SADDLE-POINT MODE: Lagrange multipliers lambda_I are explicit unknowns
-        # in U_np, solved for jointly with the displacements. This is the only
-        # currently supported/validated formulation; the module docstring above says
-        # why a condensed (multiplier-free) variant was removed.
+        # formulation=lagrange: the multipliers lambda_I are explicit unknowns in
+        # U_np, solved for jointly with the displacements (saddle point).
+        # formulation=penalty: no multipliers; the pressure follows from the gap.
         # ----------------------------------------------------------------------
         idx_LM_0 = sf * nNodes
         penalty = self.formulation == "penalty"
@@ -2350,11 +2357,12 @@ class Constraint(ConstraintBase, MeshDependent):
                 g_I_weak += cRow @ (x_master[nzC] @ n_I)
 
             # Sign-consistent contact measures, valid for BOTH signs of the nodal
-            # weight D_II = int(Phi_I). D_II is positive by construction for
-            # CONQUAD4/8, CONTRI3/6 and CONLINE2/3, but NOT guaranteed for the
-            # full-Lagrangian CONQUAD9 under partial coverage: its shape functions
-            # are not pointwise non-negative, so the integral positivity required by
-            # Popp, Wohlmuth, Gee & Wall (2012) can be violated there.
+            # weight D_II = int(Phi_I). D_II is positive for a fully covered node of
+            # CONQUAD4, CONTRI3/6 and CONLINE2/3, but NOT guaranteed in general: the
+            # full-Lagrangian CONQUAD9 under partial coverage, a CONQUAD8 corner at the
+            # transformation parameter alpha = 1/3, and the sliver fallback can all
+            # produce negative weights, since the integral positivity required by Popp,
+            # Wohlmuth, Gee & Wall (2012) is not guaranteed there (see mortartheory.rst).
             #
             #   pressure  lambda_I is the multiplier in the LITERATURE convention
             #             lambda_n >= 0 in compression, i.e. the
@@ -2370,10 +2378,10 @@ class Constraint(ConstraintBase, MeshDependent):
             #             by the SIGNED D_II already restores exactly the property
             #             the formulation demands - "a positive weighted
             #             gap if the physical gap is positive". Multiplying by
-            #             sgn(D_II) on top of that flips the sign back and makes an
-            #             open node look like a penetrating one; that is a bug this
-            #             code carried until it was caught by the negative-weight
-            #             regression test in 06_active_set_pdass. Note the asymmetry:
+            #             sgn(D_II) on top of that would flip the sign back and make an
+            #             open node look like a penetrating one (covered by the
+            #             negative-weight regression test of the contact study,
+            #             06_active_set_pdass). Note the asymmetry:
             #             the pressure carries sgn(D_II), the opening does not.
             D_II = self.currentNodalWeights[I]
             sgn_D = np.sign(D_II)
@@ -2406,8 +2414,8 @@ class Constraint(ConstraintBase, MeshDependent):
                 # receives kappa_I = 0 from the floor in _nodalPenaltyStiffness instead of
                 # an unbounded pressure from a division inside the gap.
                 #
-                # A SINGLE kappa FOR ALL NODES IS WRONG, and was the formulation until this
-                # branch: it makes the pointwise stiffness eps_I = kappa*D_II, i.e. it gives
+                # A SINGLE kappa FOR ALL NODES WOULD BE WRONG: it makes the pointwise
+                # stiffness eps_I = kappa*D_II, i.e. it gives
                 # every node a stiffness proportional to its own tributary area. A corner
                 # node of a plain conforming interface is then four times softer than an
                 # interior one, a uniform pressure cannot produce a uniform penetration, and
@@ -2451,10 +2459,11 @@ class Constraint(ConstraintBase, MeshDependent):
                     #
                     # The penalty law p = max(0, p_trial) has a kink at p_trial = 0, and a
                     # semi-smooth Newton method may use ANY element of its generalized derivative
-                    # there: Ito & Kunisch (2003), Proposition 1.1, give the generalized derivative
-                    # of max(0, y) as 1 for y > 0, 0 for y < 0 and an ARBITRARY delta at y = 0,
-                    # proved in Hintermueller, Ito & Kunisch (2002). The choice is free for convergence
-                    # theory and anything but free in practice. Taking 0 -- which is what the
+                    # there: Hintermueller, Ito & Kunisch (2002), Eq. (3.2), Lemma 3.1 and Remark 3.1,
+                    # give the generalized derivative of max(0, y) as 1 for y > 0, 0 for y < 0 and an
+                    # ARBITRARY delta at y = 0. The choice is free for their local convergence result
+                    # (Theorem 3.1) -- their own active-set strategy is the one with delta = 0 -- and
+                    # anything but free in practice. Taking 0 -- which is what the
                     # test `p_trial > kappa*tol` did -- removes every closed node from the
                     # tangent, and a body carried by the contact alone then has a singular
                     # tangent the moment its gap is exactly closed: at a cold start from a
@@ -2498,7 +2507,7 @@ class Constraint(ConstraintBase, MeshDependent):
                 # third terms are the linearizations of the nodal normal and of the
                 # mortar weights, which the frozen geometry of this implementation
                 # deliberately omits (see the note on the reference configuration
-                # above and the documentation chapter on consistent linearization).
+                # above and the "The tangent" section of mortartheory.rst).
                 # astype: both index arrays can be empty (a slave node that lost
                 # all coverage while still carrying an augmented pressure), and
                 # concatenating two empty arrays does not reliably keep an integer
@@ -2554,8 +2563,8 @@ class Constraint(ConstraintBase, MeshDependent):
                 # penalty branch makes (see there): a CLOSED node with no pressure yet --
                 # lambda = 0 and a gap that is zero up to the rounding of the geometry -- is
                 # put on the ACTIVE side. Any element of the generalized derivative is
-                # admissible for the semi-smooth Newton method at the kink (Ito & Kunisch 2003,
-                # Proposition 1.1: an arbitrary delta where the argument of max vanishes), but only this one
+                # admissible for the semi-smooth Newton method at the kink (Hintermueller, Ito & Kunisch
+                # 2002, Lemma 3.1 and Remark 3.1: an arbitrary delta where the argument of max vanishes), but only this one
                 # keeps a body that is carried by the contact alone from having a singular
                 # tangent when it starts exactly touching: with `s_n > 0` every node of such a
                 # start is inactive, its multiplier row decouples, and the first Newton
@@ -2732,11 +2741,13 @@ class Constraint(ConstraintBase, MeshDependent):
         patch test of the contact study, the relation ``penetration_I = p_I/(kappa D_II)``
         held to 2e-16 -- it is the formulation, not a numerical artefact.
 
-        The scale factor is Yang, Laursen & Meng (2005), Eqs. (36)-(37): their zeta_A is
-        ``1/sum_D n_AD = 1/D_AA``, introduced, in their words, "to cause the gap function
-        g_A to have the proper units of length, which is of crucial importance when
-        implementing penalty methods in particular". Their Section 8.1 passes the patch
-        test on non-conforming meshes to machine precision with a penalty.
+        The scale factor is Yang, Laursen & Meng (2005), Eqs. (36)-(37): their kappa_A is
+        ``1/sum_D n_AD``, the row sum of the slave mortar matrix in the REFERENCE configuration,
+        introduced, in their words, "to cause the gap function g_A to have the proper units of
+        length, which is of crucial importance when implementing penalty methods in particular".
+        Here it is the nodal weight |D_II| of the current rebuild, which is that row sum for the
+        dual basis. Their Section 8.1 passes the patch test on non-conforming meshes to machine
+        precision with a penalty (in 2D).
 
         THE ROBUSTNESS OBJECTION IS REAL AND IS HANDLED HERE RATHER THAN AVOIDED. D_II is
         not guaranteed positive -- a partially covered CONQUAD9, a CONQUAD8 corner at
@@ -2839,9 +2850,9 @@ class Constraint(ConstraintBase, MeshDependent):
         """Penalty-regularised Coulomb friction at one active non-mortar node.
 
         The law is the one shared by all contact formulations
-        (:class:`~edelweissfe.utils.contactfriction.CoulombFriction`): that of Yang, Laursen & Meng
-        (2005), Eqs. (39), (47)-(49), in the 3D form of Puso, Laursen & Solberg (2008), Eqs.
-        (16)-(21), with the return map of Wriggers (2006), Box 14. What is mortar-specific is only how
+        (:class:`~edelweissfe.utils.contactfriction.CoulombFriction`, see there for the sources of the
+        return map): in the mortar setting that of Yang, Laursen & Meng (2005), Eqs. (39), (47)-(49),
+        in the 3D form of Puso, Laursen & Solberg (2008), Eqs. (16)-(21). What is mortar-specific is only how
         a non-mortar node maps onto it. With the weights ``w_a`` the weighted gap is built from (+D_IK
         on the slave, -C_IJ on the master nodes), the node is a contact point with
 
@@ -2859,7 +2870,8 @@ class Constraint(ConstraintBase, MeshDependent):
         theta of a penetrating pair turns the weighted gap vector g and reads as a slip
         ``P_T (R - I) g``, i.e. a spurious traction of about ``(eps_T/eps_N) theta p``. The objective
         slip of Yang et al. (2005), Eq. (47), ``-(D_n+1 - D_n) x_s + (C_n+1 - C_n) x_m``, differs
-        from it by exactly the change of the gap vector, and the coupling matrices of the end of the
+        from it by exactly the change of the gap vector (Yang et al., Eqs. (45)-(46); Gitterle et al.
+        2010, Eqs. (50)-(51), where the frozen part is the non-objective measure of their Eq. (47)), and the coupling matrices of the end of the
         increment are what the next rebuild computes -- so :meth:`_carryFrictionHistory` removes that
         difference from the accepted history there. The error is then that of the frozen normal,
         first order in one increment and not accumulated over many.
@@ -3137,11 +3149,16 @@ class Constraint(ConstraintBase, MeshDependent):
         what makes it usable in both directions: with eps_N known it gives the stable time step
         ``dt <= 2/sqrt(eps_N*R)``, and with the time step known it gives the largest stable
         stiffness ``eps_N <= 4/(dt^2 R)``. Both follow from the central-difference stability
-        limit ``dt_cr = 2/sqrt(lambda_max)`` of Kwon, Kim, Cho & González (2024), Eqs. (20)-(21),
-        whose stability-assured condition (their Eq. 22) is exactly ``omega^2 <= lambda_max``.
+        limit ``dt_cr = 2/sqrt(lambda_max)`` (Kwon, Kim, Cho & González 2025, Eqs. (20)-(21);
+        Ghesquiere-Dierickx et al. 2026, Eq. (17)), with ``lambda_max`` bounded by the Gershgorin row
+        sums of ``M^-1 K`` as in Ghesquiere-Dierickx et al. (2026), Eq. (18), after Kulak (1989).
 
-        Gershgorin OVERestimates the eigenvalue, so the bound is conservative: it may ask for a
-        slightly smaller time step, or a slightly softer stiffness, than strictly necessary. That
+        Gershgorin OVERestimates the eigenvalue, so the bound is conservative for the contact
+        stiffness on its own: it may ask for a slightly smaller time step, or a slightly softer
+        stiffness, than strictly necessary. It bounds the contact alone, not the solids and the
+        contact together: the solver takes the smaller of this and the solids' own stable time
+        step, which is not a bound of the coupled system (Ghesquiere-Dierickx et al. 2026 put both
+        into one row sum). That
         is the right direction to err in, and the alternative -- the exact rank-one eigenvalue
         ``kappa * v_I^T M^-1 v_I`` -- is exact for one node in isolation but UNDERestimates as
         soon as two nodes share a degree of freedom, which is the normal case.
@@ -3327,9 +3344,10 @@ class Constraint(ConstraintBase, MeshDependent):
         :meth:`applyConstraint` is handed and this method is not. Deferring also means a
         tick costs nothing if the constraint is never assembled afterwards.
 
-        Returns ``False``: this constraint's DOF footprint never changes, so the solver
-        need not rebuild the equation system on its account. The segmentation changes which
-        nodes are COUPLED, but they are all in :attr:`nodes` from the outset either way.
+        Returns ``False``: this constraint's DOF footprint does not change at a tick, so the
+        solver need not rebuild the equation system on its account. The segmentation changes
+        which nodes are COUPLED, but they are all in :attr:`nodes` either way. A mesh refinement
+        does change the footprint; that is reported by :meth:`refresh`.
         """
 
         self._geometryStale = True
@@ -3430,7 +3448,8 @@ class Constraint(ConstraintBase, MeshDependent):
         # row-sum identity sum_K D_IK = sum_J C_IJ (same-domain integration).
         self.currentD = D_full
         self.currentC = C_full
-        # Positive by construction: sum_K D_IK = int(Phi_I) = int(N_tilde_I) > 0
+        # sum_K D_IK = int(Phi_I) = int(N_tilde_I): positive for a fully covered node of the
+        # standard elements, but not guaranteed (see the negative-weight diagnostic below).
         self.currentNodalWeights = np.asarray(D_full.sum(axis=1)).ravel()
         # The sign-consistent contact measures below carry a negative D_II
         # correctly, but the weighted gap loses its reading as a mean opening

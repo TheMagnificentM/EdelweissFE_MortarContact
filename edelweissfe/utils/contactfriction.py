@@ -69,38 +69,45 @@ a new tangent plane, the anti-chattering of the stick/slip state, restart) live 
 :class:`CoulombFriction` and nowhere else.
 
 THE LAW. Penalty-regularised Coulomb friction with an elastic predictor and a radial return
-(Wriggers 2006, Box 14; Yang, Laursen & Meng 2005, Eqs. 39, 47-49; Puso, Laursen & Solberg 2008,
-Eqs. 16-21):
+(Simo & Laursen 1992, Eqs. 3.9 and 3.12-3.14, pp. 103-104; Wriggers 2006, Section 10.5.2,
+Eqs. 10.121-10.126 and Box 14, pp. 361-363; in the mortar setting Yang, Laursen & Meng 2005,
+Eqs. 39 and 47-49, in 2D, and Puso, Laursen & Solberg 2008, Eqs. 16-21, in 3D):
 
     t_tr = P_T t_n - eps_T du_T                       stick predictor
     t    = t_tr                  if |t_tr| <= mu p    stick
            mu p t_tr / |t_tr|    otherwise            slip
 
-The history ``t_n`` is a TRACTION (force per area) in global components, so the law is independent
-of the size of the interface measure each formulation assigns to a point. The tangential modulus
-``eps_T`` is a traction per unit slip -- either constant (``tangentPenalty``, by default the
-formulation's normal penalty modulus) or, with ``slipTolerance``, proportional to the pressure,
-``eps_T = mu p / (slipTolerance h)`` with ``h`` the characteristic facet size of the slave surface
-(the penalty friction of Abaqus): a sticking point then always slips elastically by up to
-``slipTolerance * h``, however lightly it is loaded.
+The history ``t_n`` is the converged TRACTION (force per area), in global components, as in the
+trial state of Simo & Laursen 1992, Eq. 3.12, and Puso et al. 2008, Eq. 19 (Wriggers 2006 keeps the
+plastic slip instead, Eq. 10.121); the law is then independent of the size of the interface measure
+each formulation assigns to a point. The tangential modulus ``eps_T`` is a traction per unit slip --
+either constant (``tangentPenalty``; by default the formulation's normal penalty modulus, the one
+parameter for normal contact and stick of Wriggers 2006, p. 236, and Puso et al. 2008, Eqs. 18-19)
+or, with ``slipTolerance``, proportional to the pressure, ``eps_T = mu p / (slipTolerance h)`` with
+``h`` the characteristic facet size of the slave surface (as in the penalty friction of Abaqus): a
+sticking point then always slips elastically by up to ``slipTolerance * h``, however lightly it is
+loaded. A pressure-proportional tangential stiffness is the form of Wriggers 2006, Eq. 5.54, p. 92,
+with exponent one; the definition of ``h`` is this implementation's.
 
-A point without pressure carries no friction and contributes nothing to the tangent; it is reported
-as slipping (it offers no resistance). A stick spring there would tie the surfaces together over a
-cone of radius zero.
+A point without pressure carries no friction (Simo & Laursen 1992, p. 104: the algorithm requires
+``t_T = 0`` if ``t_N = 0``) and contributes nothing to the tangent; it is reported as slipping (it
+offers no resistance). A stick spring there would tie the surfaces together over a cone of radius
+zero.
 """
 
 #: Cosine of the largest change of a point's normal across one connectivity update over which its
-#: frictional history is still rotated into the new tangent plane rather than discarded. 30 degrees
-#: is the customary smooth-versus-sharp feature angle of surface geometry processing: a smooth
-#: surface of curvature radius R facetted with facet size h turns its normal by about h/R between
-#: neighbouring facets -- below 10 degrees for any surface resolved finely enough for a meaningful
-#: pressure distribution -- while the creases of engineering geometries (chamfers, steps, notch
-#: flanks) turn it by 45 degrees and more.
+#: frictional history is still rotated into the new tangent plane rather than discarded. The 30
+#: degrees are chosen here, not taken from the contact literature: a smooth surface of curvature
+#: radius R facetted with facet size h turns its normal by about h/R between neighbouring facets --
+#: below 10 degrees for any surface resolved finely enough for a meaningful pressure distribution --
+#: while the creases of engineering geometries (chamfers, steps, notch flanks) turn it by 45 degrees
+#: and more.
 cosOfSmoothNormalChangeLimit = np.cos(np.deg2rad(30.0))
 
 #: Anti-chattering of the stick/slip state in the implicit iteration (see
-#: :meth:`CoulombFriction.freezeIfChattering`): Newton iterations of an increment that are always
-#: left alone, so that the predictor and the first corrections may move the state freely ...
+#: :meth:`CoulombFriction.freezeIfChattering`; both numbers are chosen here): Newton iterations of an
+#: increment that are always left alone, so that the predictor and the first corrections may move
+#: the state freely ...
 slipStateFreeIterations = 3
 #: ... and the iteration from which ANY further change of the state freezes it, recurring or not.
 slipStateFreezeIteration = 6
@@ -554,6 +561,11 @@ class CoulombFriction:
             state[stick] = STICK
 
         if np.any(slipping):
+            # The slip tangent (Simo & Laursen 1992, p. 106; Wriggers 2006, Eqs. 8.39-8.45,
+            # pp. 193-194): the derivative of the direction t_tr/|t_tr| carries the factor
+            # mu p/|t_tr|, which the printed Eqs. 8.42 and 8.45 omit; composing their Eqs. 8.39 and
+            # 8.40 restores it. The dt/dp term is what makes the tangent non-symmetric (Wriggers 2006,
+            # p. 359, with Eq. 9.47).
             direction = trial[slipping] / trialMagnitude[slipping, None]
             radial = eye - direction[:, :, None] * direction[:, None, :]
             scale = slipLimit[slipping] / trialMagnitude[slipping]
@@ -643,8 +655,12 @@ class CoulombFriction:
         after all points were evaluated.
 
         Coulomb friction is a non-smooth law, and a Newton iteration on it can flip points near the
-        boundary of the cone back and forth between stick and slip without ever settling. The rule,
-        applied per increment attempt and reset with it:
+        boundary of the cone back and forth between stick and slip without ever settling -- the
+        jamming or zig-zagging that Wriggers 2006, Remark 10.2(1), p. 335, describes for the normal
+        active set, where he keeps a constraint active until the new set is a subset of the old one.
+        The same idea of a state that may only move one way is applied here to stick and slip; the
+        rule, with its two iteration counts chosen here, is applied per increment attempt and reset
+        with it:
 
         * the first ``slipStateFreeIterations`` (3) iterations are always free: the predictor and
           the first corrections legitimately move many points at once;
