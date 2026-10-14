@@ -209,31 +209,6 @@ def toPlaneCoordinates(points, origin, t1, t2):
     return np.array(coords)
 
 
-def toSpatialCoordinates(planeCoordinates, origin, t1, t2):
-    """Map 2D in-plane coordinates back to spatial points; the inverse of :func:`toPlaneCoordinates`.
-
-    Parameters
-    ----------
-    planeCoordinates
-        One ``[x, y]`` pair per point.
-    origin
-        The plane's origin.
-    t1
-        First in-plane unit vector.
-    t2
-        Second in-plane unit vector.
-
-    Returns
-    -------
-    np.ndarray
-        The spatial points.
-    """
-    points = []
-    for c in planeCoordinates:
-        points.append(origin + c[0] * t1 + c[1] * t2)
-    return np.array(points)
-
-
 def sutherlandHodgmanClip(subjectPolygon, clipPolygon):
     """Clip one 2D polygon against another by the algorithm of Sutherland & Hodgman (1974).
 

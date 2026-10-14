@@ -1508,7 +1508,7 @@ class Constraint(ConstraintBase, MeshDependent):
         # from the nodal masses and the time step rather than from the material -- except that
         # here it follows from the central-difference stability limit dt_cr = 2/sqrt(lambda_max)
         # (Kwon et al. 2025, Eqs. (20)-(21); Ghesquiere-Dierickx et al. 2026, Eq. (17)), with
-        # lambda_max bounded by Gershgorin's theorem (see _stabilityFactor):
+        # lambda_max bounded by Gershgorin's theorem (see _stabilityRowSums):
         #
         #     omega^2 = kappa * R <= lambda_max = 4/dt^2   =>   kappa <= 4/(dt^2 R)
         #
@@ -2817,11 +2817,6 @@ class Constraint(ConstraintBase, MeshDependent):
         self._friction.freezeDirections(nodes)
 
     @property
-    def slipStateFreezeCount(self) -> int:
-        """How many increments needed the stick/slip state frozen; a diagnostic only."""
-        return self._friction.slipStateFreezeCount
-
-    @property
     def _frozenSlip(self) -> np.ndarray:
         return self._friction.frozenSlip
 
@@ -3125,10 +3120,13 @@ class Constraint(ConstraintBase, MeshDependent):
             for i, j in zip(current, stored):
                 self.scalarVariables[i].value = multipliers[j]
 
-    def _stabilityFactor(self, lumpedMass: np.ndarray) -> float:
-        """The stiffness-independent part R of this constraint's stability bound.
+    def _stabilityRowSums(self, lumpedMass: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+        """The mass-scaled Gershgorin row sums of the normal and of the tangential contact stiffness.
 
-        The penalty contribution of one slave node is RANK ONE, ``K_I = kappa_I * v_I v_I^T``
+        Returned per degree of freedom and free of the moduli, as ``(r_N, r_T)``, so that the bound
+        of the combined stiffness is ``omega^2 <= max_a (eps_N r_N,a + eps_T r_T,a)``.
+
+        THE NORMAL PART. The penalty contribution of one slave node is RANK ONE, ``K_I = kappa_I * v_I v_I^T``
         with ``v_I = w_I (x) n_I`` (see applyConstraint) and the NODE-WISE stiffness
         ``kappa_I = eps_N/|D_II|`` of :meth:`_nodalPenaltyStiffness`, so the contact stiffness
         assembles as ``K = eps_N * sum_I (1/|D_II|) v_I v_I^T``. Gershgorin's theorem bounds the
@@ -3142,7 +3140,7 @@ class Constraint(ConstraintBase, MeshDependent):
         mean weight would be wrong by that factor at the stiffest node -- which is precisely the
         node that sets the stable increment.
 
-        R is returned. It carries the geometry and the inertia and not the stiffness, which is
+        R = max_a r_N,a. It carries the geometry and the inertia and not the stiffness, which is
         what makes it usable in both directions: with eps_N known it gives the stable time step
         ``dt <= 2/sqrt(eps_N*R)``, and with the time step known it gives the largest stable
         stiffness ``eps_N <= 4/(dt^2 R)``. Both follow from the central-difference stability
@@ -3164,19 +3162,9 @@ class Constraint(ConstraintBase, MeshDependent):
         Every non-mortar node is counted, not only the currently active ones: the active set
         changes from one increment to the next, and a bound that only held for the set that
         happened to be active when it was computed would not be a bound.
-        """
 
-        rows = self._stabilityRowSums(lumpedMass)
-        return float(np.max(rows[0])) if rows is not None else 0.0
-
-    def _stabilityRowSums(self, lumpedMass: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
-        """The mass-scaled Gershgorin row sums of the normal and of the tangential contact stiffness.
-
-        Returned per degree of freedom and free of the moduli, as ``(r_N, r_T)``, so that the bound
-        of the combined stiffness is ``omega^2 <= max_a (eps_N r_N,a + eps_T r_T,a)``. The normal part
-        is the one :meth:`_stabilityFactor` describes; the tangential part is the stick stiffness of
-        the friction law, ``(eps_T/|D_II|) (w w^T) (x) P_T``, bounded the same way with ``|P_T|`` in
-        place of ``|n n^T|``. Splitting the two is what keeps a stiff tangential spring from being
+        THE TANGENTIAL PART is the stick stiffness of the friction law,
+        ``(eps_T/|D_II|) (w w^T) (x) P_T``, bounded the same way with ``|P_T|`` in place of ``|n n^T|``. Splitting the two is what keeps a stiff tangential spring from being
         hidden behind a normal one that loads other components: on an axis-aligned interface they
         act on disjoint rows, and eps_T = eps_N then costs no time step at all. ``r_T`` is zero
         without friction. ``None`` while no geometry exists or a touched row has no mass.

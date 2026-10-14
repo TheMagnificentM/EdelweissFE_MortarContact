@@ -259,26 +259,6 @@ def historyInterpolation(
     return interpolation
 
 
-def frozenNormalsForRestart(frozenNormals: list, nDim: int) -> np.ndarray:
-    """The frozen normals of the contact points as an ``(nPoints, nDim)`` array for a checkpoint,
-    NaN where a point has none."""
-
-    rows = np.full((len(frozenNormals), nDim), np.nan)
-    for k, normal in enumerate(frozenNormals):
-        if normal is not None:
-            rows[k] = normal
-    return rows
-
-
-def restoreFrozenNormals(frozenNormals: list, stored: np.ndarray, current, storedIndex) -> None:
-    """Write the checkpointed normals ``stored`` (see :func:`frozenNormalsForRestart`) back into the
-    list ``frozenNormals``: point ``current[i]`` receives row ``storedIndex[i]``, ``None`` for NaN."""
-
-    for k, j in zip(current, storedIndex):
-        row = np.asarray(stored[j], dtype=float)
-        frozenNormals[k] = None if np.isnan(row[0]) else row.copy()
-
-
 class CoulombFriction:
     """The penalty-regularised Coulomb law and the frictional state of the contact points of one
     constraint.
@@ -347,8 +327,6 @@ class CoulombFriction:
 
         #: The elastic slip gamma_crit = slipTolerance * h, once h is known (setCharacteristicLength).
         self.elasticSlip = None
-        #: How many increments needed the stick/slip state frozen; a diagnostic only.
-        self.slipStateFreezeCount = 0
         self._stepKey = None
         #: The Newton iteration within the current increment attempt, counted by beginEvaluation.
         self.iteration = 0
@@ -695,7 +673,6 @@ class CoulombFriction:
             self.slipStateFrozen = True
             self.frozenSlip[:] = False
             self.freezeDirections(self.slipState == SLIP)
-            self.slipStateFreezeCount += 1
 
     def freezeDirections(self, points: np.ndarray):
         """Hold the given slipping points in slip along their current traction direction. A point

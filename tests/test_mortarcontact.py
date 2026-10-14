@@ -72,7 +72,6 @@ from edelweissfe.utils.mortargeometry import (
     sutherlandHodgmanClip,
     tangentBasis,
     toPlaneCoordinates,
-    toSpatialCoordinates,
     triangulatePolygon,
 )
 
@@ -167,7 +166,7 @@ class TestOverlapGeometry(unittest.TestCase):
         np.testing.assert_allclose(direction, [1.0, 0.0], atol=1e-13)
 
     def test_the_tangent_basis_and_the_plane_map_are_inverse(self):
-        """Every overlap is computed in the tangent plane of the non-mortar face and mapped back.
+        """Every overlap is computed in the tangent plane of the non-mortar face.
         A basis that is not orthonormal would distort the overlap area without changing its shape,
         which is exactly the kind of error a patch test on a uniform pressure cannot see."""
 
@@ -182,7 +181,8 @@ class TestOverlapGeometry(unittest.TestCase):
         points = origin + np.outer([0.0, 1.0, 2.0, -1.5], t1) + np.outer([0.0, -0.7, 1.1, 2.0], t2)
 
         planar = toPlaneCoordinates(points, origin, t1, t2)
-        np.testing.assert_allclose(toSpatialCoordinates(planar, origin, t1, t2), points, atol=1e-13)
+        # The plane coordinates have to be the coordinates along t1 and t2, i.e. invert exactly.
+        np.testing.assert_allclose(origin + np.outer(planar[:, 0], t1) + np.outer(planar[:, 1], t2), points, atol=1e-13)
 
 
 class TestFacetNormals(unittest.TestCase):
