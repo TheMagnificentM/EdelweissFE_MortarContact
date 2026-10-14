@@ -38,6 +38,7 @@ from edelweissfe.constraints.base.contactpointsonslavesurface import (
 from edelweissfe.constraints.base.forcesonlyexplicitevaluation import (
     ForcesOnlyExplicitEvaluation,
 )
+from edelweissfe.constraints.base.frictionalcontact import FrictionalContact
 from edelweissfe.constraints.base.frozencontactsearch import (
     FrozenContactSearch,
     packAssignment,
@@ -177,7 +178,7 @@ class SurfaceToDeformableSurfacePenaltySchema(SurfaceContactPenaltySchema):
     slipTolerance: float = slipToleranceField()
 
 
-class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBase, MeshDependent):
+class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBase, MeshDependent):
     """
     Penalty based unilateral contact between two deformable surfaces, integrated at quadrature
     points over the slave surface's facets and distributed with both sides' parent element face
@@ -388,8 +389,8 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
                 )
             self._friction.remap(self._pointKeys, pointKeys, interpolation)
         self._pointKeys = pointKeys
-        if self._friction.enabled and self._friction.slipTolerance > 0.0 and self.slave.facets:
-            self._friction.setCharacteristicLength(facetSize)
+        if self.slave.facets:
+            self._setFrictionCharacteristicLength(facetSize)
 
         self._referenceCoordsFacets = [np.array([n.coordinates for n in el.nodes]) for el in self.facetElements]
         self._masterBoundary = facetSurfaceBoundary([el.nodes for el in self.facetElements])
@@ -528,18 +529,9 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
                 self._frozenMasterShapeFunctions[p] = None
                 self._frozenNormals[p] = None
 
-        if self._friction.enabled:
-            # Rotate the frictional history into the new frozen tangent planes; discard it where a
-            # point lost its facet or crossed a crease of the master surface (CoulombFriction.carry).
-            assigned = np.array([a is not None for a in newAssignment], dtype=bool)
-            nDiscarded = self._friction.carry(newNormals, previousNormals, assigned, normalPenalty=self.penalty)
-            if nDiscarded:
-                self.journal.message(
-                    f"contact '{self.name}': {nDiscarded} points crossed a crease of the master surface; their "
-                    "frictional history was discarded",
-                    self.identification,
-                    level=2,
-                )
+        self._carryFrictionHistory(
+            newNormals, previousNormals, np.array([a is not None for a in newAssignment], dtype=bool)
+        )
 
         return self._assignMasterFacets(newAssignment)
 
@@ -877,19 +869,6 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         if friction:
             self._friction.freezeIfChattering(self._friction.iteration)
 
-    def applyConstraintExplicit(
-        self,
-        U_np: np.ndarray,
-        dU: np.ndarray,
-        PExt: np.ndarray,
-        timeStep: TimeStep,
-    ):
-        """Reject a friction law the explicit path cannot integrate, then evaluate the forces only
-        (see :class:`~edelweissfe.constraints.base.forcesonlyexplicitevaluation.ForcesOnlyExplicitEvaluation`)."""
-
-        self._friction.checkExplicitIntegrability()
-        super().applyConstraintExplicit(U_np, dU, PExt, timeStep)
-
     def _applyConstraintPointwise(
         self,
         U_np: np.ndarray,
@@ -1000,36 +979,12 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
 
         return self._gapCurrent.copy()
 
-    def getTangentialTractions(self) -> np.ndarray:
-        """The current tangential (frictional) traction magnitude at each contact point, ordered like
-        :meth:`getNormalPressures`; zero without friction."""
-
-        return self._friction.tractionMagnitudes()
-
-    def getSlipStates(self) -> np.ndarray:
-        """The current stick/slip state of each contact point as a float for output -- 0 open,
-        1 stick, 2 slip -- ordered like :meth:`getNormalPressures`. Always 0 without friction."""
-
-        return self._friction.slipStates()
-
     def acceptLastState(self):
         """Promote the tangential tractions of the converged iterate to the frictional history.
         Called by :meth:`~edelweissfe.models.femodel.FEModel.advanceToTime` upon increment
         acceptance."""
 
-        if not self._friction.enabled:
-            return
-        insideCone, turnedAway = self._friction.accept()
-        if insideCone or turnedAway:
-            self.journal.message(
-                f"contact '{self.name}': the stick/slip state chattered and was frozen; {insideCone} point(s) "
-                f"were accepted in slip although their stick predictor lies inside the friction cone, "
-                f"{turnedAway} with a predictor more than 30 degrees away from the frozen slip direction. "
-                "They carry the full friction mu*p in the frozen direction; smaller increments, or a "
-                "slipTolerance, remove it.",
-                self.identification,
-                level=1,
-            )
+        self._acceptFrictionHistory()
 
     def getSlaveNodalNormalForces(self) -> np.ndarray:
         """The normal component of the contact force delivered to each slave surface node.

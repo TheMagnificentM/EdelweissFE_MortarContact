@@ -61,7 +61,7 @@ def _runDeck(deckName: str, withOutputs: bool = False):
     finally:
         os.chdir(previous)
 
-    constraints = [c for c in model.constraints.values() if hasattr(c, "frictionTractionCurrent")]
+    constraints = [c for c in model.constraints.values() if hasattr(c, "nonMortarNodes")]
     assert len(constraints) == 1, f"{deckName} does not hold exactly one mortar constraint"
     if withOutputs:
         return constraints[0], fieldOutputs
@@ -73,12 +73,12 @@ def test_a_dragged_block_slides_on_the_friction_cone():
 
     active = constraint.activeSet
     assert np.sum(active) > 0, "no node is in contact at the end of the drag"
-    np.testing.assert_array_equal(constraint.slipState[active], 2)
+    np.testing.assert_array_equal(constraint._friction.slipState[active], 2)
 
     pressure = np.abs(constraint.nodalMultipliers[active])
-    traction = constraint.frictionTractionCurrent[active]
+    traction = constraint._friction.tractionCurrent[active]
     magnitude = np.linalg.norm(traction, axis=1)
-    np.testing.assert_allclose(magnitude, constraint.mu * pressure, rtol=1e-10)
+    np.testing.assert_allclose(magnitude, constraint._friction.mu * pressure, rtol=1e-10)
     # The upper (non-mortar) block is dragged in +x over the fixed lower one, so the friction it
     # receives opposes that: -x.
     assert np.all(traction[:, 0] < -0.9 * magnitude)
@@ -88,9 +88,9 @@ def test_explicit_friction_stays_inside_the_cone_and_transmits_force():
     constraint = _runDeck("NEDMortarContactFriction")
 
     pressure = np.abs(constraint.nodalMultipliers)
-    magnitude = np.linalg.norm(constraint.frictionTractionCurrent, axis=1)
+    magnitude = np.linalg.norm(constraint._friction.tractionCurrent, axis=1)
     assert np.max(magnitude) > 0.0, "no frictional traction at all -- test is vacuous"
-    assert np.all(magnitude <= constraint.mu * pressure * (1.0 + 1e-12) + 1e-14 * np.max(pressure))
+    assert np.all(magnitude <= constraint._friction.mu * pressure * (1.0 + 1e-12) + 1e-14 * np.max(pressure))
 
 
 def test_the_nodal_contact_results_reach_the_field_outputs():
@@ -102,10 +102,12 @@ def test_the_nodal_contact_results_reach_the_field_outputs():
 
     traction = np.asarray(outputs["contactTraction"].getLastResult())
     assert traction.shape == (n, 3)
-    np.testing.assert_allclose(traction, constraint.frictionTractionCurrent)
+    np.testing.assert_allclose(traction, constraint._friction.tractionCurrent)
     np.testing.assert_allclose(
         np.asarray(outputs["contactPressure"].getLastResult()).ravel(), constraint.getNormalPressures()
     )
-    np.testing.assert_array_equal(np.asarray(outputs["contactSlipState"].getLastResult()).ravel(), constraint.slipState)
+    np.testing.assert_array_equal(
+        np.asarray(outputs["contactSlipState"].getLastResult()).ravel(), constraint._friction.slipState
+    )
     gap = np.asarray(outputs["contactGap"].getLastResult()).ravel()
     assert np.all(gap[constraint.activeSet] <= 0.0), "an active node reports an opening"

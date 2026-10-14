@@ -144,8 +144,8 @@ under the implicit and the explicit solvers: a tangential penalty stick predicto
 nodal traction and the mortar-weighted slip increment, and a radial return onto ``|t_T| <= mu p``.
 See :meth:`Constraint._assembleFriction` for the law, :meth:`Constraint._carryFrictionHistory` for
 the objective correction of the slip at each geometry rebuild, and
-:meth:`Constraint._freezeSlipStateIfChattering` for the anti-chattering rule of the implicit
-iteration.
+:meth:`~edelweissfe.utils.contactfriction.CoulombFriction.freezeIfChattering` for the anti-chattering
+rule of the implicit iteration.
 
 RESULTS PER NON-MORTAR NODE are published for output. The constraint registers the node set
 ``<name>_nonMortarNodes`` (in the order of the contact system), so that the accessors
@@ -800,7 +800,7 @@ class Constraint(ConstraintBase, MeshDependent):
         self.maxAugmentations = int(kwargs["maxAugmentations"])
 
         # Coulomb friction, penalty branch only. eps_T <= 0 means "follow eps_N", resolved
-        # lazily through _tangentPenaltyStiffness because eps_N itself may be derived only at the
+        # lazily through CoulombFriction.constantTangentModulus because eps_N itself may be derived only at the
         # first geometry rebuild -- and, under explicit dynamics, re-derived at every one.
         # The law and the per-node frictional state are the ones shared by all contact formulations
         # (edelweissfe.utils.contactfriction); what is mortar-specific is how a non-mortar node maps
@@ -815,15 +815,11 @@ class Constraint(ConstraintBase, MeshDependent):
             float(kwargs["slipTolerance"]),
             owner=name,
         )
-        self.mu = self._friction.mu
-        self._epsTGiven = self._friction.tangentPenalty
-        self.slipTolerance = self._friction.slipTolerance
-        if self.mu > 0.0 and self.formulation != "penalty":
+        if self._friction.enabled and self.formulation != "penalty":
             raise ValueError(
                 f"MortarContact '{name}': friction (mu > 0) is implemented for formulation=penalty only. "
                 f"Set formulation=penalty."
             )
-        self.friction = self._friction.enabled
 
         # A parameter that belongs to the OTHER formulation is silently inert, which
         # is exactly the kind of thing that costs an afternoon. Say it once.
@@ -1542,17 +1538,19 @@ class Constraint(ConstraintBase, MeshDependent):
                 # single bound on eps_N; with a fixed eps_T, eps_N gets what eps_T leaves.
                 budget = 2.0 / (dt * dt)
                 previous = getattr(self, "epsN", None)
-                if not self.friction:
+                if not self._friction.enabled:
                     self.epsN = budget / factor
-                elif self._epsTGiven <= 0.0:
+                elif self._friction.tangentPenalty <= 0.0:
                     factor = float(np.max(rows[0] + rows[1]))
                     self.epsN = budget / factor
                 else:
                     loaded = rows[0] > 0.0
-                    self.epsN = float(np.min((budget - self._epsTGiven * rows[1][loaded]) / rows[0][loaded]))
+                    self.epsN = float(
+                        np.min((budget - self._friction.tangentPenalty * rows[1][loaded]) / rows[0][loaded])
+                    )
                     if self.epsN <= 0.0:
                         raise ValueError(
-                            f"MortarContact '{self._name}': tangentPenalty = {self._epsTGiven:.4g} alone exceeds "
+                            f"MortarContact '{self._name}': tangentPenalty = {self._friction.tangentPenalty:.4g} alone exceeds "
                             f"the stability limit of the time increment {dt:.4g}, so no normal penalty "
                             f"stiffness is left. Lower tangentPenalty or leave it at 0 to follow eps_N."
                         )
@@ -1563,7 +1561,7 @@ class Constraint(ConstraintBase, MeshDependent):
                         f"eps_N has been derived from the STABILITY limit rather than from the "
                         f"material: eps_N = {self.epsN:.4g} = 0.5 * 4/(dt^2 * R) with "
                         f"dt = {dt:.4g} and R = {factor:.4g}"
-                        f"{' (R including the tangential friction spring)' if self.friction and self._epsTGiven <= 0.0 else ''}. "
+                        f"{' (R including the tangential friction spring)' if self._friction.enabled and self._friction.tangentPenalty <= 0.0 else ''}. "
                         f"A larger value would need a smaller "
                         f"time increment; set 'penaltyStiffness' explicitly to choose that "
                         f"trade-off yourself, and watch the reported penetration.",
@@ -2316,7 +2314,7 @@ class Constraint(ConstraintBase, MeshDependent):
         # _nodalPenaltyStiffness. Formed once per assembly rather than per node: it depends
         # only on the frozen weights and on eps_N, neither of which moves inside this loop.
         nodalPenalty = self._nodalPenaltyStiffness() if penalty else None
-        friction = penalty and self.friction
+        friction = penalty and self._friction.enabled
         _dim_offsets = np.arange(dim)
 
         for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
@@ -2594,7 +2592,10 @@ class Constraint(ConstraintBase, MeshDependent):
         # A hard iteration cap remains as a final safeguard.
         self._freezeActiveSetIfSettled(penalty, timeStep)
         if friction:
-            self._freezeSlipStateIfChattering()
+            # The anti-chattering rule of the shared law, counted in this constraint's own Newton
+            # iterations. The friction decks of the test suite settle within five iterations, so
+            # this only fires on an increment that is genuinely struggling.
+            self._friction.freezeIfChattering(self.currentIteration)
         self._reportThinlyCoveredNodes(timeStep)
 
     def _freezeActiveSetIfSettled(self, penalty: bool, timeStep: TimeStep):
@@ -2744,64 +2745,6 @@ class Constraint(ConstraintBase, MeshDependent):
         stiffness[covered] = (self.epsN if modulus is None else modulus) / magnitude[covered]
         return stiffness
 
-    def _tangentPenaltyStiffness(self) -> float:
-        """The pointwise tangential penalty modulus eps_T: the given one, or eps_N as resolved."""
-
-        return self._epsTGiven if self._epsTGiven > 0.0 else self.epsN
-
-    # The frictional state lives in the shared law (self._friction); these keep the names under which
-    # the mortar constraint has always exposed it, for output, tests and diagnostics.
-
-    @property
-    def frictionTractionConverged(self) -> np.ndarray:
-        """The accepted tangential traction per non-mortar node, the history of the stick predictor."""
-        return self._friction.tractionConverged
-
-    @property
-    def frictionTractionCurrent(self) -> np.ndarray:
-        """The tangential traction per non-mortar node at the current iterate."""
-        return self._friction.tractionCurrent
-
-    @property
-    def frictionPressureConverged(self) -> np.ndarray:
-        """The pressure that went with the accepted traction."""
-        return self._friction.pressureConverged
-
-    @property
-    def frictionActiveConverged(self) -> np.ndarray:
-        """Whether each non-mortar node was in contact at the accepted state."""
-        return self._friction.activeConverged
-
-    @property
-    def slipState(self) -> np.ndarray:
-        """The stick/slip state per non-mortar node: 0 open, 1 stick, 2 slip."""
-        return self._friction.slipState
-
-    @property
-    def slipStateFrozen(self) -> bool:
-        """Whether the stick/slip state of the current increment attempt is frozen."""
-        return self._friction.slipStateFrozen
-
-    @slipStateFrozen.setter
-    def slipStateFrozen(self, frozen: bool):
-        self._friction.slipStateFrozen = frozen
-
-    def _freezeDirections(self, nodes: np.ndarray):
-        """Hold the given slipping nodes in slip along their current traction direction."""
-        self._friction.freezeDirections(nodes)
-
-    @property
-    def _frozenSlip(self) -> np.ndarray:
-        return self._friction.frozenSlip
-
-    @property
-    def _frozenDirection(self) -> np.ndarray:
-        return self._friction.frozenDirection
-
-    @property
-    def _elasticSlip(self) -> float | None:
-        return self._friction.elasticSlip
-
     def _assembleFriction(
         self,
         I: int,  # noqa: E741 - the non-mortar node index of the formulation
@@ -2880,14 +2823,6 @@ class Constraint(ConstraintBase, MeshDependent):
         )
         PExt[idcs] += forces
         K[np.ix_(idcs, idcs)] += tangent
-
-    def _freezeSlipStateIfChattering(self):
-        """Freeze the stick/slip state of this increment once it chatters, by the rule of
-        :meth:`~edelweissfe.utils.contactfriction.CoulombFriction.freezeIfChattering`, counted in
-        this constraint's own Newton iterations. The friction decks of the test suite settle within
-        five iterations, so this only fires on an increment that is genuinely struggling."""
-
-        self._friction.freezeIfChattering(self.currentIteration)
 
     def _carryFrictionHistory(self, U_ref: np.ndarray, previousNormals: np.ndarray | None):
         """Carry the accepted tangential tractions into a rebuilt geometry, with the objective slip.
@@ -2976,18 +2911,11 @@ class Constraint(ConstraintBase, MeshDependent):
         once, with the worst ratio, rather than refused -- the traction is still on the cone.
         """
 
-        if not self.friction:
+        if not self._friction.enabled:
             return
-        insideCone, turnedAway = self._friction.accept()
-        if insideCone or turnedAway:
-            self._warnOnce(
-                "slip_state_frozen_inadmissible",
-                f"the stick/slip state chattered and was frozen, and some nodes were accepted in slip although "
-                f"their stick predictor lies inside the friction cone ({insideCone}) or points more than 30 "
-                f"degrees away from the frozen slip direction ({turnedAway}). Those nodes carry the full "
-                f"friction mu*p in the frozen direction; the traction never exceeds the cone. Smaller "
-                f"increments, or a larger slipTolerance, remove it.",
-            )
+        report = self._friction.acceptAndReport("non-mortar node")
+        if report:
+            self._warnOnce("slip_state_frozen_inadmissible", report)
 
     def getNormalPressures(self) -> np.ndarray:
         """The contact pressure of each non-mortar node, >= 0 in compression, as of the last assembly.
@@ -3011,13 +2939,13 @@ class Constraint(ConstraintBase, MeshDependent):
         ``<name>_nonMortarNodes``.
         """
 
-        return self.frictionTractionCurrent.copy()
+        return self._friction.tractionCurrent.copy()
 
     def getSlipStates(self) -> np.ndarray:
         """The stick/slip state of each non-mortar node as of the last assembly, as a float for output:
         0 open, 1 stick, 2 slip. Ordered like ``<name>_nonMortarNodes``. Always 0 without friction."""
 
-        return self.slipState.astype(float)
+        return self._friction.slipStates()
 
     def getGaps(self) -> np.ndarray:
         """The pointwise normal opening of each non-mortar node, ``g_I / D_II``: positive open,
@@ -3167,7 +3095,7 @@ class Constraint(ConstraintBase, MeshDependent):
             idcs = (sf * nodeIds[:, None] + offsets).ravel()
             v = np.abs((w[:, None] * self.currentNormals[I][None, :]).ravel())
             rowSums[idcs] += v * float(np.sum(v)) / weights[I]
-            if self.friction:
+            if self._friction.enabled:
                 n_I = self.currentNormals[I]
                 absW = np.abs(w)
                 projectorRowSums = np.abs(np.eye(dim) - np.outer(n_I, n_I)).sum(axis=1)
@@ -3189,7 +3117,7 @@ class Constraint(ConstraintBase, MeshDependent):
         rows = self._stabilityRowSums(lumpedMass)
         if rows is None:
             return 0.0
-        epsT = self._tangentPenaltyStiffness() if self.friction else 0.0
+        epsT = self._friction.constantTangentModulus(self.epsN) if self._friction.enabled else 0.0
         return float(np.max(self.epsN * rows[0] + epsT * rows[1]))
 
     def computeCriticalTimeStepForExplicitDynamics(self, lumpedMass: np.ndarray) -> float:
@@ -3488,7 +3416,7 @@ class Constraint(ConstraintBase, MeshDependent):
                     self._warnOnce(
                         "epsN_above_stability_limit",
                         f"penaltyStiffness = {self.epsN:.4g}"
-                        f"{f' with tangentPenalty = {self._tangentPenaltyStiffness():.4g}' if self.friction else ''}"
+                        f"{f' with tangentPenalty = {self._friction.constantTangentModulus(self.epsN):.4g}' if self._friction.enabled else ''}"
                         f" needs a time increment of at most "
                         f"{dtStable:.4g} to stay stable, and this analysis runs at {dt:.4g} -- a "
                         f"factor of {dt / dtStable:.2f} above it. Either lower the stiffness by a factor of at "
@@ -3498,21 +3426,16 @@ class Constraint(ConstraintBase, MeshDependent):
                         f"small exceedance may still run -- but it will not be trustworthy.",
                     )
 
-        if self.friction and self.slipTolerance > 0.0 and self._elasticSlip is None:
+        if self._friction.enabled and self._friction.elasticSlip is None:
             # h as in _resolveEpsN: the nodal weights sum to the non-mortar surface measure.
             h = characteristicFacetSize(
                 float(np.sum(np.abs(self.currentNodalWeights))), len(self.nonMortarFacets), self.model.domainSize
             )
-            self._friction.setCharacteristicLength(h)
-            if self.journal is not None:
-                self.journal.message(
-                    f"contact '{self._name}': friction with slipTolerance = {self.slipTolerance:.4g}: elastic "
-                    f"slip gamma_crit = {self._elasticSlip:.4g} (h = {h:.4g}), eps_T = mu * p / gamma_crit.",
-                    self.identification,
-                    level=1,
-                )
+            report = self._friction.setCharacteristicLength(h)
+            if report and self.journal is not None:
+                self.journal.message(f"contact '{self._name}': {report}", self.identification, level=1)
 
-        if self.friction:
+        if self._friction.enabled:
             self._carryFrictionHistory(U_ref, previousNormals)
 
     def _assembleCouplingMatricesFromSegments(

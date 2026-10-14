@@ -396,13 +396,19 @@ class CoulombFriction:
         self.trialMagnitude[k] = 0.0
         self.slipLimit[k] = 0.0
 
-    def setCharacteristicLength(self, h: float) -> float | None:
+    def setCharacteristicLength(self, h: float) -> str | None:
         """Fix the elastic slip ``slipTolerance * h`` (once; later calls keep the first value).
-        Returns it, or ``None`` without slipTolerance."""
 
-        if self.slipTolerance > 0.0 and self.elasticSlip is None:
-            self.elasticSlip = self.slipTolerance * h
-        return self.elasticSlip
+        Returns a description of the value for the owner's journal if this call fixed it, ``None``
+        otherwise (no friction, no slipTolerance, or already fixed)."""
+
+        if not self.enabled or self.slipTolerance <= 0.0 or self.elasticSlip is not None:
+            return None
+        self.elasticSlip = self.slipTolerance * h
+        return (
+            f"friction with slipTolerance = {self.slipTolerance:.4g}: elastic slip gamma_crit = "
+            f"{self.elasticSlip:.4g} (h = {h:.4g}), eps_T = mu * p / gamma_crit"
+        )
 
     def tangentModulus(self, p, normalPenalty: float):
         """The pointwise tangential modulus eps_T at pressure ``p`` and its derivative d eps_T/dp.
@@ -414,7 +420,12 @@ class CoulombFriction:
         if self.slipTolerance > 0.0:
             slope = self.mu / self.elasticSlip
             return slope * p, slope
-        return (self.tangentPenalty if self.tangentPenalty > 0.0 else normalPenalty), 0.0
+        return self.constantTangentModulus(normalPenalty), 0.0
+
+    def constantTangentModulus(self, normalPenalty: float) -> float:
+        """The constant eps_T: ``tangentPenalty``, or ``normalPenalty`` when that is 0."""
+
+        return self.tangentPenalty if self.tangentPenalty > 0.0 else normalPenalty
 
     def checkExplicitIntegrability(self):
         """Refuse what an explicit integration cannot honour: a pressure-dependent eps_T is not
@@ -704,6 +715,21 @@ class CoulombFriction:
         insideCone = held & (self.trialMagnitude < (1.0 - 1e-3) * self.slipLimit)
         turnedAway = held & (self.trialAlignment < cosOfSmoothNormalChangeLimit)
         return int(np.sum(insideCone)), int(np.sum(turnedAway))
+
+    def acceptAndReport(self, pointName: str) -> str | None:
+        """:meth:`accept`, and the report of what a frozen stick/slip state may have cost, for the
+        owner's journal; ``None`` if there is nothing to report. ``pointName`` names a contact point
+        of the owner (e.g. "slave node")."""
+
+        insideCone, turnedAway = self.accept()
+        if not (insideCone or turnedAway):
+            return None
+        return (
+            f"the stick/slip state chattered and was frozen; {insideCone} {pointName}(s) were accepted in slip "
+            f"although their stick predictor lies inside the friction cone, {turnedAway} with a predictor more "
+            "than 30 degrees away from the frozen slip direction. They carry the full friction mu*p in the frozen "
+            "direction, never more than the cone; smaller increments, or a slipTolerance, remove it."
+        )
 
     def carry(
         self,

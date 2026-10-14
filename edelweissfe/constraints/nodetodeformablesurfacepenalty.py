@@ -34,6 +34,7 @@ from edelweissfe.constraints.base.constraintbase import ConstraintBase
 from edelweissfe.constraints.base.forcesonlyexplicitevaluation import (
     ForcesOnlyExplicitEvaluation,
 )
+from edelweissfe.constraints.base.frictionalcontact import FrictionalContact
 from edelweissfe.constraints.base.frozencontactsearch import (
     FrozenContactSearch,
     packAssignment,
@@ -221,7 +222,7 @@ class DeformableSurfaceContactStiffnessView:
             self.K_fp.append(fp)
 
 
-class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBase, MeshDependent):
+class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBase, MeshDependent):
     """
     Penalty based unilateral contact between the tributary-area-weighted nodes of a deformable
     slave surface and a deformable master surface, both represented by flat (Tria3/Line2) contact
@@ -379,20 +380,12 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
             configuration.slipTolerance,
             owner=name,
         )
-        self.mu = self._friction.mu
-        if self.mu > 0.0 and self.sliding != "small":
+        if self._friction.enabled and self.sliding != "small":
             raise ValueError(
                 "Coulomb friction (mu > 0) requires sliding=small: the frictional predictor/"
                 "corrector operates in the frozen tangent frame of the small-sliding formulation."
             )
-        if self._friction.enabled and self._friction.slipTolerance > 0.0:
-            h = characteristicFacetSize(float(np.sum(self.tributaryAreas)), len(self.slaveFacetElements), self.nDim)
-            self._friction.setCharacteristicLength(h)
-            self.journal.message(
-                f"friction with slipTolerance = {self._friction.slipTolerance:.4g}: elastic slip "
-                f"gamma_crit = {self._friction.elasticSlip:.4g} (h = {h:.4g}), eps_T = mu * p / gamma_crit",
-                name,
-            )
+        self._setFrictionCharacteristicLength(self._facetSize)
 
         self.augmentedLagrange = configuration.augmentedLagrange
         if self.augmentedLagrange and self.sliding != "small":
@@ -425,7 +418,7 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
 
         self.journal.message(
             f"{self.nSlaves} slave nodes, {len(self.facetElements)} master facets, "
-            f"sliding={self.sliding}, type={self.type}, friction={'on' if self.mu > 0.0 else 'off'}, "
+            f"sliding={self.sliding}, type={self.type}, friction={'on' if self._friction.enabled else 'off'}, "
             f"augmentedLagrange={self.augmentedLagrange}",
             name,
         )
@@ -527,26 +520,17 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
                     self._frozenNormals[s] = None
                     self._lambdaN[s] = 0.0
 
-            if self._friction.enabled:
-                # Rotate the frictional history into the new frozen tangent planes (the frame changes
-                # only slightly per increment in a small-deformation setting), and discard it for a
-                # slave that lost its facet or slid over a genuine crease of the master surface (see
-                # CoulombFriction.carry). The normal traction multiplier is retained at a crease: it
-                # is a frame-independent magnitude acting along the freshly frozen gap gradient, and
-                # the contact pressure does not vanish just because the slave slid over a corner --
-                # releasing it (as done above on loss of contact) would only undo the converged Uzawa
-                # progress and let the penetration spike again.
-                assigned = np.array([a is not None for a in newAssignment], dtype=bool)
-                nSlavesWithDiscardedHistory = self._friction.carry(
-                    newNormals, previousNormals, assigned, normalPenalty=self.penalty
-                )
-                if nSlavesWithDiscardedHistory > 0:
-                    self.journal.message(
-                        f"{nSlavesWithDiscardedHistory} slave nodes crossed a crease of the master "
-                        "surface; their frictional history was discarded",
-                        self.name,
-                        level=2,
-                    )
+            # Rotate the frictional history into the new frozen tangent planes (the frame changes
+            # only slightly per increment in a small-deformation setting), and discard it for a
+            # slave that lost its facet or slid over a genuine crease of the master surface (see
+            # CoulombFriction.carry). The normal traction multiplier is retained at a crease: it
+            # is a frame-independent magnitude acting along the freshly frozen gap gradient, and
+            # the contact pressure does not vanish just because the slave slid over a corner --
+            # releasing it (as done above on loss of contact) would only undo the converged Uzawa
+            # progress and let the penetration spike again.
+            self._carryFrictionHistory(
+                newNormals, previousNormals, np.array([a is not None for a in newAssignment], dtype=bool)
+            )
         else:
             facetCentroids = np.array([np.mean(c, axis=0) for c in facetCoords])
             for s in range(self.nSlaves):
@@ -779,19 +763,6 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
                     J_[k] = pIdcs[j]
                     k += 1
 
-    def applyConstraintExplicit(
-        self,
-        U_np: np.ndarray,
-        dU: np.ndarray,
-        PExt: np.ndarray,
-        timeStep: TimeStep,
-    ):
-        """Reject a friction law the explicit path cannot integrate, then evaluate the forces only
-        (see :class:`~edelweissfe.constraints.base.forcesonlyexplicitevaluation.ForcesOnlyExplicitEvaluation`)."""
-
-        self._friction.checkExplicitIntegrability()
-        super().applyConstraintExplicit(U_np, dU, PExt, timeStep)
-
     def applyConstraint(
         self,
         U_np: np.ndarray,
@@ -938,20 +909,6 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
             where=self.tributaryAreas > 0,
         )
 
-    def getTangentialTractions(self) -> np.ndarray:
-        """The current per-slave tangential (frictional) traction magnitudes, ordered like the
-        surface element generator's ``<prefix>_nodes`` node set of the slave surface. 0 for a
-        slave node with a degenerate (zero-area) tributary area."""
-
-        return self._friction.tractionMagnitudes()
-
-    def getSlipStates(self) -> np.ndarray:
-        """The current per-slave stick/slip state as a float for output -- 0 open, 1 stick, 2 slip --
-        ordered like the ``<prefix>_nodes`` node set of the slave surface. Always 0 without
-        friction."""
-
-        return self._friction.slipStates()
-
     def getGaps(self) -> np.ndarray:
         """The current per-slave gaps (negative when penetrating; only meaningful for
         sliding=small), ordered like the surface element generator's ``<prefix>_nodes`` node set
@@ -965,17 +922,7 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         Called by :meth:`~edelweissfe.models.femodel.FEModel.advanceToTime` upon increment
         acceptance."""
 
-        if self._friction.enabled:
-            insideCone, turnedAway = self._friction.accept()
-            if insideCone or turnedAway:
-                self.journal.message(
-                    f"the stick/slip state chattered and was frozen; {insideCone} slave node(s) were accepted "
-                    f"in slip although their stick predictor lies inside the friction cone, {turnedAway} with a "
-                    "predictor more than 30 degrees away from the frozen slip direction. They carry the full "
-                    "friction mu*p in the frozen direction; smaller increments, or a slipTolerance, remove it.",
-                    self.name,
-                    level=1,
-                )
+        self._acceptFrictionHistory()
 
         if self.augmentedLagrange:
             for s in range(self.nSlaves):

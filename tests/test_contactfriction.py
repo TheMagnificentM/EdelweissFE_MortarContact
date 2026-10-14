@@ -196,6 +196,30 @@ class TestCoulombFriction(unittest.TestCase):
         np.testing.assert_array_equal(friction.tractionConverged, [[0.0, 2.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
         np.testing.assert_array_equal(friction.slipState, OPEN)
 
+    def test_accept_reports_only_a_freeze_that_held_a_point_in_slip_inside_the_cone(self):
+        free = CoulombFriction(1, nDim, mu=0.3)
+        _forces(free, _slide(1e-2), _slide(1e-2))
+        self.assertIsNone(free.acceptAndReport("point"), "an unfrozen state has nothing to report")
+
+        frozen = CoulombFriction(1, nDim, mu=0.3)
+        _forces(frozen, _slide(1e-2), _slide(1e-2))
+        frozen.slipStateFrozen = True
+        frozen.freezeDirections(np.array([True]))
+        # A tiny slip: the stick predictor lies well inside the cone, but the point is held in slip.
+        _forces(frozen, _slide(1e-6), _slide(1e-6))
+        report = frozen.acceptAndReport("point")
+        self.assertIsNotNone(report)
+        self.assertIn("1 point(s)", report)
+
+    def test_the_characteristic_length_is_fixed_once_and_reported(self):
+        friction = CoulombFriction(1, nDim, mu=0.3, slipTolerance=0.01)
+        self.assertIn("gamma_crit = 0.02", friction.setCharacteristicLength(2.0))
+        self.assertIsNone(friction.setCharacteristicLength(5.0), "fixed once, later calls keep it")
+        self.assertEqual(friction.elasticSlip, 0.02)
+        for inactive in (CoulombFriction(1, nDim, mu=0.0, slipTolerance=0.01), CoulombFriction(1, nDim, mu=0.3)):
+            self.assertIsNone(inactive.setCharacteristicLength(2.0))
+            self.assertIsNone(inactive.elasticSlip)
+
     def test_options_are_validated(self):
         for options in ({"mu": -1.0}, {"mu": 0.3, "slipTolerance": -1.0}, {"mu": 0.3, "tangentPenalty": -1.0}):
             with self.assertRaises(ValueError):
