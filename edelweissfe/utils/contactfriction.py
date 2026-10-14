@@ -813,8 +813,7 @@ class CoulombFriction:
         }
 
     def setRestartData(self, data: dict[str, np.ndarray], current=None, stored=None):
-        """Restore the converged frictional history from :meth:`restartData`. A checkpoint that holds
-        only the traction leaves pressure and contact status at rest.
+        """Restore the converged frictional history from :meth:`restartData`.
 
         ``current`` and ``stored`` optionally select which point of this state receives which entry
         of the checkpoint (see :func:`matchRestartKeys`); by default the two are taken to be in the
@@ -826,11 +825,10 @@ class CoulombFriction:
         traction = np.asarray(data["frictionTractionConverged"])
         self.tractionConverged[current] = traction[stored]
         self.tractionCurrent[current] = traction[stored]
-        if "frictionPressureConverged" in data:
-            pressure = np.asarray(data["frictionPressureConverged"])
-            self.pressureConverged[current] = pressure[stored]
-            self.pressureCurrent[current] = pressure[stored]
-            self.activeConverged[current] = np.asarray(data["frictionActiveConverged"])[stored] > 0.5
+        pressure = np.asarray(data["frictionPressureConverged"])
+        self.pressureConverged[current] = pressure[stored]
+        self.pressureCurrent[current] = pressure[stored]
+        self.activeConverged[current] = np.asarray(data["frictionActiveConverged"])[stored] > 0.5
 
     # ------------------------------------------------------------------ output
 

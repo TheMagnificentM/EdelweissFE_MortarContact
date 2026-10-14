@@ -2682,31 +2682,24 @@ class Constraint(ConstraintBase, MeshDependent):
         Called by :meth:`~edelweissfe.models.femodel.FEModel.readRestart` after the topology replay
         of an AMR run has re-created the refined mesh and the mesh dependents have caught up with it,
         so the non-mortar nodes are those of the refined surfaces; the checkpoint is matched to them
-        by label. A checkpoint without labels is taken to be in the current node order; one written
-        before the objective slip correction existed holds only the traction, and the correction then
-        starts at the first rebuild after the restart instead.
+        by label.
         """
 
-        if "nonMortarNodeLabels" in data:
-            current, stored = matchRestartKeys(
-                [int(label) for label in data["nonMortarNodeLabels"]], [node.label for node in self.nonMortarNodes]
-            )
-        else:
-            current = stored = np.arange(self.nNonMortarNodes)
+        current, stored = matchRestartKeys(
+            [int(label) for label in data["nonMortarNodeLabels"]], [node.label for node in self.nonMortarNodes]
+        )
 
         self._friction.setRestartData(data, current, stored)
-        if "frictionGapReference" in data:
-            self.frictionGapReference[current] = np.asarray(data["frictionGapReference"])[stored]
-            # the reference belongs to the refined mesh it was written on
-            self._discretisationChanged = False
-        if "frictionNormals" in data:
-            normals = np.full((self.nNonMortarNodes, self.model.domainSize), np.nan)
-            normals[current] = np.asarray(data["frictionNormals"])[stored]
-            self._restoredFrictionNormals = normals
+        self.frictionGapReference[current] = np.asarray(data["frictionGapReference"])[stored]
+        # the reference belongs to the refined mesh it was written on
+        self._discretisationChanged = False
+        normals = np.full((self.nNonMortarNodes, self.model.domainSize), np.nan)
+        normals[current] = np.asarray(data["frictionNormals"])[stored]
+        self._restoredFrictionNormals = normals
         augmented = np.asarray(data["augmentedMultipliersConverged"])[stored]
         self.augmentedMultipliersConverged[current] = augmented
         self.augmentedMultipliers[current] = augmented
-        if "lagrangeMultipliers" in data and self.formulation == "lagrange":
+        if self.formulation == "lagrange":
             multipliers = np.asarray(data["lagrangeMultipliers"])
             for i, j in zip(current, stored):
                 self.scalarVariables[i].value = multipliers[j]
