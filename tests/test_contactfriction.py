@@ -213,7 +213,7 @@ class TestCoulombFriction(unittest.TestCase):
 
     def test_the_characteristic_length_is_fixed_once_and_reported(self):
         friction = CoulombFriction(1, nDim, mu=0.3, slipTolerance=0.01)
-        self.assertIn("gamma_crit = 0.02", friction.setCharacteristicLength(2.0))
+        self.assertIn("elastic slip = 0.02", friction.setCharacteristicLength(2.0))
         self.assertIsNone(friction.setCharacteristicLength(5.0), "fixed once, later calls keep it")
         self.assertEqual(friction.elasticSlip, 0.02)
         for inactive in (CoulombFriction(1, nDim, mu=0.0, slipTolerance=0.01), CoulombFriction(1, nDim, mu=0.3)):

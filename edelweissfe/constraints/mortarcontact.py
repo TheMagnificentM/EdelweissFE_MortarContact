@@ -477,6 +477,11 @@ class Constraint(ConstraintBase, MeshDependent):
         # materials are not reachable yet at this point.
         self.c_n = float(kwargs["cn"])
         self._derive_c_n = self.c_n <= 0.0
+        # Where c_n and eps_N came from, for the one setup line of _reportSetupOnce.
+        self._cnSource = "given"
+        self._epsNSource = "given"
+        self._frictionSetup = None
+        self._setupReported = False
 
         # eps_N, a POINTWISE penalty modulus: a pressure per unit opening, the same
         # quantity (and the same unit) as the ``penalty`` of the two node/segment penalty
@@ -515,19 +520,17 @@ class Constraint(ConstraintBase, MeshDependent):
         # A parameter that belongs to the OTHER formulation is silently inert, which
         # is exactly the kind of thing that costs an afternoon. Say it once.
         if self.formulation == "penalty" and float(kwargs["cn"]) > 0.0:
+            # The complementarity parameter belongs to the semi-smooth NCP of the multiplier branch; the
+            # penalty branch takes its regularisation from 'penaltyStiffness'.
             self._warnOnce(
                 "cn_ignored_in_penalty",
-                "'cn' was given but formulation=penalty ignores it: the complementarity "
-                "parameter belongs to the semi-smooth NCP of the Lagrange-multiplier "
-                "branch. The penalty branch takes its regularization from "
-                "'penaltyStiffness' instead.",
+                "WARNING: 'cn' is ignored for formulation=penalty",
             )
         if self.formulation == "lagrange" and float(kwargs["penaltyStiffness"]) > 0.0:
+            # The multipliers are unknowns there and the constraint is enforced exactly.
             self._warnOnce(
                 "penalty_ignored_in_lagrange",
-                "'penaltyStiffness' was given but formulation=lagrange ignores it: the "
-                "multipliers are unknowns there and the constraint is enforced exactly. "
-                "Set formulation=penalty to use it.",
+                "WARNING: 'penaltyStiffness' is ignored for formulation=lagrange",
             )
 
         self._deriveNodalGeometry()
@@ -716,13 +719,40 @@ class Constraint(ConstraintBase, MeshDependent):
         if key in self._warned:
             return
         self._warned.add(key)
-        text = f"contact '{self._name}': {message}"
+        text = f"{self._name}: {message}"
         if self.journal is not None:
             self.journal.message(text, self.identification, level=1)
         else:
             # No journal: a constraint constructed directly rather than from an input file. The
             # diagnostic is worth more than the channel, so it still goes out.
             warnings.warn(f"MortarContact {text}", RuntimeWarning, stacklevel=3)
+
+    def _reportSetupOnce(self):
+        """Report the parameters this constraint actually runs with, once, at the end of the first
+        geometry rebuild -- the point by which every derived value (c_n, eps_N, the elastic slip)
+        is known. Values only; how they are derived is documented at the derivations."""
+
+        if self._setupReported:
+            return
+        self._setupReported = True
+        if self.formulation == "lagrange":
+            line = f"lagrange, c_n = {self.c_n:.4g} ({self._cnSource})"
+        else:
+            # "AL": augmentedLagrange=True, abbreviated so that the line fits the journal column.
+            augmented = " (AL)" if self.useAugmentedLagrange else ""
+            line = f"penalty{augmented}, eps_N = {self.epsN:.4g} ({self._epsNSource})"
+        lines = [line]
+        if self._friction.enabled:
+            if self._frictionSetup:
+                lines.append(f"mu = {self._friction.mu:.4g}, {self._frictionSetup}")
+            else:
+                lines.append(
+                    f"mu = {self._friction.mu:.4g}, eps_T = {self._friction.constantTangentModulus(self.epsN):.4g}"
+                )
+        for line in lines:
+            text = f"{self._name}: {line}"
+            if self.journal is not None:
+                self.journal.message(text, self.identification, level=1)
 
     def _publishNonMortarNodeSet(self, model: FEModel):
         """Register the non-mortar nodes, in the order of the contact system, as ``<name>_nonMortarNodes``.
@@ -751,11 +781,11 @@ class Constraint(ConstraintBase, MeshDependent):
                 current.replaceMembers(list(self.nonMortarNodes))
             return
         if setName in nodeSets:
+            # A fromExpression output of the nodal results needs a set in the order of the contact system;
+            # renaming the existing set gives one.
             self._warnOnce(
                 "node_set_exists",
-                f"the node set '{setName}' already exists, so the non-mortar nodes are not published under "
-                f"that name. A fromExpression output of this constraint's nodal results needs a set in the "
-                f"order of the contact system; rename the existing set to get one.",
+                f"WARNING: node set '{setName}' already exists, non-mortar nodes not published",
             )
             return
         nodeSets[setName] = NodeSet(setName, list(self.nonMortarNodes))
@@ -823,8 +853,8 @@ class Constraint(ConstraintBase, MeshDependent):
 
         if self.journal is not None:
             self.journal.message(
-                f"contact '{self._name}': rebuilt after a mesh refinement, {self.nNonMortarNodes} non-mortar and "
-                f"{self.nMortarNodes} mortar nodes ({len(oldNonMortarNodes)} non-mortar before)",
+                f"{self._name}: rebuilt after refinement, {self.nNonMortarNodes} non-mortar nodes "
+                f"(before {len(oldNonMortarNodes)}), {self.nMortarNodes} mortar nodes",
                 self.identification,
                 level=1,
             )
@@ -980,13 +1010,11 @@ class Constraint(ConstraintBase, MeshDependent):
 
         if culprits:
             pairs = ", ".join(f"({a}, {b})" for a, b in culprits[:5])
+            # Two facets that walk a shared edge in the same direction: one of them has its normal reversed, so
+            # gap and pressure change sign there and the contact transmits tension. Fix the facet node order.
             self._warnOnce(
                 f"winding_{surface_name}",
-                f"surface '{surface_name}' is not consistently wound: {len(culprits)} facet "
-                f"pair(s) traverse a shared edge in the SAME direction, first {pairs}. One facet "
-                f"of each pair has its normal reversed, so the weighted gap and the contact "
-                f"pressure change sign there and the contact transmits tension instead of "
-                f"compression. Fix the node ordering of the contact overlay elements.",
+                f"WARNING: surface '{surface_name}' inconsistently wound, {len(culprits)} facet pair(s), first {pairs}",
             )
 
     def _checkSurfacesFaceEachOther(self):
@@ -1032,14 +1060,13 @@ class Constraint(ConstraintBase, MeshDependent):
             return
 
         if normalSeparation < -0.1 * interfaceDiameter:
+            # The contact normal must point out of the non-mortar body. A mortar centroid this far behind the
+            # non-mortar one means inward-oriented facets or swapped surfaces: gap and pressure then carry the
+            # wrong sign and the contact bonds the surfaces instead of separating them.
             self._warnOnce(
                 "surfaces_face_away",
-                f"the averaged non-mortar normal points AWAY from the mortar surface: the mortar "
-                f"centroid lies {-normalSeparation:.4g} BEHIND the non-mortar one, against an "
-                f"interface diameter of {interfaceDiameter:.4g}. The contact normal must point out "
-                f"of the non-mortar body, so this indicates that its facets are oriented inwards - "
-                f"or that the two surfaces are swapped. Gap and pressure then carry the wrong sign "
-                f"and the contact bonds the surfaces instead of separating them.",
+                f"WARNING: non-mortar normals point away from the mortar surface (offset {-normalSeparation:.4g}, "
+                f"interface size {interfaceDiameter:.4g}); facets inverted or surfaces swapped?",
             )
 
     def _adjacentYoungsModuli(self) -> dict:
@@ -1137,27 +1164,20 @@ class Constraint(ConstraintBase, MeshDependent):
 
         if not candidates:
             self.c_n = 1.0e6
+            # The fallback carries a unit and only suits a model in MPa. c_n should be of the order of the
+            # Young's modulus of the softer body; larger is the safe direction.
             self._warnOnce(
                 "cn_not_derivable",
-                "no Young's modulus could be determined for the materials adjacent to the "
-                f"contact surfaces, so c_n falls back to {self.c_n:.3e}. That value carries a "
-                "unit and is only meaningful for a model in MPa. Set 'cn' explicitly - it must "
-                "be at the order of the Young's modulus of the softer contacting body, and "
-                "larger is the safe direction.",
+                f"WARNING: no Young's modulus found next to the contact, c_n = {self.c_n:.3e} (fallback); set 'cn'",
             )
+            self._cnSource = "fallback"
             return
 
         chosen = min(candidates, key=candidates.get)
         self.c_n = candidates[chosen]
-        listed = ", ".join(f"{k} = {v:.4g}" for k, v in sorted(candidates.items(), key=lambda kv: kv[1]))
-        self._warnOnce(
-            "cn_derived",
-            f"c_n was not given and has been derived as {self.c_n:.4g}, the smallest initial "
-            f"Young's modulus adjacent to the interface ({chosen}). Considered: {listed}. This "
-            f"assumes the first material constant is the Young's modulus, which is the Marmot "
-            f"convention but not guaranteed - check it, or set 'cn' explicitly. Larger is the "
-            f"safe direction.",
-        )
+        # Reported in the setup line. The value assumes that the first material constant is the Young's
+        # modulus -- the Marmot convention, not a guarantee -- which is why the value is always reported.
+        self._cnSource = f"E of {chosen}"
 
     def _resolveEpsN(self):
         """Derive the penalty modulus eps_N of p_I = eps_N * penetration_I.
@@ -1246,24 +1266,23 @@ class Constraint(ConstraintBase, MeshDependent):
                             f"stiffness is left. Lower tangentPenalty or leave it at 0 to follow eps_N."
                         )
                 if previous is None or not np.isclose(previous, self.epsN, rtol=0.25):
-                    self._warnOnce(
-                        "epsN_derived_explicit",
-                        f"'penaltyStiffness' was not given and this is an explicit analysis, so "
-                        f"eps_N has been derived from the STABILITY limit rather than from the "
-                        f"material: eps_N = {self.epsN:.4g} = 0.5 * 4/(dt^2 * R) with "
-                        f"dt = {dt:.4g} and R = {factor:.4g}"
-                        f"{' (R including the tangential friction spring)' if self._friction.enabled and self._friction.tangentPenalty <= 0.0 else ''}. "
-                        f"A larger value would need a smaller "
-                        f"time increment; set 'penaltyStiffness' explicitly to choose that "
-                        f"trade-off yourself, and watch the reported penetration.",
-                    )
+                    # Explicit dynamics: the largest stiffness the time increment can carry, half the Gershgorin
+                    # limit 4/(dt^2 R) (see above), with R including the tangential spring when eps_T follows eps_N.
+                    # A larger value needs a smaller increment; 'penaltyStiffness' chooses that trade-off explicitly.
+                    # The setup line reports the first value; a later re-derivation that moves it by more than 25 %
+                    # is reported once.
+                    self._epsNSource = f"stability limit, dt={dt:.4g}"
+                    if self._setupReported:
+                        self._warnOnce(
+                            "epsN_rederived_explicit",
+                            f"eps_N re-derived = {self.epsN:.4g} (stability limit, dt = {dt:.4g})",
+                        )
                 return
+            # No covered interface, or no lumped mass on the contact nodes: the implicit rule below knows
+            # nothing about the stable time increment.
             self._warnOnce(
                 "epsN_not_derivable_explicit",
-                "the stability limit needed to derive the penalty parameter for this explicit "
-                "analysis is not available (no covered interface, or no lumped mass on the "
-                "contact nodes), so the implicit rule below is used instead. That rule knows "
-                "nothing about the stable time increment -- check the result for instability.",
+                "WARNING: stability limit not available, eps_N from the implicit rule; check for instability",
             )
 
         self._derive_epsN = False
@@ -1275,13 +1294,12 @@ class Constraint(ConstraintBase, MeshDependent):
 
         if total <= 0.0 or nFacets == 0 or self.nNonMortarNodes == 0:
             self.epsN = 1.0e6
+            # The fallback carries a unit and is almost certainly wrong for the model.
             self._warnOnce(
                 "epsN_not_derivable",
-                f"the interface measure needed to derive the penalty parameter is not "
-                f"available (covered measure {total:.3e} over {nFacets} facet(s)), so eps_N "
-                f"falls back to {self.epsN:.3e}. That value carries a unit and is almost "
-                f"certainly wrong for this model - set 'penaltyStiffness' explicitly.",
+                f"WARNING: no contact area to derive eps_N, eps_N = {self.epsN:.3e} (fallback); set 'penaltyStiffness'",
             )
+            self._epsNSource = "fallback"
             return
 
         # dim-1 is the dimension of the interface: a length in 2D, an area in 3D.
@@ -1294,25 +1312,20 @@ class Constraint(ConstraintBase, MeshDependent):
         E = self._smallestAdjacentYoungsModulus()
         if E is None:
             self.epsN = 1.0e6
+            # The fallback carries a unit and only suits a model in MPa.
             self._warnOnce(
                 "epsN_not_derivable_E",
-                f"no Young's modulus could be determined for the materials adjacent to the "
-                f"contact surfaces, so eps_N falls back to {self.epsN:.3e}. That value "
-                f"carries a unit and is only meaningful for a model in MPa - set "
-                f"'penaltyStiffness' explicitly.",
+                f"WARNING: no Young's modulus found next to the contact, eps_N = {self.epsN:.3e} (fallback); "
+                f"set 'penaltyStiffness'",
             )
+            self._epsNSource = "fallback"
             return
 
         self.epsN = stiffness_ratio * E / h
-        self._warnOnce(
-            "epsN_derived",
-            f"'penaltyStiffness' was not given and eps_N has been derived as "
-            f"{self.epsN:.4g} = {stiffness_ratio:g}*E/h with E = {E:.4g} and h = {h:.4g}. "
-            f"It is a pointwise contact stiffness per unit area, i.e. the same quantity as the "
-            f"'penalty' of nodeToDeformableSurfacePenalty. This is an engineering rule of this "
-            f"implementation rather than an established value. With augmentedLagrange enabled "
-            f"the converged result does not depend on it.",
-        )
+        # Reported in the setup line. eps_N is a pointwise stiffness per unit area, the same quantity as
+        # the 'penalty' of nodeToDeformableSurfacePenalty; the factor 100 is an engineering rule of this
+        # implementation (see the docstring). With augmentedLagrange the converged result does not depend on it.
+        self._epsNSource = f"E={E:.4g}, h={h:.4g}"
 
     def _checkConvergedActiveSet(self, U_ref: np.ndarray):
         """Re-evaluate the NCP indicator on the CONVERGED state of the last increment.
@@ -1355,15 +1368,12 @@ class Constraint(ConstraintBase, MeshDependent):
 
         flipped = np.flatnonzero(would_be != self.activeSet)
         if len(flipped):
+            # Re-evaluated on the converged state, the indicator would switch these nodes: the increment
+            # enforced g = 0 on a node that wants to open, or lambda = 0 on one that wants to close, so its
+            # solution does not satisfy the Signorini conditions there.
             self._warnOnce(
                 "active_set_unstable_at_convergence",
-                f"the active set of a converged increment does not reproduce itself: "
-                f"{len(flipped)} slave node(s) (first local index {flipped[0]}) would switch "
-                f"branch if the indicator were re-evaluated on the converged state. That "
-                f"increment enforced g_weak = 0 on a node that wants to open, or lambda = 0 on "
-                f"one that wants to close, so its solution does not satisfy the Signorini "
-                f"conditions. Reduce the increment size, or verify the result by checking the "
-                f"nodal pressures and openings of the converged state against each other.",
+                f"WARNING: converged active set not self-consistent at {len(flipped)} node(s); reduce the increment size",
             )
 
     @classmethod
@@ -1490,14 +1500,11 @@ class Constraint(ConstraintBase, MeshDependent):
             # cancel, which is what a node on a sharp fold between two opposing
             # facets does - and note that with unit contributions the cancellation
             # no longer needs the two facets to be of equal size.
+            # Gap and pressure both contract with n_I, so such a node can never become active. Usual causes:
+            # a zero-area facet, or adjacent facets folding back onto each other.
             self._warnOnce(
                 "degenerate_nodal_normal",
-                f"{len(degenerate)} slave node(s) with a vanishing averaged nodal normal "
-                f"(first: local index {degenerate[0]}). Such nodes carry no contact at all - "
-                f"the weighted gap and the pressure both contract with n_I and vanish with it, "
-                f"so the active-set indicator can never turn them on. Usual causes: a "
-                f"degenerate (zero-area) contact facet, or adjacent facets whose normals "
-                f"cancel because they fold back onto each other.",
+                f"WARNING: {len(degenerate)} non-mortar node(s) with zero normal carry no contact",
             )
 
         return normals
@@ -1673,13 +1680,11 @@ class Constraint(ConstraintBase, MeshDependent):
                     # margins no usable volume element gets anywhere near, which is
                     # why this is a warning and not a raise.
                     if not isConvexPolygon(s_sub_2d):
+                        # Sutherland-Hodgman clips against each edge's half-plane, so a reflex vertex silently removes
+                        # area. Means a severely distorted quadratic facet (mid-side/centre node positions).
                         self._warnOnce(
                             "nonconvex_subcell",
-                            f"non-convex sub-cell on slave facet {s_el.elNumber} (element type "
-                            f"{s_el.elType}). The segmentation clips against the half-plane of "
-                            f"each sub-cell edge, so contact area is lost without further notice. "
-                            f"Check the mid-side/centre node positions of the quadratic contact "
-                            f"facets; the element is severely distorted.",
+                            f"WARNING: non-convex sub-cell on non-mortar facet {s_el.elNumber} ({s_el.elType}), contact area lost",
                         )
 
                     for m_el in candidates:
@@ -1695,15 +1700,11 @@ class Constraint(ConstraintBase, MeshDependent):
                             # inherits its reflex vertices and the fan triangulation
                             # below then over-counts the area (see isConvexPolygon).
                             if not isConvexPolygon(m_sub_2d):
+                                # The overlap inherits the reflex vertex and the fan triangulation then integrates outside the
+                                # facet. Means a severely distorted quadratic facet (mid-side/centre node positions).
                                 self._warnOnce(
                                     "nonconvex_master_subcell",
-                                    f"non-convex sub-cell on master facet {m_el.elNumber} (element "
-                                    f"type {m_el.elType}), projected into the plane of slave facet "
-                                    f"{s_el.elNumber}. The overlap polygon inherits the reflex "
-                                    f"vertex and the fan triangulation then integrates over area "
-                                    f"outside the facet. Check the mid-side/centre node positions "
-                                    f"of the quadratic contact facets; the element is severely "
-                                    f"distorted.",
+                                    f"WARNING: non-convex sub-cell on mortar facet {m_el.elNumber} ({m_el.elType}), contact area over-counted",
                                 )
 
                             overlap_2d = sutherlandHodgmanClip(m_sub_2d, s_sub_2d)
@@ -1795,16 +1796,13 @@ class Constraint(ConstraintBase, MeshDependent):
 
         if n_proj_failed:
             side, el_num, el_type = first_proj_failure
+            # For those points the last Newton iterate is used, so the shape functions entering D and C are
+            # wrong by an unknown amount. The projection is not solvable for arbitrarily distorted or curved
+            # facets (Konyukhov & Schweizerhof 2008); check the facets around the one named.
             self._warnOnce(
                 "gp_projection_failed",
-                f"the Gauss point back-mapping did not converge for {n_proj_failed} integration "
-                f"point(s) (first on the {side} facet {el_num}, element type {el_type}). For those "
-                f"points the last Newton iterate was used as the natural coordinate, so the shape "
-                f"function values entering D and C are wrong by an unknown amount - a "
-                f"non-converged coordinate is indistinguishable from a converged one. The closest "
-                f"point projection is not solvable for arbitrarily distorted or strongly curved "
-                f"facets (Konyukhov & Schweizerhof 2008); check the facets around the one named "
-                f"above.",
+                f"WARNING: Gauss point projection not converged for {n_proj_failed} point(s), first on {side} facet "
+                f"{el_num} ({el_type})",
             )
 
         return self._assembleCouplingMatricesFromSegments(
@@ -1905,15 +1903,13 @@ class Constraint(ConstraintBase, MeshDependent):
 
         if self._augmentation_counter >= self.maxAugmentations:
             self.augmentedMultipliersConverged[:] = self.augmentedMultipliers
+            # The increment converged on a pressure estimate that had not settled, so the remaining
+            # penetration is larger than asked for. penaltyStiffness sets the rate of the outer loop; a
+            # smaller increment helps as well.
             self._warnOnce(
                 "augmentation_cap",
-                f"the augmented Lagrangian hit its cap of {self.maxAugmentations} outer "
-                f"iterations without reaching the tolerance "
-                f"{self.augmentationTolerance:.1e} (last relative change "
-                f"{change / scale:.2e}). The increment therefore converged on a pressure "
-                f"estimate that had not settled, so the remaining penetration is larger "
-                f"than asked for. Raise 'maxAugmentations', raise 'penaltyStiffness' (it "
-                f"sets the rate of the outer loop), or reduce the increment size.",
+                f"WARNING: augmented Lagrange stopped at {self.maxAugmentations} augmentations (change "
+                f"{change / scale:.2e} > {self.augmentationTolerance:.1e}); raise maxAugmentations or penaltyStiffness",
             )
             return False
 
@@ -2327,13 +2323,11 @@ class Constraint(ConstraintBase, MeshDependent):
                     # violate the Signorini conditions. Nothing checks that
                     # automatically; a converged model has to be checked by comparing
                     # its nodal pressures and openings against each other.
+                    # The converged solution of such an increment is not guaranteed to satisfy the Signorini
+                    # conditions; check the nodal pressures and openings of the converged state against each other.
                     self._warnOnce(
                         "active_set_iteration_cap",
-                        f"the active set was frozen by the iteration cap (20), not by the PDASS "
-                        f"convergence criterion, first in increment {timeStep.number}. The set had "
-                        f"not settled, so the converged solution of such increments is not "
-                        f"guaranteed to satisfy the Signorini conditions - verify it by checking "
-                        f"the nodal pressures and openings of the converged state against each other.",
+                        f"WARNING: active set frozen by the iteration cap (20) in increment {timeStep.number}, not settled",
                     )
                 self.activeSetFrozen = True
 
@@ -2369,15 +2363,9 @@ class Constraint(ConstraintBase, MeshDependent):
             if len(thinlyCovered):
                 self._warnOnce(
                     "thinly_covered_nodes",
-                    f"{len(thinlyCovered)} non-mortar node(s) in contact are opposed over less than "
-                    f"1 % of their own facet area (thinnest: "
-                    f"{float(np.min(self.currentCoverage[thinlyCovered])):.2e}), first in increment "
-                    f"{timeStep.number}. Such a node is constrained exactly like a fully covered one "
-                    f"- coverage sets how the contact force is distributed, never whether a node is "
-                    f"tied - so it can transmit a force out of proportion to the area backing it. "
-                    f"This arises where the mortar surface ends while still transmitting pressure. "
-                    f"Putting the smaller of the two surfaces on the non-mortar side removes it, "
-                    f"because every non-mortar facet is then fully covered.",
+                    f"WARNING: {len(thinlyCovered)} contacting node(s) with < 1 % coverage "
+                    f"(min {float(np.min(self.currentCoverage[thinlyCovered])):.2e}) in increment {timeStep.number}; "
+                    f"put the smaller surface on the non-mortar side",
                 )
 
     def _nodalPenaltyStiffness(self, modulus: float | None = None) -> np.ndarray:
@@ -3067,14 +3055,13 @@ class Constraint(ConstraintBase, MeshDependent):
             significant = np.flatnonzero(weights < -1e-6 * weight_scale)
             if len(significant):
                 worst = np.min(weights) / weight_scale
+                # The active-set indicator handles the sign, but the weighted gap is no longer a mean opening
+                # there. Usual causes: a partially covered CONQUAD9, or a sliver overlap that triggered the
+                # reference-element fallback.
                 self._warnOnce(
                     "negative_nodal_weight",
-                    f"{len(significant)} slave node(s) with a negative nodal mortar weight "
-                    f"D_II (worst: {worst:.3e} of the largest weight), first in increment "
-                    f"{timeStep.number}. The active-set indicator handles the sign, but the "
-                    f"weighted gap is no longer a mean opening at those nodes. Usual causes: a "
-                    f"partially covered CONQUAD9, or a sliver overlap that triggered the "
-                    f"reference-element fallback.",
+                    f"WARNING: {len(significant)} non-mortar node(s) with negative mortar weight (worst "
+                    f"{worst:.3e} of max) in increment {timeStep.number}",
                 )
         # Precompute the sparsity patterns AND the row values once per increment.
         # The geometry is frozen for the increment, so both are constant while
@@ -3097,17 +3084,12 @@ class Constraint(ConstraintBase, MeshDependent):
             if omegaSquared > 0.0 and dt > 0.0:
                 dtStable = 2.0 / np.sqrt(omegaSquared)
                 if dt > dtStable:
+                    # The user-given stiffness exceeds the (conservative, Gershgorin) stability limit of the time
+                    # increment. tangentPenalty shares the budget. Leaving penaltyStiffness unset derives it from the limit.
                     self._warnOnce(
                         "epsN_above_stability_limit",
-                        f"penaltyStiffness = {self.epsN:.4g}"
-                        f"{f' with tangentPenalty = {self._friction.constantTangentModulus(self.epsN):.4g}' if self._friction.enabled else ''}"
-                        f" needs a time increment of at most "
-                        f"{dtStable:.4g} to stay stable, and this analysis runs at {dt:.4g} -- a "
-                        f"factor of {dt / dtStable:.2f} above it. Either lower the stiffness by a factor of at "
-                        f"least {(dt / dtStable) ** 2:.4g}, lower 'courant-number' by the same "
-                        f"factor, or leave 'penaltyStiffness' unset and let it be derived from the "
-                        f"stability limit. The bound is a conservative (Gershgorin) estimate, so a "
-                        f"small exceedance may still run -- but it will not be trustworthy.",
+                        f"WARNING: penalty stiffness needs dt <= {dtStable:.4g}, analysis runs at dt = {dt:.4g}; "
+                        f"lower penaltyStiffness or courant-number by {(dt / dtStable) ** 2:.4g}",
                     )
 
         if self._friction.enabled and self._friction.elasticSlip is None:
@@ -3115,12 +3097,12 @@ class Constraint(ConstraintBase, MeshDependent):
             h = characteristicFacetSize(
                 float(np.sum(np.abs(self.currentNodalWeights))), len(self.nonMortarFacets), self.model.domainSize
             )
-            report = self._friction.setCharacteristicLength(h)
-            if report and self.journal is not None:
-                self.journal.message(f"contact '{self._name}': {report}", self.identification, level=1)
+            self._frictionSetup = self._friction.setCharacteristicLength(h)
 
         if self._friction.enabled:
             self._carryFrictionHistory(U_ref, previousNormals)
+
+        self._reportSetupOnce()
 
     def _assembleCouplingMatricesFromSegments(
         self, seg_records, seg_masters, slave_els, current_coords, n_slave, n_master
@@ -3230,12 +3212,11 @@ class Constraint(ConstraintBase, MeshDependent):
                 # over half the element, so the integral over a sub-region takes
                 # any sign AND any magnitude. Measured: below ~0.1 % coverage
                 # D_II flips sign, at -1.0 of the largest weight.
+                # Biorthogonality then holds on the full element only, and the nodal weights D_II can take any
+                # sign and magnitude there -- for CONQUAD8 as well.
                 self._warnOnce(
                     "sliver_fallback",
-                    f"degenerate overlap on slave facet {s_num}: cond(M_t) = {cond_M_t:.2e} >= 1e12, "
-                    f"falling back to reference-element dual coefficients. Biorthogonality then "
-                    f"holds on the full element only, and the nodal weights D_II can take any sign "
-                    f"and magnitude there - for CONQUAD8 as well.",
+                    f"WARNING: degenerate overlap on non-mortar facet {s_num} (cond = {cond_M_t:.2e}), reference dual basis used",
                 )
                 # Evaluated only HERE, not for every slave facet up front: the
                 # reference-element coefficients cost an element mass matrix plus its

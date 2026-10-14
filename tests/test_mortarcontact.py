@@ -336,7 +336,7 @@ class TestConstraintSetup(unittest.TestCase):
         model = _TwoBlockModel.build(flipNonMortar=True)
         journal = _RecordingJournal()
         _TwoBlockModel.constraint(model, journal=journal)
-        reported = [text for sender, text in journal.records if "points AWAY" in text]
+        reported = [text for sender, text in journal.records if "point away" in text]
         self.assertTrue(reported, f"the inverted surface was not reported; journal held {journal.records}")
         self.assertEqual([sender for sender, _ in journal.records][0], "MortarContact")
 
@@ -349,7 +349,7 @@ class TestConstraintSetup(unittest.TestCase):
         model = _TwoBlockModel.build(gap=-0.01, masterShift=0.2)
         journal = _RecordingJournal()
         _TwoBlockModel.constraint(model, journal=journal)
-        facingAway = [text for _, text in journal.records if "points AWAY" in text]
+        facingAway = [text for _, text in journal.records if "point away" in text]
         self.assertEqual(facingAway, [], "an initial overlap was mistaken for an inverted surface")
 
     def test_sharing_a_node_between_the_two_surfaces_is_refused(self):
@@ -844,7 +844,7 @@ class TestActiveSet(unittest.TestCase):
         self.assertFalse(constraint.activeSetFrozen, "a new increment must thaw the set")
         self.assertTrue(np.all(constraint.activeSet), "the penetration must be found again")
         self.assertTrue(
-            [text for _, text in journal.records if "does not reproduce itself" in text],
+            [text for _, text in journal.records if "not self-consistent" in text],
             f"the contradicted frozen set was not reported; journal held {journal.records}",
         )
 

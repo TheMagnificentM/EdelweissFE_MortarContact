@@ -50,7 +50,13 @@ class FrictionalContact:
     """
 
     def _frictionMessage(self, text: str, level: int):
-        self.journal.message(f"contact '{self.name}': {text}", getattr(self, "identification", self.name), level=level)
+        # A constraint with a class-level identification sends under it and names itself in the text;
+        # one without sends under its own name, which then already identifies it.
+        identification = getattr(self, "identification", None)
+        if identification is None:
+            self.journal.message(text, self.name, level=level)
+        else:
+            self.journal.message(f"{self.name}: {text}", identification, level=level)
 
     def applyConstraintExplicit(
         self,
@@ -69,7 +75,7 @@ class FrictionalContact:
 
         report = self._friction.setCharacteristicLength(h)
         if report:
-            self._frictionMessage(report, level=1)
+            self._frictionMessage(f"mu = {self._friction.mu:.4g}, {report}", level=1)
 
     def _carryFrictionHistory(self, newNormals: np.ndarray, previousNormals: np.ndarray, assigned: np.ndarray):
         """Rotate the frictional history into the new frozen tangent planes at a connectivity update,
@@ -80,11 +86,7 @@ class FrictionalContact:
             return
         nDiscarded = self._friction.carry(newNormals, previousNormals, assigned, normalPenalty=self.penalty)
         if nDiscarded:
-            self._frictionMessage(
-                f"{nDiscarded} contact points crossed a crease of the master surface; their frictional history "
-                "was discarded",
-                level=2,
-            )
+            self._frictionMessage(f"{nDiscarded} point(s) crossed a crease, frictional history reset", level=2)
 
     def _acceptFrictionHistory(self):
         """Promote the tangential tractions of the converged iterate to the frictional history, and

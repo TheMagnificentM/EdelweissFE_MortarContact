@@ -316,9 +316,9 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         self.totalNormalForce = 0.0
 
         self.journal.message(
-            f"contact '{self.name}': {self.nPoints} points ({len(self.slave.facets)} slave facets x "
+            f"{self.name}: {self.nPoints} points ({len(self.slave.facets)} slave facets x "
             f"{self.nQuadraturePoints} quadrature points), {len(self.facetElements)} master facets, "
-            f"sliding={self.sliding}, type={self.type}, friction={'on' if self._friction.enabled else 'off'}",
+            f"sliding={self.sliding}, type={self.type}, mu={self._friction.mu:g}",
             self.identification,
         )
 
@@ -584,7 +584,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         if activity != self._lastReportedActivity:
             self._lastReportedActivity = activity
             self.journal.message(
-                f"contact '{self.name}': {activity[0]}/{self.nPoints} active, {activity[1]} closed",
+                f"{self.name}: {activity[0]}/{self.nPoints} active, {activity[1]} closed",
                 self.identification,
                 level=2,
             )

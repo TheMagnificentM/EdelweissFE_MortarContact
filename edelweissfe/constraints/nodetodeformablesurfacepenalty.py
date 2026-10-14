@@ -418,7 +418,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
 
         self.journal.message(
             f"{self.nSlaves} slave nodes, {len(self.facetElements)} master facets, "
-            f"sliding={self.sliding}, type={self.type}, friction={'on' if self._friction.enabled else 'off'}, "
+            f"sliding={self.sliding}, type={self.type}, mu={self._friction.mu:g}, "
             f"augmentedLagrange={self.augmentedLagrange}",
             name,
         )

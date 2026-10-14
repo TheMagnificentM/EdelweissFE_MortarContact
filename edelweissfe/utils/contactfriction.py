@@ -399,16 +399,14 @@ class CoulombFriction:
     def setCharacteristicLength(self, h: float) -> str | None:
         """Fix the elastic slip ``slipTolerance * h`` (once; later calls keep the first value).
 
-        Returns a description of the value for the owner's journal if this call fixed it, ``None``
-        otherwise (no friction, no slipTolerance, or already fixed)."""
+        Returns the values for the owner's journal if this call fixed it, ``None`` otherwise (no
+        friction, no slipTolerance, or already fixed). The journal gets the values only; with them,
+        eps_T = mu * p / elasticSlip (see the module documentation)."""
 
         if not self.enabled or self.slipTolerance <= 0.0 or self.elasticSlip is not None:
             return None
         self.elasticSlip = self.slipTolerance * h
-        return (
-            f"friction with slipTolerance = {self.slipTolerance:.4g}: elastic slip gamma_crit = "
-            f"{self.elasticSlip:.4g} (h = {h:.4g}), eps_T = mu * p / gamma_crit"
-        )
+        return f"slipTolerance = {self.slipTolerance:.4g}, elastic slip = {self.elasticSlip:.4g}"
 
     def tangentModulus(self, p, normalPenalty: float):
         """The pointwise tangential modulus eps_T at pressure ``p`` and its derivative d eps_T/dp.
@@ -721,14 +719,17 @@ class CoulombFriction:
         owner's journal; ``None`` if there is nothing to report. ``pointName`` names a contact point
         of the owner (e.g. "slave node")."""
 
+        # The stick/slip state chattered and was frozen (see freezeIfChattering). Points held in slip
+        # whose stick predictor lies inside the cone should have stuck, and points whose predictor
+        # turned more than 30 degrees away from the frozen direction would have slipped elsewhere;
+        # both carry the full mu*p in the frozen direction, never more than the cone. Smaller
+        # increments, or a slipTolerance, remove it.
         insideCone, turnedAway = self.accept()
         if not (insideCone or turnedAway):
             return None
         return (
-            f"the stick/slip state chattered and was frozen; {insideCone} {pointName}(s) were accepted in slip "
-            f"although their stick predictor lies inside the friction cone, {turnedAway} with a predictor more "
-            "than 30 degrees away from the frozen slip direction. They carry the full friction mu*p in the frozen "
-            "direction, never more than the cone; smaller increments, or a slipTolerance, remove it."
+            f"WARNING: stick/slip state frozen; {insideCone} {pointName}(s) held in slip inside the cone, "
+            f"{turnedAway} turned > 30 deg; use smaller increments or slipTolerance"
         )
 
     def carry(
