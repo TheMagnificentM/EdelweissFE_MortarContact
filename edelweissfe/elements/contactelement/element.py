@@ -31,6 +31,12 @@ import numpy as np
 from edelweissfe.elements.base.baseelement import BaseElement
 from edelweissfe.elements.library import elLibrary
 from edelweissfe.points.node import Node
+from edelweissfe.utils.mortargeometry import (
+    lineGaussPoints,
+    lineGaussWeights,
+    triangleGaussPoints,
+    triangleGaussWeights,
+)
 
 # Shape function derivatives at the element's own nodes, per element TYPE. They do
 # not depend on the geometry, so one table per type serves every facet in the model;
@@ -197,15 +203,13 @@ class ContactElement(BaseElement):
             points = [np.array([-1.0 / np.sqrt(3.0)]), np.array([1.0 / np.sqrt(3.0)])]
             weights = [1.0, 1.0]
         elif el_type == "CONLINE3":
-            points = [np.array([-np.sqrt(0.6)]), np.array([0.0]), np.array([np.sqrt(0.6)])]
-            weights = [5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0]
+            points, weights = list(lineGaussPoints), list(lineGaussWeights)
         elif el_type == "CONQUAD4":
             gp = 1.0 / np.sqrt(3.0)
             points = [np.array([-gp, -gp]), np.array([gp, -gp]), np.array([gp, gp]), np.array([-gp, gp])]
             weights = [1.0, 1.0, 1.0, 1.0]
         elif el_type in ("CONQUAD8", "CONQUAD9"):
-            g_pts = [-np.sqrt(0.6), 0.0, np.sqrt(0.6)]
-            g_w = [5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0]
+            g_pts, g_w = lineGaussPoints[:, 0], lineGaussWeights
             points = []
             weights = []
             for i in range(3):
@@ -220,20 +224,7 @@ class ContactElement(BaseElement):
             ]
             weights = [1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0]
         elif el_type == "CONTRI6":
-            a = (6.0 - np.sqrt(15.0)) / 21.0
-            b = (6.0 + np.sqrt(15.0)) / 21.0
-            w_a = (155.0 - np.sqrt(15.0)) / 2400.0
-            w_b = (155.0 + np.sqrt(15.0)) / 2400.0
-            points = [
-                np.array([1.0 / 3.0, 1.0 / 3.0]),
-                np.array([a, a]),
-                np.array([a, 1.0 - 2.0 * a]),
-                np.array([1.0 - 2.0 * a, a]),
-                np.array([b, b]),
-                np.array([b, 1.0 - 2.0 * b]),
-                np.array([1.0 - 2.0 * b, b]),
-            ]
-            weights = [9.0 / 80.0, w_a, w_a, w_a, w_b, w_b, w_b]
+            points, weights = list(triangleGaussPoints), list(triangleGaussWeights)
         else:
             raise NotImplementedError(f"Quadrature points not defined for element type '{el_type}'")
         return points, weights

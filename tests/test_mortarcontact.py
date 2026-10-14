@@ -61,7 +61,6 @@ import numpy as np
 
 import edelweissfe.utils.inputfileparser  # noqa: F401 bootstrap input language
 from edelweissfe.constraints.mortarcontact import Constraint as MortarContact
-from edelweissfe.constraints.mortarcontact import facetNormal, isConvexPolygon
 from edelweissfe.generators.surfaceelementgenerator import buildContactFacets
 from edelweissfe.journal.journal import Journal
 from edelweissfe.models.femodel import FEModel
@@ -69,6 +68,8 @@ from edelweissfe.points.node import Node
 from edelweissfe.sets.elementset import ElementSet
 from edelweissfe.utils.mortargeometry import (
     clipLineSegments,
+    facetNormal,
+    isConvexPolygon,
     sutherlandHodgmanClip,
     tangentBasis,
     toPlaneCoordinates,
