@@ -345,31 +345,7 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
 
         self._slaveSurfaceSetName = slaveSurface.name
         self._masterSurfaceSetName = masterSurface.name
-        self.slaveFacetElements = list(slaveSurface)
-        self.facetElements = list(masterSurface)
-
-        # The contact points are the unique nodes of the slave surface, each weighted by its
-        # tributary area: the sum of its area shares over its incident slave facets (assigned by
-        # the surface element generator; consistent with a uniform pressure on the source faces),
-        # evaluated in the reference configuration (consistent with the small-deformation
-        # setting). A share may be zero (nodalWeights=serendipityOptimal zeroes the corner nodes of
-        # quadratic faces); such nodes are kept, inert, to preserve the slave node ordering.
-        tributaryAreaOfSlaveNode = {}
-        for slaveFacet in self.slaveFacetElements:
-            for node, share in zip(slaveFacet.nodes, slaveFacet.nodalAreaShares):
-                tributaryAreaOfSlaveNode[node] = tributaryAreaOfSlaveNode.get(node, 0.0) + share
-
-        self.slaveNodes = list(tributaryAreaOfSlaveNode.keys())
-        self.tributaryAreas = np.array(list(tributaryAreaOfSlaveNode.values()))
-        self.nSlaves = len(self.slaveNodes)
-
-        masterNodes = {node for el in self.facetElements for node in el.nodes}
-        if not masterNodes.isdisjoint(self.slaveNodes):
-            raise ValueError(
-                f"Constraint '{name}': slave surface '{self._slaveSurfaceSetName}' and master "
-                f"surface '{self._masterSurfaceSetName}' share nodes -- self-contact is not "
-                "supported."
-            )
+        self.nDim = model.domainSize
 
         self.penalty = configuration.penalty
         if self.penalty <= 0.0:
@@ -380,9 +356,17 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         self.sliding = configuration.sliding.lower()
         if self.sliding not in ["finite", "small"]:
             raise ValueError(f"Constraint sliding '{self.sliding}' is not supported. Use 'finite' or 'small'.")
-        self._validateMasterWeightTransforms()
 
-        self.nDim = model.domainSize
+        self._bindSlaveSurface(list(slaveSurface))
+        self._bindMasterSurface(list(masterSurface))
+
+        masterNodes = {node for el in self.facetElements for node in el.nodes}
+        if not masterNodes.isdisjoint(self.slaveNodes):
+            raise ValueError(
+                f"Constraint '{name}': slave surface '{self._slaveSurfaceSetName}' and master "
+                f"surface '{self._masterSurfaceSetName}' share nodes -- self-contact is not "
+                "supported."
+            )
 
         # The friction law and the per-slave frictional state (traction history, stick/slip state)
         # are the ones shared by all contact formulations. The traction is the force per tributary
@@ -416,11 +400,6 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
                 "augmentedLagrange requires sliding=small: the multiplier force acts along the "
                 "frozen gap gradient of the small-sliding formulation."
             )
-
-        self._referenceCoordsSlaves = np.array([n.coordinates for n in self.slaveNodes])
-        self._referenceCoordsFacets = [np.array([n.coordinates for n in el.nodes]) for el in self.facetElements]
-        self._masterBoundary = facetSurfaceBoundary([el.nodes for el in self.facetElements])
-        self._setTieTolerance()
 
         self._assignedFacetIdx = [None] * self.nSlaves
 
@@ -484,8 +463,6 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         (re)built. Reconciles against a mesh mutation (e.g. an AMR refinement of either surface's
         source solid elements) first, at this natural per-increment tick -- see
         :class:`~edelweissfe.models.meshdependent.MeshDependent`."""
-
-        # refreshed by TopologyPipeline.refreshMeshDependents; nothing extra to do at this tick
 
         slaveCoords = currentNodeCoordinates(self.slaveNodes, model, self._referenceCoordsSlaves)
         facetCoords = [
@@ -601,7 +578,7 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
 
         self._nodes = newNodes
         self._fieldsOnNodes = newFieldsOnNodes
-        self._nDof = sum(self.nDim for _ in newNodes)
+        self._nDof = len(newNodes) * self.nDim
 
         return hasChanged
 
@@ -675,16 +652,15 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         )
         self._tieTolerance = 1e-10 * self._facetSize
 
-    def _rebindSlave(self, model: FEModel) -> None:
-        """Rebuild the slave-side node list/tributary areas from the regenerated facet set. Retained
-        slave nodes keep their frictional history and AL multiplier (by identity); new ones take the
-        frictional history interpolated from the old surface and start without multiplier."""
+    def _bindSlaveSurface(self, slaveFacetElements: list) -> None:
+        """Bind the slave facets: the contact points are the unique nodes of the slave surface, each
+        weighted by its tributary area -- the sum of its area shares over its incident slave facets
+        (assigned by the surface element generator; consistent with a uniform pressure on the source
+        faces), evaluated in the reference configuration (consistent with the small-deformation
+        setting). A share may be zero (nodalWeights=serendipityOptimal zeroes the corner nodes of
+        quadratic faces); such nodes are kept, inert, to preserve the slave node ordering."""
 
-        oldSlaveNodes = self.slaveNodes
-        oldSlaveFacets = self.slaveFacetElements
-        oldLambda = dict(zip(self.slaveNodes, self._lambdaN))
-
-        self.slaveFacetElements = list(model.elementSets[self._slaveSurfaceSetName])
+        self.slaveFacetElements = slaveFacetElements
         tributaryAreaOfSlaveNode = {}
         for slaveFacet in self.slaveFacetElements:
             for node, share in zip(slaveFacet.nodes, slaveFacet.nodalAreaShares):
@@ -695,6 +671,25 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         self.nSlaves = len(self.slaveNodes)
         self._referenceCoordsSlaves = np.array([n.coordinates for n in self.slaveNodes])
         self._setTieTolerance()
+
+    def _bindMasterSurface(self, facetElements: list) -> None:
+        """Bind the master facets and their reference coordinates and boundary."""
+
+        self.facetElements = facetElements
+        self._referenceCoordsFacets = [np.array([n.coordinates for n in el.nodes]) for el in self.facetElements]
+        self._masterBoundary = facetSurfaceBoundary([el.nodes for el in self.facetElements])
+        self._validateMasterWeightTransforms()
+
+    def _rebindSlave(self, model: FEModel) -> None:
+        """Rebuild the slave-side node list/tributary areas from the regenerated facet set. Retained
+        slave nodes keep their frictional history and AL multiplier (by identity); new ones take the
+        frictional history interpolated from the old surface and start without multiplier."""
+
+        oldSlaveNodes = self.slaveNodes
+        oldSlaveFacets = self.slaveFacetElements
+        oldLambda = dict(zip(self.slaveNodes, self._lambdaN))
+
+        self._bindSlaveSurface(list(model.elementSets[self._slaveSurfaceSetName]))
 
         # A retained node keeps its history; a new one takes it interpolated from the old slave
         # facet it lies on (Wriggers 2006, Eq. 14.86).
@@ -722,10 +717,7 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         """Rebuild the master facet list/reference coordinates from the regenerated facet set. Any
         per-slave facet assignment is invalidated, since it indexes into this list."""
 
-        self.facetElements = list(model.elementSets[self._masterSurfaceSetName])
-        self._referenceCoordsFacets = [np.array([n.coordinates for n in el.nodes]) for el in self.facetElements]
-        self._masterBoundary = facetSurfaceBoundary([el.nodes for el in self.facetElements])
-        self._validateMasterWeightTransforms()
+        self._bindMasterSurface(list(model.elementSets[self._masterSurfaceSetName]))
 
         self._assignedFacetIdx = [None] * self.nSlaves
         self._frozenWeights = [None] * self.nSlaves

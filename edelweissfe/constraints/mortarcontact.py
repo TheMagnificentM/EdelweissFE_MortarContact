@@ -919,17 +919,8 @@ class Constraint(ConstraintBase, MeshDependent):
 
         # Identify nodes. First-seen order, so the node numbering of the contact system is a
         # function of the facet set alone and not of dictionary iteration order.
-        self.nonMortarNodes = []
-        for el in self.nonMortarFacets:
-            for node in el.nodes:
-                if node not in self.nonMortarNodes:
-                    self.nonMortarNodes.append(node)
-
-        self.mortarNodes = []
-        for el in self.mortarFacets:
-            for node in el.nodes:
-                if node not in self.mortarNodes:
-                    self.mortarNodes.append(node)
+        self.nonMortarNodes = list(dict.fromkeys(node for el in self.nonMortarFacets for node in el.nodes))
+        self.mortarNodes = list(dict.fromkeys(node for el in self.mortarFacets for node in el.nodes))
 
         # The formulation assumes a fixed pair of DISJOINT surfaces. A node listed
         # on both of them is not merely questionable input, it makes the system
@@ -999,6 +990,27 @@ class Constraint(ConstraintBase, MeshDependent):
         self._checkFacetWinding(self.nonMortarFacets, self._nonMortarSurfaceSetName)
         self._checkFacetWinding(self.mortarFacets, self._mortarSurfaceSetName)
         self._checkSurfacesFaceEachOther()
+
+    def _currentCoordinates(self, U_np: np.ndarray = None) -> np.ndarray:
+        """The coordinates of all contact nodes (non-mortar first, then mortar), deformed by the
+        constraint-local solution ``U_np``, or undeformed without one."""
+
+        if U_np is None:
+            return self._X
+        nNodes = len(self._nodes)
+        return self._X + U_np[: self.sizeField * nNodes].reshape(nNodes, self.sizeField)[:, : self.model.domainSize]
+
+    def _weightedGap(self, I: int, x_slave: np.ndarray, x_master: np.ndarray, n_I: np.ndarray) -> float:  # noqa: E741
+        """The weighted gap ``g_I = -sum_K D_IK (x_K . n_I) + sum_J C_IJ (x_J . n_I)`` of non-mortar
+        node ``I`` on the frozen coupling matrices."""
+
+        nzD, nzC = self.currentDNonzero[I], self.currentCNonzero[I]
+        g_weak = 0.0
+        if len(nzD):
+            g_weak -= self.currentDRow[I] @ (x_slave[nzD] @ n_I)
+        if len(nzC):
+            g_weak += self.currentCRow[I] @ (x_master[nzC] @ n_I)
+        return g_weak
 
     def _warnOnce(self, key: str, message: str):
         """Emit a runtime diagnostic at most once per constraint instance and cause.
@@ -1584,7 +1596,7 @@ class Constraint(ConstraintBase, MeshDependent):
             return
 
         # dim-1 is the dimension of the interface: a length in 2D, an area in 3D.
-        h = (total / nFacets) ** (1.0 / (dim - 1))
+        h = characteristicFacetSize(total, nFacets, dim)
         # Stiffness ratio contact/structure, see the docstring. Not a literature
         # value - it buys the convergence rate of the outer loop, and with the
         # augmentation enabled it does not influence the converged result.
@@ -1639,25 +1651,14 @@ class Constraint(ConstraintBase, MeshDependent):
         if self.formulation == "penalty":
             return
 
-        dim = self.model.domainSize
-        sf = self.sizeField
-        nNodes = len(self._nodes)
         nSlave = self.nNonMortarNodes
-
-        disp = U_ref[: sf * nNodes].reshape(nNodes, sf)[:, :dim]
-        coords = self._X + disp
+        coords = self._currentCoordinates(U_ref)
         x_slave, x_master = coords[:nSlave], coords[nSlave:]
-        idx_LM_0 = sf * nNodes
+        idx_LM_0 = self.sizeField * len(self._nodes)
 
         would_be = np.zeros(nSlave, dtype=bool)
         for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
-            n_I = self.currentNormals[I]
-            nzD, nzC = self.currentDNonzero[I], self.currentCNonzero[I]
-            g_weak = 0.0
-            if len(nzD):
-                g_weak -= self.currentDRow[I] @ (x_slave[nzD] @ n_I)
-            if len(nzC):
-                g_weak += self.currentCRow[I] @ (x_master[nzC] @ n_I)
+            g_weak = self._weightedGap(I, x_slave, x_master, self.currentNormals[I])
             D_II = self.currentNodalWeights[I]
             inv_D = 1.0 / D_II if abs(D_II) > self.currentWeightTolerance else 0.0
             p_n = U_ref[idx_LM_0 + I] * np.sign(D_II)
@@ -1750,24 +1751,12 @@ class Constraint(ConstraintBase, MeshDependent):
         normals = np.zeros((self.nNonMortarNodes, dim))
 
         node_to_idx = self.nonMortarNodeToIndex
+        current = self._currentCoordinates(U_np)
 
         # Iterate over all non-mortar facets
         for el in self.nonMortarFacets:
             facet_nodes = el.nodes
-
-            # Retrieve coordinates
-            coords = []
-            for node in facet_nodes:
-                X = node.coordinates
-                if U_np is not None:
-                    # Retrieve displacement from local solution slice
-                    node_idx = self.nodeToGlobalIndex[node]
-                    u = U_np[self.sizeField * node_idx : self.sizeField * node_idx + dim]
-                    coords.append(X + u)
-                else:
-                    coords.append(X)
-
-            coords = np.array(coords)
+            coords = current[[self.nodeToGlobalIndex[node] for node in facet_nodes]]
 
             # Element normal evaluated AT each node's own natural coordinate,
             # normalized, and summed over the adjacent facets - the averaged nodal
@@ -1899,15 +1888,7 @@ class Constraint(ConstraintBase, MeshDependent):
         n_master = self.nMortarNodes
 
         # Precompute current deformed coordinates for all nodes
-        current_coords = {}
-        for node in self._nodes:
-            X = node.coordinates
-            if U_np is not None:
-                node_idx = self.nodeToGlobalIndex[node]
-                u = U_np[self.sizeField * node_idx : self.sizeField * node_idx + dim]
-                current_coords[node] = X + u
-            else:
-                current_coords[node] = X
+        current_coords = dict(zip(self._nodes, self._currentCoordinates(U_np)))
 
         # Build AABB bounding boxes for all master facets to construct the BVH tree
         facets_with_bounds = []
@@ -1939,6 +1920,12 @@ class Constraint(ConstraintBase, MeshDependent):
         # - nothing downstream can notice it.
         n_proj_failed = 0
         first_proj_failure = None
+
+        def projectionFailed(side, el):
+            nonlocal n_proj_failed, first_proj_failure
+            n_proj_failed += 1
+            if first_proj_failure is None:
+                first_proj_failure = (side, el.elNumber, el.elType)
 
         # Gauss points re-attributed to the facet that actually contains them, and Gauss points
         # that no facet contains -- see _containingFacet. Diagnostic; kept for the tests.
@@ -2063,13 +2050,9 @@ class Constraint(ConstraintBase, MeshDependent):
                                     if moved_s or moved_m:
                                         self.lastReattributedGaussPoints += 1
                                     if not ok_s:
-                                        n_proj_failed += 1
-                                        if first_proj_failure is None:
-                                            first_proj_failure = ("slave", rec_s.elNumber, rec_s.elType)
+                                        projectionFailed("slave", rec_s)
                                     if not ok_m:
-                                        n_proj_failed += 1
-                                        if first_proj_failure is None:
-                                            first_proj_failure = ("master", rec_m.elNumber, rec_m.elType)
+                                        projectionFailed("master", rec_m)
 
                                     N_s = rec_s.getShapeFunctions(local_s)
                                     N_m = rec_m.getShapeFunctions(local_m)
@@ -2106,13 +2089,9 @@ class Constraint(ConstraintBase, MeshDependent):
                                 local_s, ok_s = mapPlaneToNatural(s_el, s_coords, x_gp)
                                 local_m, ok_m = mapPlaneToNatural(m_el, m_coords, x_gp)
                                 if not ok_s:
-                                    n_proj_failed += 1
-                                    if first_proj_failure is None:
-                                        first_proj_failure = ("slave", s_el.elNumber, s_el.elType)
+                                    projectionFailed("slave", s_el)
                                 if not ok_m:
-                                    n_proj_failed += 1
-                                    if first_proj_failure is None:
-                                        first_proj_failure = ("master", m_el.elNumber, m_el.elType)
+                                    projectionFailed("master", m_el)
 
                                 N_s = s_el.getShapeFunctions(local_s)
                                 N_m = m_el.getShapeFunctions(local_m)
@@ -2322,8 +2301,7 @@ class Constraint(ConstraintBase, MeshDependent):
         normals = self.currentNormals
 
         # Current coordinates of all constraint nodes in the deformed configuration
-        disp = U_np[: sf * nNodes].reshape(nNodes, sf)[:, :dim]
-        coords = self._X + disp
+        coords = self._currentCoordinates(U_np)
         x_slave = coords[:nSlave]
         x_master = coords[nSlave:]
 
@@ -2350,11 +2328,7 @@ class Constraint(ConstraintBase, MeshDependent):
             dRow = self.currentDRow[I]
             cRow = self.currentCRow[I]
 
-            g_I_weak = 0.0
-            if len(nzD):
-                g_I_weak -= dRow @ (x_slave[nzD] @ n_I)
-            if len(nzC):
-                g_I_weak += cRow @ (x_master[nzC] @ n_I)
+            g_I_weak = self._weightedGap(I, x_slave, x_master, n_I)
 
             # Sign-consistent contact measures, valid for BOTH signs of the nodal
             # weight D_II = int(Phi_I). D_II is positive for a fully covered node of
@@ -2959,9 +2933,7 @@ class Constraint(ConstraintBase, MeshDependent):
 
         nSlave = self.nNonMortarNodes
         dim = self.model.domainSize
-        sf = self.sizeField
-        nNodes = len(self._nodes)
-        coords = self._X + U_ref[: sf * nNodes].reshape(nNodes, sf)[:, :dim]
+        coords = self._currentCoordinates(U_ref)
         x_slave, x_master = coords[:nSlave], coords[nSlave:]
 
         weights = np.abs(np.asarray(self.currentNodalWeights, dtype=float))
