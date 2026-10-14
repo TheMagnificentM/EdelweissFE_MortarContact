@@ -407,7 +407,7 @@ Element        untransformed            transformed
 ``CONLINE3`` is in the table although its untransformed integral is already positive: there the
 transformation is applied for the stronger property described below, not to repair the sign. Both
 columns are checked against their closed form in
-``edelweissfe/elements/contactelement/test_element.py``.
+``tests/test_contactelement.py``.
 
 The transformation has a limit that matters in a segment-based method. It makes the full-face
 integral positive, but at :math:`\alpha = 1/3` the transformed corner function is not pointwise
@@ -1077,7 +1077,7 @@ segmentations without it and 32 with it at ``contact-update-frequency = 10``, ch
 from 1.20688e-2 to 1.20520e-2, or 0.14 %.
 
 The stability bound is covered by unit tests rather than by a deck, in
-``edelweissfe/constraints/test_mortarcontact.py``. Two of them state the properties that make the
+``tests/test_mortarcontact.py``. Two of them state the properties that make the
 bound a bound rather than a number: that :math:`\Delta t \le 2/\sqrt{\varepsilon_N R}` holds, checked by
 quadrupling the stiffness and requiring the reported limit to halve exactly; and that a stiffness
 derived for a given increment satisfies the bound it was derived for, which is the property the

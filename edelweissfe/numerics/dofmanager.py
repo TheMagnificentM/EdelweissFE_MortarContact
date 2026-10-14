@@ -30,6 +30,7 @@
 This module contains important classes for describing the global equation system by means of a sparse system.
 """
 
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from itertools import chain
 
@@ -120,7 +121,15 @@ class DofManager:
         self.idcsOfNodeFieldsInDofVector = (
             dict()
         )  #: Dictionary mapping a complete NodeField to all its indices in the DofVector
-        self.indexToHostObjectMapping = dict()  #: Reverse dictionary mapping an index to its Host object (e.g., a Node)
+        #: Reverse dictionary mapping an index to its Host object (e.g., a Node).
+        #:
+        #: .. warning::
+        #:    Nothing in EdelweissFE reads this, and nothing calls :meth:`getHostObjectForIndex`
+        #:    either; building it costs a pass over every degree of freedom. It is kept, and
+        #:    still built by default, only because an external caller may rely on it -- but it
+        #:    should either find a consumer or be removed. The explicit solver already asks for
+        #:    it not to be built.
+        self.indexToHostObjectMapping = dict()
         self.accumulatedElementNDof = 0  #: Accumulated number of element DOFs (= sum of element vector sizes)
         self.largestNumberOfElNDof = 0  #: Size of the largest element DOF vector
         self.accumulatedConstraintNDof = 0  #: Accumulated number of constraint DOFs (= sum of constraint vector sizes)
@@ -149,6 +158,11 @@ class DofManager:
             self.idcsOfFieldVariablesInDofVector | self.idcsOfScalarVariablesInDofVector
         )
         self.idcsOfHigherOrderEntitiesInDofVector = self.idcsOfElementsInDofVector | self.idcsOfConstraintsInDofVector
+
+        #: Which of the optional structures this manager carries, so that
+        #: :meth:`refreshConstraintIndices` keeps exactly those, and no others, consistent.
+        self._hasAccumulatedNodalFluxes = initializeAccumulatedNodalFluxesFieldwise
+        self._hasVIJPattern = initializeVIJPattern
 
         if initializeAccumulatedNodalFluxesFieldwise:
             self.nAccumulatedNodalFluxesFieldwise = self._computeAccumulatedNodalFluxesFieldWise(self.fields)
@@ -196,6 +210,48 @@ class DofManager:
         self.idcsOfFieldsOnNodeSetsInDofVector = self._locateFieldsOnNodeSetsInDofVector(nodeSets)
         self.idcsOfElementsInDofVector = self._locateNodeCouplingEntitiesInDofVector(elements)
         self.idcsOfConstraintsInDofVector = self._locateConstraintsInDofVector(constraints)
+
+    def refreshConstraintIndices(self, constraints: list):
+        """Re-locate the constraints' degrees of freedom after their connectivity changed.
+
+        A contact search re-assigns which nodes a constraint couples. That changes the constraints'
+        DOF footprints and nothing else: no node, field, scalar variable or element is touched, so
+        the DOF numbering and every element's indices stay valid, and only the constraint-derived
+        bookkeeping has to be recomputed -- by the same methods, in the same order, as the
+        constructor computed it. That is a small fraction of what constructing a DofManager for the
+        same model costs, and it is the whole reason this method exists rather than a second
+        constructor call.
+
+        This does NOT re-derive the degree-of-freedom layout itself: the node fields and the scalar
+        variables keep the indices they were given. A change that moves those -- a mesh refinement,
+        a constraint gaining a scalar variable of its own -- is not a connectivity change and needs
+        a new DofManager.
+
+        The merged entity mapping is rebuilt as a new dict object on purpose: consumers cache plans
+        keyed on its identity (the scatter template, the element loop's gather plan), and a mapping
+        mutated in place would leave those plans silently stale.
+
+        Parameters
+        ----------
+        constraints
+            The constraints, with their current connectivity.
+        """
+
+        (
+            self.accumulatedConstraintNDof,
+            self._accumulatedConstraintVIJSize,
+            self._nAccumulatedNodalFluxesFieldwiseFromConstraints,
+            self.largestNumberOfConstraintNDof,
+        ) = self._gatherConstraintsInformation(constraints)
+        self.idcsOfConstraintsInDofVector = self._locateConstraintsInDofVector(constraints)
+        self.idcsOfHigherOrderEntitiesInDofVector = self.idcsOfElementsInDofVector | self.idcsOfConstraintsInDofVector
+
+        if self._hasAccumulatedNodalFluxes:
+            self.nAccumulatedNodalFluxesFieldwise = self._computeAccumulatedNodalFluxesFieldWise(self.fields)
+
+        if self._hasVIJPattern:
+            self._sizeVIJ = self._accumulatedElementVIJSize + self._accumulatedConstraintVIJSize
+            self.I, self.J, self.idcsOfHigherOrderEntitiesInVIJ = self._initializeVIJPattern()
 
     def _reserveSpaceForNodeFields(
         self,
@@ -321,6 +377,39 @@ class DofManager:
 
         return nAccumulatedNodalFluxesFieldwise
 
+    def _accumulateNodalFluxesFieldwise(self, entities: list) -> dict:
+        """Count the nodal fluxes Σ_entities Σ_nodes ( nDof (field) ) for each field.
+
+        A node shared by many entities contributes the same count to each of them, so the nodes are
+        first counted, and each distinct node's fields are then looked up only once, weighted by
+        that count. The result is an integer sum and hence identical to visiting every node of every
+        entity.
+
+        Parameters
+        ----------
+        entities
+           The list of entities (elements or constraints), whose nodes are considered.
+
+        Returns
+        -------
+        dict
+            The number of accumulated fluxes per field, for every field in
+            :data:`~edelweissfe.config.phenomena.phenomena`.
+        """
+
+        nAccumulatedFluxesFieldwise = dict.fromkeys(phenomena.keys(), 0)
+
+        nodeMultiplicity = Counter(chain.from_iterable(e.nodes for e in entities))
+
+        idcsOfFieldVariables = self.idcsOfFieldVariablesInDofVector
+        for node, multiplicity in nodeMultiplicity.items():
+            for field, fv in node.fields.items():
+                indices = idcsOfFieldVariables.get(fv)
+                if indices is not None:
+                    nAccumulatedFluxesFieldwise[field] += multiplicity * len(indices)
+
+        return nAccumulatedFluxesFieldwise
+
     def _gatherElementsInformation(self, entities: list) -> tuple[int, int, int, int]:
         """Generates some auxiliary information,
         which may be required by some modules of EdelweissFE.
@@ -343,19 +432,12 @@ class DofManager:
         accumulatedEntityVIJSize = 0
         largestNumberOfAnyEntitityDof = 0
 
-        nAccumulatedFluxesFieldwise = {k: 0 for k in phenomena.keys()}
-
         for e in entities:
             accumulatedEntityNDof += e.nDof
             accumulatedEntityVIJSize += e.nDof**2
-
-            for node in e.nodes:
-                for field, fv in node.fields.items():
-                    indices = self.idcsOfFieldVariablesInDofVector.get(fv)
-                    if indices is not None:
-                        nAccumulatedFluxesFieldwise[field] += len(indices)
-
             largestNumberOfAnyEntitityDof = max(e.nDof, largestNumberOfAnyEntitityDof)
+
+        nAccumulatedFluxesFieldwise = self._accumulateNodalFluxesFieldwise(entities)
 
         return (
             accumulatedEntityNDof,
@@ -387,20 +469,13 @@ class DofManager:
         accumulatedEntityVIJSize = 0
         largestNumberOfAnyEntitityDof = 0
 
-        nAccumulatedFluxesFieldwise = dict.fromkeys(phenomena.keys(), 0)
-
         for e in entities:
             accumulatedEntityNDof += e.nDof
             # Use the constraint-declared VIJ size (may be sparse, i.e. < nDof**2).
             accumulatedEntityVIJSize += e.getVIJContributionSize()
-
-            for node in e.nodes:
-                for field, fv in node.fields.items():
-                    indices = self.idcsOfFieldVariablesInDofVector.get(fv)
-                    if indices is not None:
-                        nAccumulatedFluxesFieldwise[field] += len(indices)
-
             largestNumberOfAnyEntitityDof = max(e.nDof, largestNumberOfAnyEntitityDof)
+
+        nAccumulatedFluxesFieldwise = self._accumulateNodalFluxesFieldwise(entities)
 
         return (
             accumulatedEntityNDof,
@@ -555,10 +630,12 @@ class DofManager:
         for field in self.idcsOfNodeFieldsInDofVector:
             nodeSetFieldsInDofVector[field] = dict()
             for nSet in nodeSets:
-                indices_gen = chain.from_iterable(
-                    field_var_map[node.fields[field]] for node in nSet if field in node.fields
+                # Concatenate the per-node index arrays as whole arrays: iterating them element by
+                # element, as np.fromiter over a chain would, is a Python-level loop over every DOF.
+                indicesPerNode = [field_var_map[node.fields[field]] for node in nSet if field in node.fields]
+                nodeSetFieldsInDofVector[field][nSet] = (
+                    np.concatenate(indicesPerNode).astype(int, copy=False) if indicesPerNode else np.empty(0, dtype=int)
                 )
-                nodeSetFieldsInDofVector[field][nSet] = np.fromiter(indices_gen, dtype=int)
 
         return nodeSetFieldsInDofVector
 

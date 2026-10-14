@@ -4,7 +4,10 @@ requires = ["setuptools", "Cython", "numpy"]
 
 [project]
 name = "EdelweissFE"
-version = "26.05"
+# The release this source tree is (or leads up to), as in the release tag (v26.11 -> 26.11); set to the next release
+# right after tagging. The conda workflow refuses a tag that does not match it and versions its development snapshots
+# <this version>.dev<commit time>.
+version = "26.11"
 description = "EdelweissFE: A light-weight, platform-independent, parallel finite element framework."
 readme = "README.md"
 authors = [
@@ -38,6 +41,10 @@ markers = [
     # Tests that spawn one fresh interpreter per module to check an import-order property, which
     # cannot be done in-process. Deselect with `-m "not slow"` while iterating.
     "slow: spawns many subprocesses; seconds rather than milliseconds",
+    # The restart test resumes from every checkpoint of every scenario. A representative subset runs
+    # always; the rest with `-m exhaustive`, before merging changes to restart, solvers, time
+    # steppers or the topology pipeline, and weekly in CI (run_restart_exhaustive.yml).
+    "exhaustive: the full restart test, every checkpoint of every scenario; minutes",
 ]
 
 [tool.coverage.run]

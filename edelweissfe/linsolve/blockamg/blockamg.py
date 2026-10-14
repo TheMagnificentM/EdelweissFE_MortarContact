@@ -157,6 +157,50 @@ _DEFAULT_SCALAR_PRECOND = {
 }
 
 
+def _outerTolFromConfig(value) -> float | None:
+    """``outerTol`` unset, ``None``, or the literal string ``"adaptive"`` all select the adaptive forcing."""
+    return None if value in (None, "adaptive") else float(value)
+
+
+#: The conversion of every configuration file key from its JSON value to the constructor argument of
+#: :class:`BlockAMGSolver`. Shared by the factory :func:`edelweissfe.linsolve.blockamg.createSolver` and
+#: the hot reload, so that a value means the same thing at construction and when reloaded during a run.
+CONFIG_CASTS = {
+    "outerTol": _outerTolFromConfig,
+    "outerRestart": int,
+    "outerMaxiter": int,
+    "outerSolver": str,
+    "lgmresM": int,
+    "lgmresK": int,
+    "lgmresAlwaysReset": bool,
+    "lgmresResetOnNewIncrement": bool,
+    "sweeps": int,
+    "symmetric": bool,
+    "useRigidBodyNullspace": bool,
+    "etaMin": float,
+    "etaMax": float,
+    "ewGamma": float,
+    "ewAlpha": float,
+    "residualGrowthFactor": float,
+    "hierarchyStalenessFactor": float,
+    "trueResidualMaxContinuations": int,
+    "gapCompensatedTolerance": bool,
+    "gapSafetyFactor": float,
+    "verbosity": str,
+    "warnOuterIterationsThreshold": int,
+    "dumpOnDegradationDir": str,
+    "dumpOnDegradationThreshold": int,
+    "dumpOnDegradationMaxDumps": int,
+    "dumpOnDegradationContextSolves": int,
+    "hotReloadConfigFile": str,
+    "hierarchyDropTol": float,
+    "hierarchyDropLumping": bool,
+    "gapMaxFactor": float,
+    "fieldPreconds": dict,
+    "p1FieldNames": list,
+}
+
+
 class BlockAMGSolver(LinearSolver):
     """Field-split block-AMG preconditioned GMRES. Callable as ``(A, b) -> x``.
 
@@ -340,6 +384,11 @@ class BlockAMGSolver(LinearSolver):
         per unit of *simulated time* rather than per increment, the per-increment saving is largely
         or wholly given back. ``gapSafetyFactor`` is the knob between the two regimes (smaller =
         more accurate = closer to the default's Newton behaviour); the sweet spot is unexplored.
+
+    gapMaxFactor
+        Upper clamp on the gap EMA (default 1e3, well above the documented 1.0-3.5 range). Without
+        it, one non-converged solve can report an outsized gap that compounds through the EMA into
+        an ever-tighter, unmeetable tolerance for every solve after it.
     hierarchyStalenessFactor
         Refresh the AMG hierarchies before the *next* solve if this solve's outer GMRES count exceeded
         this factor times the previous solve's -- a growing count is the signal that the reused
@@ -464,6 +513,7 @@ class BlockAMGSolver(LinearSolver):
         hierarchyStalenessFactor: float = 1.5,
         gapCompensatedTolerance: bool = False,
         gapSafetyFactor: float = 0.3,
+        gapMaxFactor: float = 1e3,
         trueResidualMaxContinuations: int = 2,
         verbosity: str = "warning",
         warnOuterIterationsThreshold: int = 100,
@@ -507,6 +557,7 @@ class BlockAMGSolver(LinearSolver):
         self._hierarchyStalenessFactor = hierarchyStalenessFactor
         self._gapCompensatedTolerance = gapCompensatedTolerance
         self._gapSafetyFactor = gapSafetyFactor
+        self._gapMaxFactor = gapMaxFactor
         self._trueResidualMaxContinuations = trueResidualMaxContinuations
         if verbosity not in _VERBOSITY_LEVELS:
             raise ValueError("verbosity must be one of {:}, got {!r}".format(_VERBOSITY_LEVELS, verbosity))
@@ -520,7 +571,7 @@ class BlockAMGSolver(LinearSolver):
         self._dumpOnDegradationMaxDumps = dumpOnDegradationMaxDumps
         self._dumpOnDegradationContextSolves = dumpOnDegradationContextSolves
 
-        # Hot reload: the path to watch, and the (mtime_ns, size) it was last read at. Seeded as
+        # Hot reload: the path to watch, and the file contents it was last applied from. Seeded as
         # None rather than from the file, so the first solve reads and reports the settings actually
         # in force -- which is the whole point when the file is being edited during a long run.
         self._hotReloadConfigFile = hotReloadConfigFile
@@ -918,22 +969,24 @@ class BlockAMGSolver(LinearSolver):
         if self._hotReloadConfigFile is None:
             return False
 
+        # The contents themselves are the stamp, not (mtime, size): on kernels with coarse file
+        # timestamps, two same-size saves within one clock tick share an mtime, and the second edit
+        # would be skipped for good. The file is a few hundred bytes, read once per solve.
         try:
-            fileStat = os.stat(self._hotReloadConfigFile)
-            stamp = (fileStat.st_mtime_ns, fileStat.st_size)
+            with open(self._hotReloadConfigFile, "r") as configFile:
+                stamp = configFile.read()
         except OSError as error:
-            self._log("warning", "hot reload: cannot stat {:}: {:}".format(self._hotReloadConfigFile, error))
+            self._log("warning", "hot reload: cannot read {:}: {:}".format(self._hotReloadConfigFile, error))
             return False
 
         if stamp == self._hotReloadStamp:
             return False
 
         try:
-            with open(self._hotReloadConfigFile, "r") as configFile:
-                newOptions = json.load(configFile)
+            newOptions = json.loads(stamp)
             if not isinstance(newOptions, dict):
                 raise ValueError("expected a JSON object, got {:}".format(type(newOptions).__name__))
-        except (OSError, ValueError) as error:
+        except ValueError as error:
             self._log(
                 "warning",
                 "hot reload: {:} is not readable as a JSON object ({:}); keeping the settings in "
@@ -955,6 +1008,15 @@ class BlockAMGSolver(LinearSolver):
             if name not in validNames:
                 unknown.append(name)
                 continue
+
+            # The same conversion as at construction: the raw JSON value can differ in type or even
+            # meaning from the argument it stands for (``"outerTol": "adaptive"`` is ``None``).
+            if name in CONFIG_CASTS:
+                try:
+                    value = CONFIG_CASTS[name](value)
+                except (TypeError, ValueError) as error:
+                    rejected.append("{:} ({:})".format(name, error))
+                    continue
 
             if name == "verbosity":
                 if value not in _VERBOSITY_LEVELS:
@@ -1370,7 +1432,9 @@ class BlockAMGSolver(LinearSolver):
         # given), smoothed so one atypical solve cannot swing the next one's first-pass tolerance.
         _measuredGap = trueResidual / max(firstPassEta, 1e-300)
         if np.isfinite(_measuredGap) and _measuredGap > 0.0:
-            self._trueResidualGap = max(0.5 * self._trueResidualGap + 0.5 * _measuredGap, 1.0)
+            # Ceiled at gapMaxFactor too: an unbounded gap from one non-converged solve compounds
+            # through the EMA into an ever-tighter, unmeetable tolerance.
+            self._trueResidualGap = min(max(0.5 * self._trueResidualGap + 0.5 * _measuredGap, 1.0), self._gapMaxFactor)
 
         with performancetiming.timeit("true-residual continuations"):
             continuationEta = min(eta, firstPassEta) if self._gapCompensatedTolerance else eta

@@ -38,16 +38,22 @@ normal.
 import numpy as np
 import pytest
 
-from edelweissfe.elements.contactsurfaceelement import facetNormalAndMeasure
 from edelweissfe.utils.facetcontactgeometry import (
-    closestFacet,
+    closestFacetsWithTies,
     edgeOrVertexNormal,
+    facetNormalAndMeasure,
     facetSurfaceBoundary,
     liesOnSurfaceBoundary,
-    tria3ClosestPoint,
 )
 
 tolerance = 1e-10
+
+
+def _closest(point, order, facets):
+    """The closest of the facets in ``order`` to ``point``, its weights, and whether it is a tie."""
+
+    facet, weights, _, tied = closestFacetsWithTies(point[None], facets, [order], tolerance)
+    return int(facet[0]), weights[0], bool(tied[0])
 
 
 def _valley(slope: float) -> list:
@@ -64,7 +70,7 @@ def _valley(slope: float) -> list:
 
 
 def _gap(point, facets, order, edgeNormal=True):
-    facet, weights, _, tied = closestFacet(point, order, facets, tria3ClosestPoint, tolerance)
+    facet, weights, tied = _closest(point, order, facets)
     closestPoint = weights @ facets[facet]
     normal, _ = facetNormalAndMeasure(facets[facet])
     if tied and edgeNormal:
@@ -105,7 +111,7 @@ def test_the_gap_is_continuous_across_the_edge():
 def test_a_flat_surface_keeps_the_facet_normal_bitwise():
     facets = _valley(0.0)
     point = np.array([0.0, 0.5, -0.3])
-    _, weights, _, tied = closestFacet(point, [0, 1], facets, tria3ClosestPoint, tolerance)
+    _, weights, tied = _closest(point, [0, 1], facets)
     normal, _ = facetNormalAndMeasure(facets[0])
     assert tied
     assert edgeOrVertexNormal(point, weights @ facets[0], normal, tolerance) is normal

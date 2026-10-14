@@ -100,6 +100,14 @@ def createSolver(opts) -> Callable:
             first time one of these fields' hierarchies is built -- not known at construction time,
             so nothing needs to be pushed in ahead of it.
 
+        ``hierarchyDropTol``, ``hierarchyDropLumping``
+            Sparsification of each field's diagonal block before its AMG hierarchy is built -- see
+            :class:`~edelweissfe.linsolve.blockamg.blockamg.BlockAMGSolver`.
+        ``gapMaxFactor``
+            Upper bound of the gap factor ``gapCompensatedTolerance`` applies.
+
+        A key not listed here raises a ``ValueError`` instead of being ignored.
+
         As with the other factories, a non-mapping ``opts`` is tolerated (the implicit-static solver
         passes ``""`` when no configuration file is given), in which case every default applies.
 
@@ -109,47 +117,21 @@ def createSolver(opts) -> Callable:
         A :class:`~edelweissfe.linsolve.blockamg.blockamg.BlockAMGSolver`, callable as ``(A, b) -> x``.
     """
 
-    from edelweissfe.linsolve.blockamg.blockamg import BlockAMGSolver
+    from edelweissfe.linsolve.blockamg.blockamg import CONFIG_CASTS, BlockAMGSolver
 
     optionMap = opts if isinstance(opts, Mapping) else {}
 
-    kwargs = {}
-    if "outerTol" in optionMap:
-        value = optionMap["outerTol"]
-        kwargs["outerTol"] = None if value in (None, "adaptive") else float(value)
-    for key, cast in (
-        ("outerRestart", int),
-        ("outerMaxiter", int),
-        ("outerSolver", str),
-        ("lgmresM", int),
-        ("lgmresK", int),
-        ("lgmresAlwaysReset", bool),
-        ("lgmresResetOnNewIncrement", bool),
-        ("sweeps", int),
-        ("symmetric", bool),
-        ("useRigidBodyNullspace", bool),
-        ("etaMin", float),
-        ("etaMax", float),
-        ("ewGamma", float),
-        ("ewAlpha", float),
-        ("residualGrowthFactor", float),
-        ("hierarchyStalenessFactor", float),
-        ("trueResidualMaxContinuations", int),
-        ("gapCompensatedTolerance", bool),
-        ("gapSafetyFactor", float),
-        ("verbosity", str),
-        ("warnOuterIterationsThreshold", int),
-        ("dumpOnDegradationDir", str),
-        ("dumpOnDegradationThreshold", int),
-        ("dumpOnDegradationMaxDumps", int),
-        ("dumpOnDegradationContextSolves", int),
-        ("hotReloadConfigFile", str),
-    ):
-        if key in optionMap:
-            kwargs[key] = cast(optionMap[key])
-    if "fieldPreconds" in optionMap:
-        kwargs["fieldPreconds"] = dict(optionMap["fieldPreconds"])
-    if "p1FieldNames" in optionMap:
-        kwargs["p1FieldNames"] = list(optionMap["p1FieldNames"])
+    kwargs = {key: CONFIG_CASTS[key](value) for key, value in optionMap.items() if key in CONFIG_CASTS}
+    recognized = set(CONFIG_CASTS)
+
+    # A key this factory does not know would otherwise be dropped without a word -- a typo, or a
+    # setting that only the constructor takes, then silently has no effect on the run.
+    unknown = sorted(set(optionMap) - recognized)
+    if unknown:
+        raise ValueError(
+            "blockamg: unknown configuration key(s) {:}; recognized keys are {:}.".format(
+                ", ".join(unknown), ", ".join(sorted(recognized))
+            )
+        )
 
     return BlockAMGSolver(**kwargs)

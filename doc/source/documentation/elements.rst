@@ -58,6 +58,18 @@ The following optional Parameters are also included in the element type definiti
 - **N**     - (optional) regular integration, at the end of elementType.
 - **TL**    - use the total Lagrangian element, before integration type.
 
+Common base
+~~~~~~~~~~~
+
+Both elements below share everything that does not depend on the kinematics -- geometry and quadrature,
+material and quadrature-point state, loads, mass and result access -- in a common base class. Each
+element adds only how strain and stress follow from the nodal displacements.
+
+Relevant module: ``edelweissfe.elements.base.displacementelementbase``
+
+.. autoclass:: edelweissfe.elements.base.displacementelementbase.DisplacementElementBase
+   :members:
+
 Geometrically linear element
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -126,6 +138,13 @@ ordinary displacement DOFs of a deformable body's boundary nodes, used as the ma
 :doc:`node-to-deformable-surface contact <constraints>`. Not user-constructed directly -- see the
 :doc:`surfaceElementGenerator <generators>` generator.
 
+Because a facet has neither a material nor a state, its kernels, its internal energy and its state
+acceptance are all no-ops, and it reports ``hasKernels = False``. Solvers that would otherwise call
+into every entry of the element container on every increment -- the explicit dynamic solver does --
+use that to leave the facets out of the element loop rather than calling into them for nothing.
+An element of your own needs to do nothing here: :class:`~edelweissfe.elements.base.baseelement.BaseElement`
+reports ``True``, which is right for any element that carries a material.
+
 .. automodule:: edelweissfe.elements.contactsurfaceelement
     :members: __doc__
 
@@ -160,6 +179,12 @@ Implementing your own elements
 ------------------------------
 
 Relevant module: ``edelweissfe.elements.base.baseelement``
+
+An element carrying a material should also implement
+:meth:`~edelweissfe.elements.base.baseelement.BaseElement.updateMaterialProperty`, through which the
+:doc:`changeMaterialProperty <stepactions>` step action changes a material property during an
+analysis. Unlike ``setMaterial``, it must keep the element's state: neither reset nor re-initialize the
+state variables, and keep the arrays holding them, which field outputs keep viewing.
 
 .. automodule:: edelweissfe.elements.base.baseelement
    :members:

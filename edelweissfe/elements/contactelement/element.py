@@ -149,6 +149,26 @@ class ContactElement(BaseElement):
     def resetToLastValidState(self):
         pass
 
+    def getStateVars(self) -> np.ndarray:
+        """This element carries no state from one increment to the next.
+
+        Returns
+        -------
+        np.ndarray
+            An empty buffer.
+        """
+
+        return np.empty(0)
+
+    def setStateVars(self, values: np.ndarray):
+        """Nothing to restore: this element carries no state.
+
+        Parameters
+        ----------
+        values
+            The empty buffer :meth:`getStateVars` returned.
+        """
+
     def computeBodyForce(self, P, load, U, time, dT):
         pass
 

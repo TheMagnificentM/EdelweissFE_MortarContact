@@ -43,7 +43,9 @@ class BaseHypoElasticMaterial(ABC):
 
     @property
     def materialProperties(self) -> np.ndarray:
-        """The properties the material has."""
+        """The properties the material has, as handed to ``__init__``."""
+
+        return self._materialProperties
 
     @abstractmethod
     def getNumberOfRequiredStateVars(self) -> int:
@@ -177,6 +179,9 @@ class BaseHypoElasticMaterial(ABC):
 
         raise Exception("Computing uniaxial stress is not possible with this material.")
 
+    _density = None
+    """Mass density; materials without one leave it unset."""
+
     def getDensity(self) -> float:
         """Determines the density of the material.
 
@@ -185,7 +190,7 @@ class BaseHypoElasticMaterial(ABC):
         float
             The density of the material."""
 
-        if not hasattr(self, "_density"):
+        if self._density is None:
             raise Exception("Density is not defined for this material.")
         return self._density
 

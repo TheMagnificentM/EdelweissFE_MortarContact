@@ -37,6 +37,13 @@ cimport numpy as np
 
 from edelweissfe.utils.exceptions import CutbackRequest
 
+# Point Marmot's warning channel at stdout, once, when this extension is imported. MarmotJournal
+# writes into a null streambuf unless a consumer calls setMSGOutputDirection, and nothing here ever
+# did -- so every warning Marmot raised on this path was discarded before it could be printed.
+# std::cout is where the solver's own output goes, so a redirected run log captures it.
+MarmotJournal.setMSGOutputDirection(cout)
+
+
 cimport edelweissfe.elements.marmotelement.element
 
 mapLoadTypes={
@@ -107,6 +114,11 @@ cdef class MarmotElementWrapper:
         return self._elNumber
 
     @property
+    def hasKernels(self):
+        """True: a Marmot element carries a material and a state; see BaseElement.hasKernels."""
+        return True
+
+    @property
     def nSpatialDimensions(self):
         return self._nSpatialDimensions
 
@@ -166,10 +178,16 @@ cdef class MarmotElementWrapper:
     def assignProperty(self, str propertyName, properties):
         """Assign a single property of the element by name."""
 
-        cdef double[::1] _properties = np.atleast_1d(np.asarray(properties, dtype=np.float64))
+        cdef double[::1] _properties = np.ascontiguousarray(
+                np.atleast_1d(np.asarray(properties, dtype=np.float64)))
+
+        # The count travels with the pointer: the values come from a user-written input file and
+        # the element reads a fixed number per property name, so without it a short list is not an
+        # error but an out-of-bounds read landing in a material coefficient.
         self.marmotElement.assignProperty(
                 propertyName.encode("UTF-8"),
-                &_properties[0])
+                &_properties[0],
+                _properties.shape[0])
 
     def getPropertyNames(self):
         """Get the names of all the valid properties of the element."""
@@ -193,15 +211,16 @@ cdef class MarmotElementWrapper:
             - the actual set,
             - and a temporary set for backup in nonlinear iteration schemes.
         """
+        self._materialName = materialName.upper()
         self._materialProperties = materialProperties
         try:
             self.marmotElement.assignProperty(
                     MarmotMaterialSection(
-                            materialName.upper().encode("UTF-8"),
+                            self._materialName.encode("UTF-8"),
                             &self._materialProperties[0],
                             self._materialProperties.shape[0]))
         except ValueError:
-            raise NotImplementedError("Marmot material {:} not found in library.".format(materialName.upper()))
+            raise NotImplementedError("Marmot material {:} not found in library.".format(self._materialName))
 
         self.nStateVars = self.marmotElement.getNumberOfRequiredStateVars()
 
@@ -211,6 +230,51 @@ cdef class MarmotElementWrapper:
         self.marmotElement.assignStateVars(&self._stateVarsTemp[0], self.nStateVars)
 
         self._hasMaterial = True
+
+    def updateMaterialProperty(self, int index, double value):
+        """Change one entry of the property vector of the material, keeping the state.
+
+        The underlying MarmotElement creates its materials anew from the modified property vector,
+        which they keep a pointer to, and is handed the very same state variable arrays again. The
+        state is neither reset nor re-initialized, and the arrays stay the same objects, so
+        persistent result views remain valid.
+
+        Parameters
+        ----------
+        index
+            The index of the property in the material's property vector.
+        value
+            The new value of the property.
+        """
+
+        if not self._hasMaterial:
+            raise Exception("Element {:} has no material assigned!".format(self._elNumber))
+
+        # A copy, owned by this element: the Marmot materials point into it, and the remaining
+        # properties may be specific to this element (e.g., materialParameterFromField).
+        if not 0 <= index < self._materialProperties.shape[0]:
+            raise IndexError(
+                "Element {:}: material property index {:} is out of range for {:} properties.".format(
+                    self._elNumber, index, self._materialProperties.shape[0]))
+
+        cdef double[::1] materialProperties = np.array(self._materialProperties, dtype=np.float64, copy=True)
+        materialProperties[index] = value
+
+        self.marmotElement.assignProperty(
+                MarmotMaterialSection(
+                        self._materialName.encode("UTF-8"),
+                        &materialProperties[0],
+                        materialProperties.shape[0]))
+
+        # Only now the previous array may be released, which the replaced materials pointed into.
+        self._materialProperties = materialProperties
+
+        if self.marmotElement.getNumberOfRequiredStateVars() != self.nStateVars:
+            raise ValueError(
+                "Element {:}: changing a material property must not change the number of state "
+                "variables.".format(self._elNumber))
+
+        self.marmotElement.assignStateVars(&self._stateVarsTemp[0], self.nStateVars)
 
     cpdef void _initializeStateVarsTemp(self, ) noexcept nogil:
         self._stateVarsTemp[:] = self._stateVars
@@ -316,6 +380,20 @@ cdef class MarmotElementWrapper:
         """Compute the lumped mass matrix of the underlying MarmotElement"""
 
         self.marmotElement.computeLumpedInertia(&M[0])
+
+    def computeLumpedDamping(self, double[::1] C):
+        """Compute the lumped damping of the underlying MarmotElement"""
+
+        self.marmotElement.computeLumpedDamping(&C[0])
+
+    def computeConsistentInertia(self, double[::1] M):
+        """Compute the consistent (full) mass matrix of the underlying MarmotElement.
+
+        Written into ``M`` in the element's flat ``nDof * nDof`` layout -- the same layout
+        ``computeKernels`` writes the stiffness into, so an entity slice of a VIJ system matrix can
+        be handed over directly and the assembled mass shares the stiffness' sparsity pattern."""
+
+        self.marmotElement.computeConsistentInertia(&M[0])
 
     def computeCriticalTimeStepForExplicitDynamics(self, double[::1] Q):
         """Compute the critical time step for explicit dynamics of the underlying MarmotElement"""

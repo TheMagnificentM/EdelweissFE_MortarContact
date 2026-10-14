@@ -385,7 +385,7 @@ def buildContactFacets(
     ``model.contactFacetRecipes`` keyed by the generated facet element set name, so a
     :class:`~edelweissfe.models.meshdependent.MeshDependent` consumer of these facets can find its
     way back to the source surface it needs to watch via
-    :meth:`~edelweissfe.models.femodel.FEModel.changesSince`.
+    :meth:`~edelweissfe.models.topologypipeline.TopologyPipeline.changesSince`.
 
     Parameters
     ----------
@@ -512,7 +512,7 @@ def buildContactFacets(
     # old expression read the maximum *after* the stale facets above were deleted, so a rebuild
     # handed the dead facets' numbers straight back out -- making element numbering a function of
     # the deletion history, which a restart replay cannot reproduce. See
-    # FEModel.reserveElementNumbers.
+    # TopologyPipeline.reserveElementNumbers.
     newElements = {}
 
     for faceNumber, elementSet in surfaceDef.items():
@@ -530,7 +530,7 @@ def buildContactFacets(
                         f"element {sourceElement.elNumber})."
                     )
 
-                (elNumber,) = model.reserveElementNumbers(1)
+                (elNumber,) = model.topology.reserveElementNumbers(1)
                 contactElement = getElementClass(contactElementType, "edelweiss")(contactElementType, elNumber)
                 contactElement.setNodes([sourceElement.nodes[i] for i in parentFaceIndices])
                 contactElement.initializeElement()
@@ -571,7 +571,7 @@ def buildContactFacets(
                         f"{len(localIndices)} for element type '{sourceElement.ensightType}'."
                     )
 
-                (elNumber,) = model.reserveElementNumbers(1)
+                (elNumber,) = model.topology.reserveElementNumbers(1)
                 facetElement = facetClass(facetElementType, elNumber)
                 facetElement.setNodes(facetNodes)
                 facetElement.initializeElement()

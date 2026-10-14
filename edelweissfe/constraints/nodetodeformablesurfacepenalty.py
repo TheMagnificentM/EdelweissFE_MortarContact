@@ -31,7 +31,20 @@ from dataclasses import dataclass
 import numpy as np
 
 from edelweissfe.constraints.base.constraintbase import ConstraintBase
-from edelweissfe.elements.contactsurfaceelement import facetNormalAndMeasure
+from edelweissfe.constraints.base.forcesonlyexplicitevaluation import (
+    ForcesOnlyExplicitEvaluation,
+)
+from edelweissfe.constraints.base.frozencontactsearch import (
+    FrozenContactSearch,
+    packAssignment,
+    packPerPointArrays,
+    unpackAssignment,
+    unpackPerPointArrays,
+)
+from edelweissfe.constraints.base.penaltylaw import (
+    normalPenaltyForce,
+    validatedContactType,
+)
 from edelweissfe.journal.journal import Journal
 from edelweissfe.models.femodel import FEModel
 from edelweissfe.models.meshdependent import MeshDependent
@@ -41,25 +54,24 @@ from edelweissfe.utils.contactfriction import (
     CoulombFriction,
     characteristicFacetSize,
     frictionCoefficientField,
-    frozenNormalsForRestart,
     historyInterpolation,
-    matchRestartKeys,
-    restoreFrozenNormals,
     slipToleranceField,
     tangentPenaltyField,
 )
 from edelweissfe.utils.facetcontactgeometry import (
-    closestFacet,
     closestFacetCandidates,
+    closestFacetsWithTies,
     edgeOrVertexNormal,
     facetHistoryPatches,
+    facetNormalAndMeasure,
     facetSurfaceBoundary,
     liesOnSurfaceBoundary,
-    line2ClosestPoint,
     line2GapGradientHessian,
-    tria3ClosestPoint,
+    line2Projection,
     tria3GapGradientHessian,
+    tria3Projection,
 )
+from edelweissfe.utils.meshtools import currentNodeCoordinates
 from edelweissfe.utils.schema import buildSchemaFromOptions, schemaField
 
 """
@@ -209,36 +221,7 @@ class DeformableSurfaceContactStiffnessView:
             self.K_fp.append(fp)
 
 
-def _tria3Containment(xs: np.ndarray, x1: np.ndarray, x2: np.ndarray, x3: np.ndarray) -> tuple[float, float, bool]:
-    """Barycentric-like in-plane coordinates (alpha, beta) of the projection of xs onto the
-    (possibly non-orthogonal) basis spanned by (x2-x1, x3-x1), and whether that projection falls
-    inside the triangle."""
-
-    e1 = x2 - x1
-    e2 = x3 - x1
-    r = xs - x1
-    n = np.cross(e1, e2)
-    n = n / np.linalg.norm(n)
-    rTangential = r - r.dot(n) * n
-
-    A = np.array([[e1.dot(e1), e1.dot(e2)], [e1.dot(e2), e2.dot(e2)]])
-    b = np.array([e1.dot(rTangential), e2.dot(rTangential)])
-    alpha, beta = np.linalg.solve(A, b)
-
-    inside = alpha >= 0.0 and beta >= 0.0 and (alpha + beta) <= 1.0
-    return alpha, beta, inside
-
-
-def _line2Containment(xs: np.ndarray, x1: np.ndarray, x2: np.ndarray) -> tuple[float, bool]:
-    """Parametric coordinate t of the projection of xs onto the edge (x1,x2), and whether that
-    projection falls inside the segment."""
-
-    e = x2 - x1
-    t = (xs - x1).dot(e) / e.dot(e)
-    return t, 0.0 <= t <= 1.0
-
-
-class Constraint(ConstraintBase, MeshDependent):
+class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBase, MeshDependent):
     """
     Penalty based unilateral contact between the tributary-area-weighted nodes of a deformable
     slave surface and a deformable master surface, both represented by flat (Tria3/Line2) contact
@@ -357,9 +340,8 @@ class Constraint(ConstraintBase, MeshDependent):
 
         self.name = name
         self.journal = journal
-        self._model = model
-        self._lastSeenTopologyVersion = model.topologyVersion
-        model.registerMeshDependent(self)
+        self._lastSeenTopologyVersion = model.topology.version
+        model.topology.registerMeshDependent(self)
 
         self._slaveSurfaceSetName = slaveSurface.name
         self._masterSurfaceSetName = masterSurface.name
@@ -392,9 +374,7 @@ class Constraint(ConstraintBase, MeshDependent):
         self.penalty = configuration.penalty
         if self.penalty <= 0.0:
             raise ValueError("The penalty must be positive: a non-positive penalty silently disables contact.")
-        self.type = configuration.contactType.lower()
-        if self.type not in ["linear", "quadratic"]:
-            raise ValueError(f"Constraint type '{self.type}' is not supported. Use 'linear' or 'quadratic'.")
+        self.type = validatedContactType(configuration.contactType)
         self.searchDistance = configuration.searchDistance
 
         self.sliding = configuration.sliding.lower()
@@ -498,14 +478,6 @@ class Constraint(ConstraintBase, MeshDependent):
     def nDof(self) -> int:
         return self._nDof
 
-    def _currentCoordinates(self, nodes: list, model: FEModel, referenceCoords: np.ndarray) -> np.ndarray:
-        dispField = model.nodeFields.get("displacement")
-        if dispField is None or "U" not in dispField:
-            return referenceCoords.copy()
-        idcs = dispField._indicesOfNodesInArray
-        u = np.array([dispField["U"][idcs[n]] if n in idcs else np.zeros(self.nDim) for n in nodes])
-        return referenceCoords + u
-
     def updateConnectivity(self, model: FEModel) -> bool:
         """Re-assign each slave node to its single closest facet, based on the last converged
         configuration. Called once per increment by the solver, before the equation system is
@@ -513,11 +485,11 @@ class Constraint(ConstraintBase, MeshDependent):
         source solid elements) first, at this natural per-increment tick -- see
         :class:`~edelweissfe.models.meshdependent.MeshDependent`."""
 
-        # refreshed by FEModel.refreshMeshDependents; nothing extra to do at this tick
+        # refreshed by TopologyPipeline.refreshMeshDependents; nothing extra to do at this tick
 
-        slaveCoords = self._currentCoordinates(self.slaveNodes, model, self._referenceCoordsSlaves)
+        slaveCoords = currentNodeCoordinates(self.slaveNodes, model, self._referenceCoordsSlaves)
         facetCoords = [
-            self._currentCoordinates(el.nodes, model, self._referenceCoordsFacets[i])
+            currentNodeCoordinates(el.nodes, model, self._referenceCoordsFacets[i])
             for i, el in enumerate(self.facetElements)
         ]
 
@@ -528,27 +500,23 @@ class Constraint(ConstraintBase, MeshDependent):
             # (interior/edges/vertices) is truly closest -- no dead zone at facet seams, and the
             # clamped weights are non-negative by construction. Facet, weights, and normal are
             # frozen for the whole increment, making the gap linear in the displacement DOFs.
-            closestPointFunction = tria3ClosestPoint if self.nDim == 3 else line2ClosestPoint
             # The frozen normals before and after the update, NaN where there is none, for the
             # transport of the frictional history into the new tangent planes.
             previousNormals = np.full((self.nSlaves, self.nDim), np.nan)
             newNormals = np.full((self.nSlaves, self.nDim), np.nan)
             candidatesPerSlave = closestFacetCandidates(slaveCoords, facetCoords, self.searchDistance)
+            # The first facet of exactly the smallest distance; whether another one is equally close
+            # decides the normal below. (The facet itself is not chosen by the lowest index on a tie:
+            # with nodalWeights=serendipityOptimal the facet sets the distribution of the force, and
+            # NodeToDeformableSurfaceContactPatchHexa20 pins the established one.)
+            closestFacet, closestWeights, closestDistance, closestTied = closestFacetsWithTies(
+                slaveCoords, facetCoords, candidatesPerSlave, self._tieTolerance, lowestIndexOnTie=False
+            )
             for s in range(self.nSlaves):
-                # The first facet of exactly the smallest distance; whether another one is equally
-                # close decides the normal below. (The facet itself is not chosen by the lowest index
-                # on a tie: with nodalWeights=serendipityOptimal the facet sets the distribution of
-                # the force, and NodeToDeformableSurfaceContactPatchHexa20 pins the established one.)
-                bestFacet, bestWeights, bestDistance, tied = closestFacet(
-                    slaveCoords[s],
-                    candidatesPerSlave[s],
-                    facetCoords,
-                    closestPointFunction,
-                    self._tieTolerance,
-                    lowestIndexOnTie=False,
-                )
+                bestFacet, bestWeights, bestDistance = int(closestFacet[s]), closestWeights[s], closestDistance[s]
+                tied = bool(closestTied[s])
 
-                if bestFacet is not None and (self.searchDistance is None or bestDistance <= self.searchDistance):
+                if bestFacet >= 0 and (self.searchDistance is None or bestDistance <= self.searchDistance):
                     newAssignment[s] = bestFacet
                     # The search and its clamping run on the true barycentric weights; only what is
                     # *stored* -- hence what distributes the force and enters the gap gradient -- is
@@ -609,6 +577,11 @@ class Constraint(ConstraintBase, MeshDependent):
                 closest = int(np.argmin(distances))
                 if self.searchDistance is None or distances[closest] <= self.searchDistance:
                     newAssignment[s] = closest
+
+        return self._assignMasterFacets(newAssignment)
+
+    def _assignMasterFacets(self, newAssignment: list) -> bool:
+        """Assign each slave node its master facet (searched or restored) and update the coupled DOFs."""
 
         hasChanged = newAssignment != self._assignedFacetIdx
         self._assignedFacetIdx = newAssignment
@@ -695,7 +668,7 @@ class Constraint(ConstraintBase, MeshDependent):
 
     def _setTieTolerance(self) -> None:
         """The mean slave facet size ``h``, and the distance within which two facets count as equally
-        close (see closestFacet)."""
+        close (see closestFacetsWithTies)."""
 
         self._facetSize = characteristicFacetSize(
             float(np.sum(self.tributaryAreas)), max(len(self.slaveFacetElements), 1), self.nDim
@@ -821,11 +794,11 @@ class Constraint(ConstraintBase, MeshDependent):
         PExt: np.ndarray,
         timeStep: TimeStep,
     ):
-        """Forces without a tangent, by running the one loop with ``K=None``. Overrides the base
-        implementation to avoid constructing an unused tangent matrix container."""
+        """Reject a friction law the explicit path cannot integrate, then evaluate the forces only
+        (see :class:`~edelweissfe.constraints.base.forcesonlyexplicitevaluation.ForcesOnlyExplicitEvaluation`)."""
 
         self._friction.checkExplicitIntegrability()
-        self.applyConstraint(U_np, dU, PExt, None, timeStep)
+        super().applyConstraintExplicit(U_np, dU, PExt, timeStep)
 
     def applyConstraint(
         self,
@@ -881,13 +854,13 @@ class Constraint(ConstraintBase, MeshDependent):
                 H = None
             else:
                 if nFacetNodes == 3:
-                    alpha, beta, inside = _tria3Containment(xs, *facetCoords)
+                    alpha, beta, inside = tria3Projection(xs, *facetCoords)
                     if not inside:
                         activeIdx += 1
                         continue
                     g, w, H = tria3GapGradientHessian(xs, *facetCoords)
                 else:
-                    t, inside = _line2Containment(xs, *facetCoords)
+                    t, inside = line2Projection(xs, *facetCoords)
                     if not inside:
                         activeIdx += 1
                         continue
@@ -910,20 +883,15 @@ class Constraint(ConstraintBase, MeshDependent):
                 # multiplier decays to zero within a few increments after separation.
                 f_n = lambdaForce
                 stiffness = 0.0
-            elif self.type == "linear":
-                f_n = lambdaForce + penaltyTimesArea * g
-                stiffness = penaltyTimesArea
             else:
-                # Repulsive force growing quadratically with penetration: f_n must carry the sign
-                # of g (negative in contact) so that PExt -= f_n * w pushes the slave outward,
-                # matching the linear branch; stiffness = df_n/dg is then positive for g < 0.
-                f_n = lambdaForce - 0.5 * penaltyTimesArea * g**2
-                stiffness = -penaltyTimesArea * g
+                # f_n carries the sign of g (negative in contact), so that PExt -= f_n * w pushes
+                # the slave outward; see edelweissfe.constraints.base.penaltylaw.
+                penaltyForce, stiffness = normalPenaltyForce(self.type, penaltyTimesArea, g)
+                f_n = lambdaForce + penaltyForce
 
             PLocal = -f_n * w
 
-            # K is None when the caller discards the tangent -- see
-            # ConstraintBase.applyConstraintExplicit.
+            # K is None in explicit runs -- see ForcesOnlyExplicitEvaluation.
             KLocal = None
             if K is not None:
                 KLocal = stiffness * np.outer(w, w)
@@ -1034,60 +1002,49 @@ class Constraint(ConstraintBase, MeshDependent):
                 # zero with the linear measure (there is no penalty force to transfer).
                 if g >= 0.0:
                     penaltyForcePart = penaltyTimesArea * g
-                elif self.type == "linear":
-                    penaltyForcePart = penaltyTimesArea * g
                 else:
-                    penaltyForcePart = -0.5 * penaltyTimesArea * g**2
+                    penaltyForcePart, _ = normalPenaltyForce(self.type, penaltyTimesArea, g)
 
                 self._lambdaN[s] = min(0.0, self._lambdaN[s] + penaltyForcePart)
 
-    def getRestartData(self) -> dict[str, np.ndarray]:
-        """Return the converged frictional and augmented-Lagrange-multiplier history per slave node,
-        the frozen normals of the last connectivity update and the slave node labels.
-
-        The normals are history too: the next :meth:`updateConnectivity` compares the new ones
-        against them to decide whether a node slid over a crease of the master surface, which
-        discards its frictional history (:meth:`CoulombFriction.carry
-        <edelweissfe.utils.contactfriction.CoulombFriction.carry>`). ``_assignedFacetIdx``,
-        ``_gapCurrent`` and ``_frozenWeights`` are excluded: they are recomputed by
-        :meth:`updateConnectivity` / :meth:`applyConstraint` from the restored node positions before
-        they are read."""
-
+    def _searchLayout(self) -> dict[str, np.ndarray]:
         return {
+            "slaveNodes": np.array([node.label for node in self.slaveNodes], dtype=np.int64),
+            "masterFacets": np.array([facet.elNumber for facet in self.facetElements], dtype=np.int64),
+        }
+
+    def _frozenProjection(self) -> dict[str, np.ndarray]:
+        weightCounts, weights = packPerPointArrays(self._frozenWeights)
+        normalCounts, normals = packPerPointArrays(self._frozenNormals)
+        return {
+            "assignedFacetIdx": packAssignment(self._assignedFacetIdx),
+            "weightCounts": weightCounts,
+            "weights": weights,
+            "normalCounts": normalCounts,
+            "normals": normals,
+        }
+
+    def _adoptFrozenProjection(self, projection: dict[str, np.ndarray]) -> bool:
+        # The frictional history was already rotated into this tangent plane by the search that froze it.
+        self._frozenWeights = unpackPerPointArrays(projection["weightCounts"], projection["weights"])
+        self._frozenNormals = unpackPerPointArrays(projection["normalCounts"], projection["normals"])
+        return self._assignMasterFacets(unpackAssignment(projection["assignedFacetIdx"]))
+
+    def getRestartData(self) -> dict[str, np.ndarray]:
+        """Return the frozen projection and the frictional and augmented-Lagrange history. Overridden
+        rather than declared: the frozen projection is packed by :class:`FrozenContactSearch`."""
+
+        return super().getRestartData() | {
             **self._friction.restartData(),
             "lambdaN": self._lambdaN,
-            "frozenNormals": frozenNormalsForRestart(self._frozenNormals, self.nDim),
-            "slaveNodeLabels": np.array([node.label for node in self.slaveNodes], dtype=int),
         }
 
     def setRestartData(self, data: dict[str, np.ndarray]):
-        """Restore the converged frictional and augmented-Lagrange-multiplier history.
+        """Restore the frozen projection and the frictional and augmented-Lagrange history. Called
+        after the topology replay and after the mesh dependents caught up with it (see
+        :meth:`~edelweissfe.models.femodel.FEModel.readRestart`), so the slave nodes are those of the
+        checkpoint, which :class:`FrozenContactSearch` verifies."""
 
-        Called after the topology replay of an AMR run has re-created the refined mesh but before any
-        solver refreshed the mesh dependents, so the constraint first catches up with the refined
-        surfaces (:meth:`refresh`) and then matches the checkpoint to its slave nodes by label. A
-        checkpoint without labels is taken to be in the current order. One written while the history
-        was still stored as a nodal force (``tangentialForceConverged``) is converted to the traction
-        by the tributary areas."""
-
-        self.refreshIfMeshChanged(self._model)
-
-        if "slaveNodeLabels" in data:
-            current, stored = matchRestartKeys(
-                [int(label) for label in data["slaveNodeLabels"]], [node.label for node in self.slaveNodes]
-            )
-        else:
-            current = stored = np.arange(self.nSlaves)
-
-        if "tangentialForceConverged" in data:
-            areas = self.tributaryAreas[current, None]
-            force = np.asarray(data["tangentialForceConverged"])[stored]
-            traction = np.divide(force, areas, out=np.zeros_like(force), where=areas > 0)
-            self._friction.setRestartData(
-                {"frictionTractionConverged": traction}, current, np.arange(len(current), dtype=int)
-            )
-        else:
-            self._friction.setRestartData(data, current, stored)
-        self._lambdaN[current] = np.asarray(data["lambdaN"])[stored]
-        if "frozenNormals" in data:
-            restoreFrozenNormals(self._frozenNormals, data["frozenNormals"], current, stored)
+        super().setRestartData(data)
+        self._friction.setRestartData(data)
+        self._lambdaN[:] = data["lambdaN"]

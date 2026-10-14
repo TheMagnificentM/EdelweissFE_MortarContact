@@ -735,8 +735,8 @@ class Constraint(ConstraintBase, MeshDependent):
         self.journal = journal
         self.model = model
         # AMR: rebuilt from the regenerated facets at the next refresh (see refresh).
-        self._lastSeenTopologyVersion = model.topologyVersion
-        model.registerMeshDependent(self)
+        self._lastSeenTopologyVersion = model.topology.version
+        model.topology.registerMeshDependent(self)
         # Resolving names, coercing values and filling in defaults is the schema's job, done once
         # here so that a direct call from a test and the route through
         # fromConstraintDefinition see the same rules.
@@ -3094,15 +3094,12 @@ class Constraint(ConstraintBase, MeshDependent):
         """Restore the state of :meth:`getRestartData`.
 
         Called by :meth:`~edelweissfe.models.femodel.FEModel.readRestart` after the topology replay
-        of an AMR run has re-created the refined mesh, but before any solver has refreshed the mesh
-        dependents -- so the constraint first catches up with the refined surfaces itself, and then
-        matches the checkpoint to its non-mortar nodes by label. A checkpoint without labels is taken
-        to be in the current node order; one written before the objective slip correction existed
-        holds only the traction, and the correction then starts at the first rebuild after the
-        restart instead.
+        of an AMR run has re-created the refined mesh and the mesh dependents have caught up with it,
+        so the non-mortar nodes are those of the refined surfaces; the checkpoint is matched to them
+        by label. A checkpoint without labels is taken to be in the current node order; one written
+        before the objective slip correction existed holds only the traction, and the correction then
+        starts at the first rebuild after the restart instead.
         """
-
-        self.refreshIfMeshChanged(self.model)
 
         if "nonMortarNodeLabels" in data:
             current, stored = matchRestartKeys(
@@ -3659,7 +3656,7 @@ class Constraint(ConstraintBase, MeshDependent):
                 # it at alpha = 1/3 because its threshold is 1/4). So a partial
                 # overlap can produce D_II < 0 on the CONSISTENT path already -
                 # see the dual-basis tests in
-                # edelweissfe/elements/contactelement/test_element.py.
+                # tests/test_contactelement.py.
                 #
                 # This branch is worse by orders of magnitude: the reference-
                 # element dual functions are used instead, and those change sign

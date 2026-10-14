@@ -50,7 +50,7 @@
 *job, name=nedmortarjob, domain=3d
 
 *solver, solver=NED, name=theSolver
-second-order-fields="displacement"
+expect-second-order-fields="displacement"
 courant-number=0.8
 output-frequency=50
 contact-update-frequency=10

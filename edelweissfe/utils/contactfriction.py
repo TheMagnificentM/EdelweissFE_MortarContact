@@ -806,7 +806,7 @@ class CoulombFriction:
         return {
             "frictionTractionConverged": self.tractionConverged,
             "frictionPressureConverged": self.pressureConverged,
-            "frictionActiveConverged": self.activeConverged.astype(float),
+            "frictionActiveConverged": self.activeConverged.astype(np.int8),
         }
 
     def setRestartData(self, data: dict[str, np.ndarray], current=None, stored=None):
