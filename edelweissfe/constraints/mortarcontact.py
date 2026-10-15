@@ -165,10 +165,17 @@ nodal normals, and the coupling matrices:
 COULOMB FRICTION (``mu > 0``) is available for ``penalty`` only, with or without the augmentation,
 under the implicit and the explicit solvers: a tangential penalty stick predictor from the converged
 nodal traction and the mortar-weighted slip increment, and a radial return onto ``|t_T| <= mu p``.
-See :meth:`Constraint._assembleFriction` for the law, :meth:`Constraint._carryFrictionHistory` for
-the objective correction of the slip at each geometry rebuild, and
+See :meth:`Constraint._assembleFrictionConsistent` for the law with the objective slip on the
+consistent geometry, :meth:`Constraint._assembleFriction` and :meth:`Constraint._carryFrictionHistory`
+for the frozen one with its correction at each geometry rebuild, and
 :meth:`~edelweissfe.utils.contactfriction.CoulombFriction.freezeIfChattering` for the anti-chattering
 rule of the implicit iteration.
+
+THE GEOMETRY -- segmentation, coupling matrices, nodal normals -- follows the Newton iterate with
+its full linearisation (``geometryUpdate=consistent``, the default; Popp, Gitterle, Gee & Wall 2010,
+Appendix A; the derivatives are in :mod:`~edelweissfe.utils.mortarlinearization`), or is frozen at
+the last converged configuration for an increment (``geometryUpdate=frozen``, and always under
+explicit dynamics). See :meth:`Constraint._buildGeometry`.
 
 RESULTS PER NON-MORTAR NODE are published for output. The constraint registers the node set
 ``<name>_nonMortarNodes`` (in the order of the contact system), so that the accessors
@@ -2029,12 +2036,12 @@ class Constraint(ConstraintBase, MeshDependent):
                     coords, nodeSlots(len(coords), 3, nZ, offset), p0, pad(dp0), normal, pad(dnormal), t1, t2
                 )
             try:
-                dxi = inversePlaneMapDerivative(rec, q, dq, local, dx)
+                dxi, dNdxi = inversePlaneMapDerivative(rec, q, dq, local, dx)
+                dN.append(dNdxi.T @ dxi)
             except np.linalg.LinAlgError:
                 # A point whose back-mapping has no Jacobian has no coordinate to differentiate either;
                 # it is reported as a projection failure by the caller.
-                dxi = np.zeros((2, nZ))
-            dN.append(rec.getShapeFunctionDerivatives(local).T @ dxi)
+                dN.append(np.zeros((rec.nNodes, nZ)))
         return Z, dN[0], dN[1], pad(ddG)
 
     def _facetCouplingDerivatives(
@@ -2328,9 +2335,14 @@ class Constraint(ConstraintBase, MeshDependent):
         nSlave = self.nNonMortarNodes
 
         # Detect new increment to track iterations and reset currentIteration.
-        # Normals and coupling matrices are frozen within each increment
-        # (staggered geometry update), so the assembled stiffness is the exact
-        # Jacobian of the residual equations within the increment.
+        # Under geometryUpdate=consistent the normals and coupling matrices are rebuilt at
+        # this iterate and linearised (see _buildGeometry and _geometricTangent), as in the
+        # reference formulations: Popp, Gitterle, Gee & Wall (2010), Section 4.3 and Appendix
+        # A, and Gitterle et al. (2010) for the frictional case.
+        # Under geometryUpdate=frozen they are frozen within each increment (staggered
+        # geometry update), so the assembled stiffness is the exact Jacobian of the residual
+        # equations within the increment; everything from here to the call below is about
+        # that mode, and about the per-increment bookkeeping both modes share.
         # A RE-ATTEMPT of an increment after a solver cutback carries the SAME
         # increment number but a smaller time increment, and it restarts the Newton
         # iteration from the last converged state. It must therefore be treated
@@ -2343,13 +2355,7 @@ class Constraint(ConstraintBase, MeshDependent):
         # REFERENCE CONFIGURATION of the frozen geometry: the LAST CONVERGED state,
         # U_n = U_np - dU, not the state handed in as U_np.
         #
-        # The reference formulations do not freeze at all: they re-evaluate D, M and the nodal
-        # normals in every Newton iteration and carry their linearizations in K (Popp, Gitterle,
-        # Gee & Wall 2010, Section 4.3 and Appendix A; Gitterle et al. 2010 does the same for the
-        # frictional case). This implementation freezes the geometry instead (see the "The
-        # tangent" section of the mortar theory page).
-        #
-        # Note what this is NOT. Popp et al. measure an "incomplete linearization" in their Table I
+        # Note what the frozen geometry is NOT. Popp et al. measure an "incomplete linearization" in their Table I
         # -- a LIVE geometry carried with a tangent that omits the linearizations of the nodal
         # normal and of D and M -- and it costs them 52 Newton steps against 16 for the same
         # fixed-point active-set strategy with the full linearization. Here the geometry
@@ -2550,12 +2556,12 @@ class Constraint(ConstraintBase, MeshDependent):
                 #   dg_weak/dx_a = -w_a n_I,    dlambda_I/dx_a = +kappa_I w_a n_I
                 # (the sgn(D_II) cancels), and with v_a = w_a n_I:
                 #   PExt_a -= lambda_I * v_a,     K_ab += kappa_I * v_a v_b.
-                # K is therefore symmetric positive semi-definite - this is the
-                # first term of the linearised penalty force; the second and
-                # third terms are the linearizations of the nodal normal and of the
-                # mortar weights, which the frozen geometry of this implementation
-                # deliberately omits (see the note on the reference configuration
-                # above and the "The tangent" section of mortartheory.rst).
+                # This is the first term of the linearised penalty force, symmetric
+                # positive semi-definite; the linearizations of the nodal normal, of
+                # the mortar weights and of kappa_I follow in _geometricTangent under
+                # geometryUpdate=consistent and are omitted by the frozen geometry (see
+                # the note on the reference configuration above and the "The tangent"
+                # section of mortartheory.rst).
                 # astype: both index arrays can be empty (a slave node that lost
                 # all coverage while still carrying an augmented pressure), and
                 # concatenating two empty arrays does not reliably keep an integer
@@ -3026,7 +3032,9 @@ class Constraint(ConstraintBase, MeshDependent):
         PExt: np.ndarray,
         K: np.ndarray,
     ):
-        """Penalty-regularised Coulomb friction at one active non-mortar node.
+        """Penalty-regularised Coulomb friction at one active non-mortar node, on the frozen geometry
+        (``geometryUpdate=frozen`` and explicit dynamics; see :meth:`_assembleFrictionConsistent` for
+        the consistent one).
 
         The law is the one shared by all contact formulations
         (:class:`~edelweissfe.utils.contactfriction.CoulombFriction`, see there for the sources of the
@@ -3093,6 +3101,9 @@ class Constraint(ConstraintBase, MeshDependent):
 
     def _carryFrictionHistory(self, U_ref: np.ndarray, previousNormals: np.ndarray | None):
         """Carry the accepted tangential tractions into a rebuilt geometry, with the objective slip.
+
+        Under ``geometryUpdate=frozen`` only; the consistent geometry measures the objective slip
+        within the increment itself (see :meth:`_assembleFrictionConsistent`).
 
         Within an increment the slip is measured on the frozen geometry (see
         :meth:`_assembleFriction`). Between two rebuilds that measure sums to

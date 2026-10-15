@@ -184,7 +184,7 @@ class TestBackMapping(unittest.TestCase):
             dxg = nodeSlots(1, 2, nZ, offset=el.nNodes)[0]
             xi, ok = mapPlaneToNatural(el, q, xg)
             self.assertTrue(ok)
-            d = inversePlaneMapDerivative(el, q, dq, xi, dxg)
+            d, _ = inversePlaneMapDerivative(el, q, dq, xi, dxg)
             num = finiteDifference(lambda zz: mapPlaneToNatural(el, zz[:-2].reshape(-1, 2), zz[-2:])[0], z)
             assertJacobian(self, d, num)
 

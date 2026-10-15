@@ -178,7 +178,7 @@ def planeCoordinates(points, dpoints, p0, dp0, normal, dnormal, t1, t2) -> tuple
     rel = points - p0
     q = rel @ T.T
     height = rel @ normal
-    dq = np.einsum("ij,mjz->miz", T, dpoints - dp0[None]) - height[:, None, None] * (T @ dnormal)[None]
+    dq = T @ (dpoints - dp0[None]) - height[:, None, None] * (T @ dnormal)[None]
     return q, dq
 
 
@@ -262,19 +262,26 @@ def fanTriangleArea(v, dv) -> tuple[float, np.ndarray]:
 # ---------------------------------------------------------------------------------- back-mapping
 
 
-def inversePlaneMapDerivative(el, qNodes, dqNodes, xi, dxGauss) -> np.ndarray:
+def inversePlaneMapDerivative(el, qNodes, dqNodes, xi, dxGauss) -> tuple[np.ndarray, np.ndarray]:
     """Jacobian of the natural coordinate ``xi`` that solves ``sum_k N_k(xi) q_k = x_gp`` in the
     auxiliary plane (the 3D back-mapping of :func:`~edelweissfe.utils.mortargeometry.mapPlaneToNatural`).
 
     Differentiating the defining equation gives ``J dxi + sum_k N_k dq_k = dx_gp`` with the in-plane
     Jacobian ``J = sum_k q_k (x) N_k,xi``, the counterpart of Popp et al. (2010), Eqs. (A13)-(A14),
-    for an in-plane rather than a normal projection. Returns ``(2, nZ)``.
+    for an in-plane rather than a normal projection.
+
+    Returns ``dxi`` ``(2, nZ)`` and, since every caller needs it next, the shape-function
+    derivatives ``N,xi`` ``(2, nNodes)`` at ``xi``. Raises ``np.linalg.LinAlgError`` where ``J`` is
+    singular.
     """
     N = el.getShapeFunctions(xi)
     dN = el.getShapeFunctionDerivatives(xi)
-    J = (dN @ qNodes).T
-    rhs = dxGauss - np.einsum("k,kiz->iz", N, dqNodes)
-    return np.linalg.solve(J, rhs)
+    (a, b), (c, d) = (dN @ qNodes).T
+    det = a * d - b * c
+    if det == 0.0:
+        raise np.linalg.LinAlgError("singular in-plane Jacobian")
+    rhs = dxGauss - np.tensordot(N, dqNodes, axes=1)
+    return np.array([d * rhs[0] - b * rhs[1], a * rhs[1] - c * rhs[0]]) / det, dN
 
 
 def shapeFunctionSecondDerivatives(el, xi) -> np.ndarray:
