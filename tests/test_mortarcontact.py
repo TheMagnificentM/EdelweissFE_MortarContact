@@ -1132,21 +1132,21 @@ class TestExplicitDynamics(unittest.TestCase):
 
 
 class TestCurvedEdgeAttribution(unittest.TestCase):
-    """Quadratic facets are segmented on their linear sub-segments, and a Gauss point is carried into
-    its parent facet by the affine map between sub-segment and parent coordinates -- Puso, Laursen &
-    Solberg (2008), Eqs. (31)-(32), and Popp, Gitterle, Gee & Wall (2010), Eq. (42). The point thus
-    always belongs to the facet whose sub-segment produced it.
+    """Quadratic facets are segmented on their linear sub-segments (Popp, Gitterle, Gee & Wall 2010,
+    Section 4.2). Where an edge shared by two mortar facets is CURVED in the surface, the sub-segments
+    follow its chord, and the strip between chord and edge is clipped to the wrong facet. Carried into
+    the parent by the affine sub-segment map of their Eq. (42), a point there stays with that facet,
+    and a uniform multiplier reproduces the consistent mortar-side loads of a uniform pressure only up
+    to an error proportional to the curvature of the edge -- measured 5.8e-3, 1.2e-2 and 4.4e-2 for
+    bulges of 0.02, 0.04 and 0.15.
 
-    Where an edge shared by two mortar facets is CURVED in the surface, the sub-segments follow its
-    chord, and the integration domain no longer follows the facets -- the approximation Popp et al.
-    (2010), Section 4.2, name: it "only affects the integration domain itself, which no longer
-    reflects the underlying quadratic surfaces correctly". A uniform multiplier then reproduces the
-    consistent mortar-side loads of a uniform pressure only up to an error proportional to the
-    curvature of the edge.
+    Here every Gauss point is mapped back by the inverse of the whole projected facet and attributed
+    to the facet that contains it (see :func:`edelweissfe.utils.mortarcoupling._locate`); what remains
+    is the quadrature of the cells that straddle the curved edge.
 
     Fixture: one flat CONQUAD8 non-mortar facet on the unit square, opposed by two CONQUAD8 mortar
     facets that tile the same square along a shared edge whose mid-side node is moved off the chord.
-    Both surfaces cover exactly the same area, so every discrepancy is the sub-segment approximation.
+    Both surfaces cover exactly the same area, so every discrepancy is the treatment of the edge.
     """
 
     @staticmethod
@@ -1206,9 +1206,9 @@ class TestCurvedEdgeAttribution(unittest.TestCase):
                         loads[constraint.mortarNodeToIndex[n]] += el.getShapeFunctions(xi)[k] * J * wa * wb
         return float(np.max(np.abs(np.asarray(C.sum(axis=0)).ravel() - loads)) / np.max(np.abs(loads)))
 
-    def test_the_sub_segment_approximation_vanishes_with_the_curvature_of_the_edge(self):
-        errors = []
-        for bulge in (0.0, 0.04, 0.02):
+    def test_points_are_attributed_to_the_facet_that_contains_them(self):
+        errors, moved = [], []
+        for bulge in (0.0, 0.02, 0.04, 0.15):
             model = self.build(bulge)
             constraint = MortarContact(
                 "contact",
@@ -1219,11 +1219,14 @@ class TestCurvedEdgeAttribution(unittest.TestCase):
                 cn=1000.0,
             )
             errors.append(self.mortarConsistencyError(constraint))
+            moved.append(constraint.lastCoupling.reattributedGaussPoints)
 
-        # Exact for a straight edge; measured 1.17e-2 and 5.83e-3 for bulges of 0.04 and 0.02, i.e.
-        # proportional to the curvature of the edge.
+        # Exact for a straight edge; measured 9.1e-5, 3.2e-4 and 2.1e-4 for the curved ones, against
+        # 5.8e-3, 1.2e-2 and 4.4e-2 with the affine sub-segment map.
         self.assertLess(errors[0], 1e-14)
-        self.assertAlmostEqual(errors[1] / errors[2], 2.0, delta=0.05)
+        self.assertEqual(moved[0], 0)
+        self.assertLess(max(errors[1:]), 5e-4)
+        self.assertGreater(moved[3], 0)
 
 
 class TestFriction(unittest.TestCase):

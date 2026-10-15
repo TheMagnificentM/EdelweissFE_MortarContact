@@ -241,21 +241,23 @@ def sutherlandHodgmanClip(subjectPolygon, clipPolygon):
         return (cp2[0] - cp1[0]) * (p[1] - cp1[1]) - (cp2[1] - cp1[1]) * (p[0] - cp1[0]) >= -1e-12
 
     def intersection(cp1, cp2, s, e):
-        dc = [cp1[0] - cp2[0], cp1[1] - cp2[1]]
-        dp = [s[0] - e[0], s[1] - e[1]]
-        n1 = cp1[0] * cp2[1] - cp1[1] * cp2[0]
-        n2 = s[0] * e[1] - s[1] * e[0]
-        den = dc[0] * dp[1] - dc[1] * dp[0]
-        if den == 0.0:
-            # Parallel edges. Reached only if `inside` classified the two endpoints
-            # differently, which its inclusive tolerance normally prevents for
-            # exactly collinear points - but "normally" is not "never", and without
-            # this guard the result would be inf/NaN and poison the whole cell.
-            # Falling back to the crossing endpoint keeps the polygon closed and
-            # degenerates the sliver to zero area, which the caller discards.
+        # The crossing of the subject edge s -> e with the line of the clip edge, written along the
+        # subject edge: x = s + t (e - s) with t = d_s / (d_s - d_e) from the signed distances (times
+        # the clip edge length) of s and e to the clip line. This is the same point as the
+        # intersection of the two lines (Popp et al. 2010, Eq. (A19), case 3), but t is CLAMPED to
+        # [0, 1] - not from a source. Where a subject edge lies on a clip edge, as it does wherever
+        # the two meshes are conforming, the inclusive tolerance of `inside` can still put s and e on
+        # different sides from round-off alone, and the intersection of two nearly parallel lines
+        # then lands anywhere along them: on POT_Dejori a perturbation of 1e-13 produced a vertex
+        # four element lengths outside both facets. Clamped, the vertex stays on the subject edge and
+        # the sliver it bounds has (almost) no area.
+        d_s = (cp2[0] - cp1[0]) * (s[1] - cp1[1]) - (cp2[1] - cp1[1]) * (s[0] - cp1[0])
+        d_e = (cp2[0] - cp1[0]) * (e[1] - cp1[1]) - (cp2[1] - cp1[1]) * (e[0] - cp1[0])
+        if d_s == d_e:
+            # Parallel edges, the endpoint that crossed is the best available point.
             return [e[0], e[1]]
-        n3 = 1.0 / den
-        return [(n1 * dp[0] - n2 * dc[0]) * n3, (n1 * dp[1] - n2 * dc[1]) * n3]
+        t = min(max(d_s / (d_s - d_e), 0.0), 1.0)
+        return [s[0] + t * (e[0] - s[0]), s[1] + t * (e[1] - s[1])]
 
     outputList = list(subjectPolygon)
 

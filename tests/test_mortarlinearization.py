@@ -45,7 +45,6 @@ from edelweissfe.utils.mortarlinearization import (
     planeCoordinates,
     shapeFunctionSecondDerivatives,
     skew,
-    subCellParentMap,
     surfaceJacobian,
     surfaceJacobianNaturalDerivative,
     sutherlandHodgmanClipWithDerivatives,
@@ -163,6 +162,23 @@ class TestClipping(unittest.TestCase):
             dA = sum(fanTriangleArea(poly[[0, i, i + 1]], dpoly[[0, i, i + 1]])[1] for i in range(1, len(poly) - 1))
             assertJacobian(self, dA, finiteDifference(area, z))
 
+    def test_shared_edge_under_round_off(self):
+        # Two conforming facets: the subject's lower edge lies on the clip's upper edge. Round-off
+        # can classify its two ends on different sides of that edge; the crossing must then stay on
+        # the subject edge instead of running off along the nearly parallel line.
+        clip = np.array([[-2.0, -1.25], [2.0, -1.25], [2.0, 1.25], [-2.0, 1.25]])
+        subject = np.array([[2.0, 1.25], [-2.0, 1.25], [-2.0, 3.75], [2.0, 3.75]])
+        rng = np.random.default_rng(5)
+        for trial in range(200):
+            s = subject + 1e-13 * rng.standard_normal(subject.shape)
+            c = clip + 1e-13 * rng.standard_normal(clip.shape)
+            poly = sutherlandHodgmanClip(s, c)
+            if len(poly):
+                self.assertLess(np.max(np.abs(poly[:, 0])), 2.0 + 1e-9)
+                self.assertLess(np.max(np.abs(poly[:, 1] - 1.25)), 1e-9)
+            dZ = nodeSlots(8, 2, 16)
+            np.testing.assert_array_equal(poly, sutherlandHodgmanClipWithDerivatives(s, dZ[:4], c, dZ[4:])[0])
+
 
 class TestSurfaceJacobian(unittest.TestCase):
     def test_surface_jacobian(self):
@@ -202,23 +218,6 @@ class TestElementDerivatives(unittest.TestCase):
             xi = el.getQuadraturePoints()[0][1]
             numeric = finiteDifference(lambda z: el.getJacobianAndAreaWeight(z, X), np.array(xi, float))
             assertJacobian(self, surfaceJacobianNaturalDerivative(el, xi, X), numeric)
-
-    def test_the_sub_cell_map_reproduces_the_corners_and_is_affine(self):
-        from edelweissfe.utils.mortargeometry import subCellMap
-
-        for elType, cells in subCellMap.items():
-            parent = Element(elType, 1)
-            natural = np.array(parent.getNodalNaturalCoordinates(), float).reshape(parent.nNodes, -1)
-            for cell in cells:
-                subType = {2: "CONLINE2", 3: "CONTRI3", 4: "CONQUAD4"}[len(cell)]
-                sub = Element(subType, 1)
-                toParent = subCellParentMap(natural, cell, sub)
-                subNatural = np.array(sub.getNodalNaturalCoordinates(), float).reshape(len(cell), -1)
-                for k in range(len(cell)):
-                    np.testing.assert_allclose(toParent(subNatural[k])[0], natural[cell[k]], atol=1e-14)
-                probe = subNatural.mean(axis=0) + 0.1
-                numeric = finiteDifference(lambda z: toParent(z)[0], probe)
-                assertJacobian(self, toParent(probe)[1], numeric)
 
 
 class _FacetPair:

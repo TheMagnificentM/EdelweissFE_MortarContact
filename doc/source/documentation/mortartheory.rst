@@ -210,7 +210,9 @@ respect to the nodal coordinates, and the derivatives are chained down
   a subject edge with the line of a clip edge, Eq. (A19);
 * the fan triangles, their Jacobian, Eq. (A7), and the Gauss points in them, Eq. (A16);
 * the natural coordinates of every Gauss point on both sides along the auxiliary normal, Eqs.
-  (A12)--(A14), carried from a sub-segment to its parent by the affine map of their Eq. (42);
+  (A12)--(A14), by the inverse plane map of the face that contains the point (see *Segmentation of
+  the overlap*); where that is not the face whose sub-segment produced it, the nodes of that face,
+  and on the non-mortar side those its nodal normals depend on, enter the point's derivatives too;
 * the dual coefficients on the integrated part of the slave element, Popp, Seitz, Gee and Wall
   (2013), Eqs. (26)--(28), with the basis transformation constant -- it is "defined once at t = 0"
   and stays "unaltered during the entire finite deformation process" (Popp, Wohlmuth, Gee and Wall
@@ -399,14 +401,33 @@ every face of the non-mortar surface:
 
 Quadratic faces are split into linear sub-segments first, and the algorithm runs on those "nearly
 unchanged" (Popp et al. 2010, Section 4.2), with the decompositions of Puso, Laursen and Solberg
-(2008), Fig. 3. A Gauss point is located on its sub-segment and carried into the parent face by the
-affine map between the two parameterisations -- Popp et al. (2010), Eq. (42), and Puso et al.
-(2008), Eqs. (31)--(32) -- where the quadratic shape functions are evaluated. The integration domain
-then follows the chords of the sub-segments rather than the curved faces, which is the
-approximation Popp et al. (2010) name: it "only affects the integration domain itself, which no
-longer reflects the underlying quadratic surfaces correctly". Where an edge between two faces is
-curved within the surface, the mortar-side consistency of a uniform pressure is therefore lost in
-proportion to the curvature of that edge (see *Known limitations*).
+(2008), Fig. 3. The clipping and the integration cells follow the chords of the sub-segments rather
+than the curved faces, the approximation Popp et al. (2010) name: it "only affects the integration
+domain itself, which no longer reflects the underlying quadratic surfaces correctly".
+
+Where an edge between two faces is curved within the surface, the strip between the chord and the
+edge is clipped to the wrong face. Popp et al. (2010), Eq. (42), and Puso et al. (2008), Eqs.
+(31)--(32), carry a Gauss point from its sub-segment into the parent face by an affine map, which
+keeps such a point with that face and evaluates its shape functions outside the reference element.
+Here every Gauss point is instead mapped back by the inverse of the isoparametric map of the whole
+face projected into the auxiliary plane -- for a linear face exactly Eq. (A12) -- and, if that face
+does not contain it, attributed to the face among its neighbours that does: on the non-mortar side
+the faces sharing a node with it, on the mortar side the candidates of the search. A point that no
+face contains lies beyond the curved boundary of a surface and is not integrated. This attribution is
+this implementation's step, not from a source. Measured on two CONQUAD8 mortar faces tiling a flat
+CONQUAD8 non-mortar face along an edge whose mid-side node is moved off the chord by a fraction
+:math:`b` of the face size, the mortar-side consistency error of a uniform pressure,
+:math:`\max |C^T 1 - \int N_m| / \max |\int N_m|`, is :math:`9.1 \cdot 10^{-5}`,
+:math:`3.2 \cdot 10^{-4}` and :math:`2.1 \cdot 10^{-4}` for :math:`b = 0.02`, :math:`0.04` and
+:math:`0.15`, against :math:`5.8 \cdot 10^{-3}`, :math:`1.2 \cdot 10^{-2}` and
+:math:`4.4 \cdot 10^{-2}` with the affine map; what remains is the quadrature of the cells that
+straddle the curved edge (``TestCurvedEdgeAttribution``).
+
+The intersection of a subject edge with the line of a clip edge, Eq. (A19), is computed along the
+subject edge from the signed distances of its end points to that line, with the parameter limited to
+the edge. Where the edges of the two meshes coincide, rounding can put the two end points on
+different sides of the line, and the intersection of the two nearly parallel lines would then lie
+anywhere along them; limited, it stays on the edge. That limit is not from a source.
 
 In two dimensions the segments come from projecting nodes along the continuous normal field, Popp,
 Gee and Wall (2009), Section 4: the end nodes of a non-mortar element onto the mortar element along
@@ -655,7 +676,11 @@ nodal form of Popp, Gee and Wall (2009), Eq. (50), :math:`\tilde D_{IK} = D_{IK}
 :math:`\tilde C_{IJ} = C_{IJ} n_I`. Its translational invariance rests on the identity
 :math:`\sum_K \tilde D_{IK} = \sum_J \tilde C_{IJ}`, which holds because both are integrated over
 the SAME domain -- the overlap, not the respective facets -- and it is checked in the unit tests in
-its scalar form :math:`\sum_K D_{IK} = \sum_J C_{IJ}`.
+its scalar form :math:`\sum_K D_{IK} = \sum_J C_{IJ}`. The same identity lets the gap be evaluated
+with the coordinates taken relative to node :math:`I`'s own position, which changes nothing but the
+rounding: with absolute coordinates the two sums are each of the size of the model's coordinates
+times the nodal weight and cancel to the gap, and the penalty turns what remains of their rounding
+into a force.
 
 Collecting the weights of one node as :math:`w_a = +D_{IK}` on the non-mortar nodes and
 :math:`w_a = -C_{IJ}` on the mortar ones, writing :math:`v_a = w_a n_I` for the force direction and
@@ -1240,16 +1265,11 @@ A non-smooth geometry at slivers, under ``geometryUpdate=consistent``
     differences of the penalty residual see as half the one-sided derivative.
 
 Curved edges of quadratic facets
-    The integration runs on the linear sub-segments of a quadratic facet (see *Segmentation of the
-    overlap*). Where an edge between two facets is curved within the surface, the integration domain
-    follows its chord, and a uniform multiplier no longer reproduces the consistent nodal loads of a
-    uniform pressure exactly. Measured on two CONQUAD8 mortar facets tiling a flat CONQUAD8
-    non-mortar facet along an edge whose mid-side node is moved off the chord by a fraction
-    :math:`b` of the facet size: :math:`\max |C^T 1 - \int N_m| / \max |\int N_m|` is
-    :math:`5.8 \cdot 10^{-3}`, :math:`1.2 \cdot 10^{-2}` and :math:`4.4 \cdot 10^{-2}` for
-    :math:`b = 0.02`, :math:`0.04` and :math:`0.15`, proportional to the curvature, and zero for a
-    straight edge. This is the approximation Popp, Gitterle, Gee and Wall (2010), Section 4.2, name
-    for the sub-segment approach.
+    The integration cells follow the chords of the linear sub-segments of a quadratic facet (see
+    *Segmentation of the overlap*). With every Gauss point attributed to the facet that contains it,
+    a uniform multiplier reproduces the consistent nodal loads of a uniform pressure up to the
+    quadrature of the cells that straddle a curved edge: :math:`9.1 \cdot 10^{-5}` to
+    :math:`3.2 \cdot 10^{-4}` on the fixture described there, and zero for a straight edge.
 
 Reproducibility under threaded BLAS, ``geometryUpdate=consistent``
     The linearisation is assembled by matrix products that numpy hands to BLAS. With more than one
@@ -1329,8 +1349,9 @@ that a reader checking a single line does not have to reconstruct which work it 
   converged; and the three-dimensional friction trial state with the re-projected history, Eqs.
   (16)--(21). Their Fig. 3 is also the decomposition of a quadratic facet into linear sub-segments used
   here: four quadrilaterals for the nine-node patch, four triangles for the six-node patch, and four
-  triangles plus one quadrilateral for the serendipity eight-node patch; and their Eqs. (31)--(32)
-  the affine map that carries a Gauss point from a sub-segment to its parent.
+  triangles plus one quadrilateral for the serendipity eight-node patch. Their affine map from a
+  sub-segment to its parent, Eqs. (31)--(32), is replaced here by the attribution of each Gauss point
+  to the facet that contains it (see *Segmentation of the overlap*).
 * B. Yang, T. A. Laursen, X. Meng: *Two dimensional mortar contact methods for large deformation
   frictional sliding*, International Journal for Numerical Methods in Engineering 62 (2005),
   1183--1225. -- The penalty-regularised Coulomb law of the friction option, its trial state and
@@ -1363,7 +1384,7 @@ that a reader checking a single line does not have to reconstruct which work it 
   contact with consistent linearization*, International Journal for Numerical Methods in Engineering
   83 (2010), 1428--1465. -- The averaged nodal normal, Eq. (37); the three-dimensional segmentation
   of Section 4.1 with the auxiliary plane of Eqs. (A15) and (A18), the integration of D, M and the
-  weighted gap, Eqs. (39)--(41), and the sub-segments of quadratic facets with the map of Eq. (42);
+  weighted gap, Eqs. (39)--(41), and the sub-segments of quadratic facets, Section 4.2;
   the consistent linearisation of the geometry, Section 4.3 and Appendix A, Eqs. (A1)--(A26); the
   neglected variation of the coupling matrices, Section 7; the cost of an incomplete linearisation,
   Table I.

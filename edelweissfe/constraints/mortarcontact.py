@@ -739,14 +739,23 @@ class Constraint(ConstraintBase, MeshDependent):
     def _weightedGap(self, I: int, x_slave: np.ndarray, x_master: np.ndarray) -> float:  # noqa: E741
         """The weighted gap of non-mortar node ``I``, ``g_I = sum_J Cn_IJ . x_J - sum_K Dn_IK . x_K``
         with the gap matrices of the current geometry: Popp, Gitterle, Gee & Wall (2010), Eq. (41), in
-        3D, Popp, Gee & Wall (2009), Eq. (50), in 2D (see :mod:`~edelweissfe.utils.mortarcoupling`)."""
+        3D, Popp, Gee & Wall (2009), Eq. (50), in 2D (see :mod:`~edelweissfe.utils.mortarcoupling`).
+
+        The coordinates enter relative to the node's own position. Both sums integrate the same
+        ``Phi_I n`` against a partition of unity, ``sum_K Dn_IK = sum_J Cn_IJ``, so the shift changes
+        nothing but the round-off: with absolute coordinates the two sums are each of the size of the
+        model's coordinates times the nodal weight and cancel to the gap, and their round-off is a
+        spurious gap that the penalty turns into a force. Measured on POT_Dejori (coordinates up to
+        190, eps_N = 1.3e6) in the load-free increment: weighted gaps of 1e-11 from absolute
+        coordinates, residual forces of 1e-3 that Newton could not reduce."""
 
         nzD, nzC = self.currentDNonzero[I], self.currentCNonzero[I]
+        origin = x_slave[I]
         g_weak = 0.0
         if len(nzD):
-            g_weak -= float(np.sum(self.currentDnRow[I] * x_slave[nzD]))
+            g_weak -= float(np.sum(self.currentDnRow[I] * (x_slave[nzD] - origin)))
         if len(nzC):
-            g_weak += float(np.sum(self.currentCnRow[I] * x_master[nzC]))
+            g_weak += float(np.sum(self.currentCnRow[I] * (x_master[nzC] - origin)))
         return g_weak
 
     def _multiplierRowScale(self, I: int) -> float:  # noqa: E741
@@ -2261,8 +2270,11 @@ class Constraint(ConstraintBase, MeshDependent):
         x_s, x_m = coords[colsD], coords[nSlave + np.asarray(colsC, dtype=np.intp)]
 
         # The geometric part of dg_I with the gap matrices: -sum_K x_K . dDn_IK + sum_J x_J . dCn_IJ,
-        # Popp et al. (2010), Eqs. (A8)-(A11) (in 2D, Popp, Gee & Wall 2009, Eq. (A36)).
-        dg = -np.einsum("kc,kcz->z", x_s, lin["dDn"]) + np.einsum("lc,lcz->z", x_m, lin["dCn"])
+        # Popp et al. (2010), Eqs. (A8)-(A11) (in 2D, Popp, Gee & Wall 2009, Eq. (A36)); relative to the
+        # node's position as in _weightedGap, which leaves it unchanged since the two row sums are
+        # equal in every configuration and so are their derivatives.
+        origin = coords[I]
+        dg = -np.einsum("kc,kcz->z", x_s - origin, lin["dDn"]) + np.einsum("lc,lcz->z", x_m - origin, lin["dCn"])
 
         # Rows of the forces on the coupled nodes, -lambda w_a n_I with w = [D_IK, -C_IJ].
         rowsD = (sf * np.asarray(colsD, dtype=np.intp)[:, None] + np.arange(dim)).ravel()

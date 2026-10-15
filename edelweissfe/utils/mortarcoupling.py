@@ -35,6 +35,7 @@ from edelweissfe.utils.mortargeometry import (
     buildBoundingVolumeHierarchy,
     getSubCells,
     isConvexPolygon,
+    isInsideReferenceElement,
     lineGaussPoints,
     lineGaussWeights,
     mapPlaneToNatural,
@@ -52,7 +53,6 @@ from edelweissfe.utils.mortarlinearization import (
     planeCoordinates,
     scatterMatrix,
     shapeFunctionSecondDerivatives,
-    subCellParentMap,
     surfaceJacobian,
     surfaceJacobianNaturalDerivative,
     sutherlandHodgmanClipWithDerivatives,
@@ -74,11 +74,14 @@ Three dimensions -- Popp, Gitterle, Gee & Wall (2010), Section 4 and Appendix A:
 * the orthogonal projection of slave and master (sub-)segments into it, Eq. (A17), clipping by
   Sutherland & Hodgman, triangulation into integration cells, a 7-point rule per cell (Puso &
   Laursen 2004, Section 3.1);
-* the Gauss point mapped back onto both (sub-)segments along ``n0``, Eq. (A12) -- for the planar
-  sub-segment this is the inverse of its own isoparametric map in the plane;
-* quadratic facets split into linear sub-segments with an affine map from sub-segment to parent
-  coordinates, Popp et al. (2010), Section 4.2, Eq. (42), and Puso, Laursen & Solberg (2008),
-  Eqs. (31)-(32), Fig. 3;
+* quadratic facets split into linear sub-segments for the clipping, Popp et al. (2010), Section 4.2,
+  and Puso, Laursen & Solberg (2008), Fig. 3;
+* the Gauss point mapped back along ``n0``, Eq. (A12), by the inverse of the isoparametric map of
+  the whole projected facet, and attributed to the facet that contains it. For linear facets this
+  is Eq. (A12) itself. For quadratic ones it replaces the affine sub-segment map of Popp et al.
+  (2010), Eq. (42), and Puso et al. (2008), Eqs. (31)-(32), which keeps a point with the facet whose
+  sub-segment produced it even where an edge curved in the surface puts it in the neighbour; the
+  attribution is this implementation's step (see :func:`_locate`);
 * D, M and the weighted gap on the cells, Eqs. (39)-(41), with the interpolated normal at the
   Gauss point, Eq. (A11).
 
@@ -151,6 +154,9 @@ class MortarCoupling:
     nonConvex, slivers
         Element numbers of non-convex sub-segments and of slave elements that took the
         reference-element fallback.
+    reattributedGaussPoints, droppedGaussPoints
+        3D Gauss points that lie in another facet than the one whose sub-segment produced them, and
+        those that lie in no facet at all (see :func:`_locate`).
     """
 
     D: csr_matrix
@@ -163,6 +169,8 @@ class MortarCoupling:
     firstProjectionFailure: tuple | None = None
     nonConvex: list = field(default_factory=list)
     slivers: list = field(default_factory=list)
+    reattributedGaussPoints: int = 0
+    droppedGaussPoints: int = 0
 
 
 def _subCellElement(nNodes: int, elementClass):
@@ -260,6 +268,7 @@ def computeMortarCoupling(
     blocks = {"D": ([], [], []), "M": ([], [], []), "Dn": [([], [], []) for _ in range(dim)]}
     blocks["Mn"] = [([], [], []) for _ in range(dim)]
 
+    owners = _Owners(nonMortarFacets, coordinates, constraintIndex, slaveIndex, normals, normalDerivatives, dim)
     for s_el in nonMortarFacets:
         s_coords = np.array([coordinates[nd] for nd in s_el.nodes])
         lo, hi = s_coords.min(axis=0), s_coords.max(axis=0)
@@ -268,16 +277,18 @@ def computeMortarCoupling(
         queryBoundingVolumeHierarchy(bvh, lo - margin, hi + margin, candidates)
         if not candidates:
             continue
-
-        context = _SlaveContext(s_el, coordinates, constraintIndex, slaveIndex, normals, normalDerivatives, dim)
-        records = _Records()
         if dim == 3:
-            _segment3D(context, candidates, coordinates, constraintIndex, elementClass, records, result, warn)
+            _segment3D(owners.context(s_el), candidates, owners, coordinates, constraintIndex, elementClass, result)
         else:
-            _segment2D(context, candidates, coordinates, constraintIndex, records, result)
-        if not len(records):
+            _segment2D(owners.context(s_el), candidates, coordinates, constraintIndex, owners.records(s_el), result)
+
+    # A Gauss point may belong to another slave element than the one that produced it, so the
+    # elements are assembled once the whole surface is segmented.
+    for s_el in nonMortarFacets:
+        records = owners.recordsIfAny(s_el)
+        if records is None or not len(records):
             continue
-        _assembleSlaveElement(context, records, masterIndex, blocks, kappaSum, result, warn)
+        _assembleSlaveElement(owners.context(s_el), records, masterIndex, blocks, kappaSum, result, warn)
 
     def toCsr(triple, shape):
         rows, cols, vals = triple
@@ -300,6 +311,35 @@ def computeMortarCoupling(
                 for kind, cols, d, support in result.rowContributions[I]
             ]
     return result
+
+
+class _Owners:
+    """Per slave element its context and its Gauss point records, created on first use, and the slave
+    elements sharing a node with it -- where a Gauss point is looked for that its own element does not
+    contain (see :func:`_locate`)."""
+
+    def __init__(self, nonMortarFacets, coordinates, constraintIndex, slaveIndex, normals, normalDerivatives, dim):
+        self.arguments = (coordinates, constraintIndex, slaveIndex, normals, normalDerivatives, dim)
+        self._contexts, self._records = {}, {}
+        byNode = {}
+        for f in nonMortarFacets:
+            for nd in f.nodes:
+                byNode.setdefault(nd, []).append(f)
+        self.neighbours = {
+            f.elNumber: list({g.elNumber: g for nd in f.nodes for g in byNode[nd] if g is not f}.values())
+            for f in nonMortarFacets
+        }
+
+    def context(self, el):
+        if el.elNumber not in self._contexts:
+            self._contexts[el.elNumber] = _SlaveContext(el, *self.arguments)
+        return self._contexts[el.elNumber]
+
+    def records(self, el):
+        return self._records.setdefault(el.elNumber, _Records())
+
+    def recordsIfAny(self, el):
+        return self._records.get(el.elNumber)
 
 
 class _SlaveContext:
@@ -342,11 +382,61 @@ class _SlaveContext:
         return np.concatenate((self.Z, masterIds)), nZ, pad, dMaster
 
 
-def _segment3D(context, candidates, coordinates, constraintIndex, elementClass, records, result, warn):
+class _AuxiliaryPlane:
+    """The auxiliary plane of one slave sub-segment, ``x0``, ``n0`` and the tangent basis, with the
+    plane coordinates of further facets computed on demand: a Gauss point that the facet whose
+    sub-segment produced it does not contain is looked up in its neighbours (see :func:`_locate`)."""
+
+    def __init__(self, x0, n0, t1, t2, coordinates):
+        self.x0, self.n0, self.t1, self.t2 = x0, n0, t1, t2
+        self.coordinates = coordinates
+        self.cache = {}
+
+    def of(self, el):
+        if el.elNumber not in self.cache:
+            coords = np.array([self.coordinates[nd] for nd in el.nodes])
+            self.cache[el.elNumber] = toPlaneCoordinates(coords, self.x0, self.t1, self.t2)
+        return self.cache[el.elNumber]
+
+
+def _locate(el, q, x, alternatives, plane):
+    """The facet that contains the plane point ``x`` and its natural coordinate there.
+
+    The point is first mapped back by the inverse of the facet's own isoparametric map in the plane
+    -- for a linear facet the inverse of Popp et al. (2010), Eq. (A12); for a quadratic one the map of
+    the whole projected facet rather than the affine sub-segment map of their Eq. (42). Where a
+    quadratic facet has an edge that is curved in the surface, the straight sub-segments clip the
+    region between chord and edge to the wrong facet; mapped back into that facet, the point lands
+    outside its reference domain and its shape functions are extrapolated. Such a point is then
+    attributed to the facet among ``alternatives`` that contains it. This attribution is this
+    implementation's step, not from a source; Popp et al. (2010), Section 4.2, name the
+    approximation it removes, and :class:`TestCurvedEdgeAttribution` measures it.
+
+    Returns ``(facet, natural coordinate, converged)``; ``(None, None, True)`` if the point provably
+    lies in no facet, which happens only beyond the curved boundary of a surface. A back-mapping that
+    does not converge proves nothing: such a point stays with ``el`` and is reported.
+    """
+    xi, ok = mapPlaneToNatural(el, q, x)
+    if ok and isInsideReferenceElement(el, xi):
+        return el, xi, True
+    for other in alternatives:
+        if other is el:
+            continue
+        xi_o, ok_o = mapPlaneToNatural(other, plane.of(other), x)
+        if ok_o and isInsideReferenceElement(other, xi_o):
+            return other, xi_o, True
+    if not ok:
+        return el, xi, False
+    return None, None, True
+
+
+def _segment3D(context, candidates, owners, coordinates, constraintIndex, elementClass, result):
     """The 3D segmentation of one slave element, Popp et al. (2010), Section 4.1 and Algorithm 1, on the
-    linear sub-segments of Section 4.2."""
+    linear sub-segments of Section 4.2, with every Gauss point attributed to the slave and master
+    facets that contain it (see :func:`_locate`)."""
     s_el = context.el
     derivatives = context.withDerivatives
+    neighbours = owners.neighbours[s_el.elNumber]
     for s_sub in getSubCells(s_el):
         subEl = _subCellElement(len(s_sub), elementClass)
         N0 = subEl.getShapeFunctions(_subCellCentre(len(s_sub)))
@@ -357,34 +447,36 @@ def _segment3D(context, candidates, coordinates, constraintIndex, elementClass, 
             continue
         n0 = n0raw / np.linalg.norm(n0raw)
         t1, t2 = tangentBasis(n0)
-        q_s = toPlaneCoordinates(context.coords[s_sub], x0, t1, t2)
+        plane = _AuxiliaryPlane(x0, n0, t1, t2, coordinates)
+        q_sFull = plane.of(s_el)
+        q_s = q_sFull[s_sub]
         if not isConvexPolygon(q_s):
             result.nonConvex.append(("non-mortar", s_el.elNumber))
-        toParent_s = subCellParentMap(context.natural, s_sub, subEl)
 
         for m_el in candidates:
-            m_coords = np.array([coordinates[nd] for nd in m_el.nodes])
-            m_natural = np.array(m_el.getNodalNaturalCoordinates(), dtype=float).reshape(len(m_el.nodes), -1)
+            q_mFull = plane.of(m_el)
             if derivatives:
+                m_coords = np.array([coordinates[nd] for nd in m_el.nodes])
                 m_ids = np.array([constraintIndex[nd] for nd in m_el.nodes], dtype=np.intp)
                 Z, nZ, pad, dMaster = context.extended(m_ids)
                 dx0 = pad(np.tensordot(N0, context.dCoords[s_sub], axes=1))
                 _, dn0 = unitVector(n0raw, pad(np.tensordot(N0, context.dNormals[s_sub], axes=1)))
-                _, dq_s = planeCoordinates(context.coords[s_sub], pad(context.dCoords[s_sub]), x0, dx0, n0, dn0, t1, t2)
+                _, dq_sFull = planeCoordinates(context.coords, pad(context.dCoords), x0, dx0, n0, dn0, t1, t2)
+                _, dq_mFull = planeCoordinates(m_coords, dMaster, x0, dx0, n0, dn0, t1, t2)
+                planeDerivatives = (Z, pad, dx0, dn0, dq_sFull, dq_mFull)
 
             for m_sub in getSubCells(m_el):
-                subEl_m = _subCellElement(len(m_sub), elementClass)
-                q_m = toPlaneCoordinates(m_coords[m_sub], x0, t1, t2)
+                q_m = q_mFull[m_sub]
                 if not isConvexPolygon(q_m):
                     result.nonConvex.append(("mortar", m_el.elNumber))
                 if derivatives:
-                    _, dq_m = planeCoordinates(m_coords[m_sub], dMaster[list(m_sub)], x0, dx0, n0, dn0, t1, t2)
-                    polygon, dPolygon = sutherlandHodgmanClipWithDerivatives(q_m, dq_m, q_s, dq_s)
+                    polygon, dPolygon = sutherlandHodgmanClipWithDerivatives(
+                        q_m, dq_mFull[list(m_sub)], q_s, dq_sFull[list(s_sub)]
+                    )
                 else:
                     polygon = sutherlandHodgmanClip(q_m, q_s)
                 if len(polygon) < 3:
                     continue
-                toParent_m = subCellParentMap(m_natural, m_sub, subEl_m)
 
                 for i_tri, tri in enumerate(triangulatePolygon(polygon)):
                     v0, v1, v2 = tri
@@ -394,14 +486,19 @@ def _segment3D(context, candidates, coordinates, constraintIndex, elementClass, 
                     if derivatives:
                         dTri = dPolygon[[0, i_tri + 1, i_tri + 2]]
                         _, dArea = fanTriangleArea(tri, dTri)
-                    points = []
-                    for gp, w in zip(triangleGaussPoints, triangleGaussWeights):
-                        L1, L2 = gp
+                    # The points of the cell, grouped by the pair of facets they are attributed to.
+                    groups = {}
+                    for g, (L1, L2) in enumerate(triangleGaussPoints):
                         x_gp = (1.0 - L1 - L2) * v0 + L1 * v1 + L2 * v2
-                        # Back onto both sub-segments along n0, Eq. (A12), then to the parents, Eq. (42).
-                        xiSub_s, ok_s = mapPlaneToNatural(subEl, q_s, x_gp)
-                        xiSub_m, ok_m = mapPlaneToNatural(subEl_m, q_m, x_gp)
-                        for ok, side, el in ((ok_s, "slave", s_el), (ok_m, "master", m_el)):
+                        # Back onto both surfaces along n0, Eq. (A12).
+                        own_s, xi_s, ok_s = _locate(s_el, q_sFull, x_gp, neighbours, plane)
+                        own_m, xi_m, ok_m = _locate(m_el, q_mFull, x_gp, candidates, plane)
+                        if own_s is None or own_m is None:
+                            result.droppedGaussPoints += 1
+                            continue
+                        if own_s is not s_el or own_m is not m_el:
+                            result.reattributedGaussPoints += 1
+                        for ok, side, el in ((ok_s, "slave", own_s), (ok_m, "master", own_m)):
                             if not ok:
                                 result.projectionFailures += 1
                                 result.firstProjectionFailure = result.firstProjectionFailure or (
@@ -409,90 +506,131 @@ def _segment3D(context, candidates, coordinates, constraintIndex, elementClass, 
                                     el.elNumber,
                                     el.elType,
                                 )
-                        xi_s, jac_s = toParent_s(xiSub_s)
-                        xi_m, jac_m = toParent_m(xiSub_m)
-                        N_s = s_el.getShapeFunctions(xi_s)
-                        normal_raw = N_s @ context.normals
-                        records.N_s.append(N_s)
-                        records.master.append(m_el)
-                        records.N_m.append(m_el.getShapeFunctions(xi_m))
-                        records.dG.append(area * w)
-                        records.normal.append(normal_raw / np.linalg.norm(normal_raw))
-                        points.append((xiSub_s, xiSub_m, xi_s, xi_m, N_s))
-                    # The element Jacobian |x,xi x x,eta| at the seven points at once (cf.
-                    # ContactElement.getJacobianAndAreaWeight).
-                    tangents = np.einsum(
-                        "gak,ki->gai",
-                        np.array([s_el.getShapeFunctionDerivatives(p[2]) for p in points]),
-                        context.coords,
-                    )
-                    records.Je.extend(np.linalg.norm(np.cross(tangents[:, 0], tangents[:, 1]), axis=1))
-                    if derivatives:
-                        _gaussPointDerivatives3D(
-                            context,
-                            m_el,
-                            (subEl, q_s, dq_s, jac_s),
-                            (subEl_m, q_m, dq_m, jac_m),
-                            dTri,
-                            dArea,
-                            points,
-                            Z,
-                            pad,
-                            records,
-                        )
+                        key = (own_s.elNumber, own_m.elNumber)
+                        groups.setdefault(key, (own_s, own_m, []))[2].append((g, xi_s, xi_m))
+
+                    for own_s, own_m, points in groups.values():
+                        owner = owners.context(own_s)
+                        records = owners.records(own_s)
+                        weights = triangleGaussWeights[[p[0] for p in points]]
+                        N_s = np.array([own_s.getShapeFunctions(p[1]) for p in points])
+                        dNdxi_s = np.array([own_s.getShapeFunctionDerivatives(p[1]) for p in points])
+                        normal_raw = N_s @ owner.normals
+                        records.N_s.extend(N_s)
+                        records.master.extend([own_m] * len(points))
+                        records.N_m.extend(own_m.getShapeFunctions(p[2]) for p in points)
+                        records.dG.extend(area * weights)
+                        records.normal.extend(normal_raw / np.linalg.norm(normal_raw, axis=1)[:, None])
+                        # The element Jacobian |x,xi x x,eta| (cf. ContactElement.getJacobianAndAreaWeight).
+                        tangents = np.einsum("gak,ki->gai", dNdxi_s, owner.coords)
+                        records.Je.extend(np.linalg.norm(np.cross(tangents[:, 0], tangents[:, 1]), axis=1))
+                        if derivatives:
+                            _gaussPointDerivatives3D(
+                                context,
+                                owner,
+                                (s_el, m_el, own_m),
+                                plane,
+                                planeDerivatives,
+                                dTri,
+                                dArea,
+                                points,
+                                N_s,
+                                dNdxi_s,
+                                constraintIndex,
+                                records,
+                            )
 
 
-def _gaussPointDerivatives3D(context, m_el, slaveSub, masterSub, dTri, dArea, points, Z, pad, records):
-    """The derivatives of the seven Gauss points of one integration cell, evaluated together: their
-    position in the plane (Eq. (A16)), their natural coordinates on both sub-segments by the inverse
-    plane map (Eqs. (A12)-(A14)) carried to the parents (Eq. (42)), the shape functions there, the
-    interpolated normal (Eq. (A11)), the element Jacobian with its natural derivative (Popp, Seitz,
-    Gee & Wall 2013, Eq. (38)) and the integration weight (Eq. (A7))."""
-    s_el = context.el
-    coords = context.coords
-    bary = np.column_stack((1.0 - triangleGaussPoints.sum(axis=1), triangleGaussPoints))
-    dx = np.einsum("gv,viz->giz", bary, dTri)
+def _gaussPointDerivatives3D(
+    context, owner, facets, plane, planeDerivatives, dTri, dArea, points, N_s, dNdxi_s, constraintIndex, records
+):
+    """The derivatives of the Gauss points of one integration cell that are attributed to the same
+    pair of facets, evaluated together: their position in the plane (Eq. (A16)), their natural
+    coordinates by the inverse plane map of the facets that contain them (Eqs. (A12)-(A14), see
+    :func:`_locate`), the shape functions there, the interpolated normal (Eq. (A11)), the element
+    Jacobian with its natural derivative (Popp, Seitz, Gee & Wall 2013, Eq. (38)) and the integration
+    weight (Eq. (A7)).
 
-    def naturalDerivatives(sub, q, dq, jac, xiSubs):
-        subEl = sub
-        N = np.array([subEl.getShapeFunctions(x) for x in xiSubs])
-        dN = np.array([subEl.getShapeFunctionDerivatives(x) for x in xiSubs])
-        J = np.einsum("gak,ki->gia", dN, q)
+    A point attributed to another facet than the one whose sub-segment produced it depends on the
+    nodes of that facet as well, and on the slave side on the nodes its nodal normals depend on; they
+    are added to the point's coordinate vector."""
+    s_el, m_el, own_m = facets
+    own_s = owner.el
+    Z, pad, dx0, dn0, dq_sFull, dq_mFull = planeDerivatives
+    dim = 3
+    m_ids = np.array([constraintIndex[nd] for nd in own_m.nodes], dtype=np.intp)
+
+    # The coordinate vector of the points: that of the producing pair, extended if they moved.
+    if own_s is s_el and own_m is m_el:
+        Zp = Z
+        widen = pad
+        dOwnCoords = pad(owner.dCoords)
+        dOwnNormals = pad(owner.dNormals)
+        dq_s, dq_m = dq_sFull, dq_mFull
+    else:
+        extra = [Z]
+        if own_s is not s_el:
+            extra.append(owner.Z)
+        if own_m is not m_el:
+            extra.append(m_ids)
+        Zp = np.unique(np.concatenate(extra))
+        S = scatterMatrix(Z, Zp, dim)
+        S_owner = scatterMatrix(owner.Z, Zp, dim)
+
+        def widen(d):
+            return d @ S
+
+        dOwnCoords = owner.dCoords @ S_owner
+        dOwnNormals = owner.dNormals @ S_owner
+        x0w, dx0w, dn0w = plane.x0, widen(dx0), widen(dn0)
+
+        def onPlane(el, dCoords):
+            coords = np.array([plane.coordinates[nd] for nd in el.nodes])
+            return planeCoordinates(coords, dCoords, x0w, dx0w, plane.n0, dn0w, plane.t1, plane.t2)[1]
+
+        dq_s = widen(dq_sFull) if own_s is s_el else onPlane(own_s, dOwnCoords)
+        if own_m is m_el:
+            dq_m = widen(dq_mFull)
+        else:
+            dq_m = onPlane(own_m, scatterMatrix(m_ids, Zp, dim).reshape(len(m_ids), dim, -1))
+
+    g = np.array([p[0] for p in points])
+    bary = np.column_stack((1.0 - triangleGaussPoints[g].sum(axis=1), triangleGaussPoints[g]))
+    dx = np.einsum("gv,viz->giz", bary, widen(dTri))
+
+    def naturalDerivatives(el, q, dq, N, dNdxi):
+        # x(xi) = sum_k N_k(xi) q_k = x_gp in the plane: dxi = J^-1 (dx_gp - sum_k N_k dq_k).
+        J = np.einsum("gak,ki->gia", dNdxi, q)
         rhs = dx - np.einsum("gk,kiz->giz", N, dq)
         try:
-            dxiSub = np.linalg.solve(J, rhs)
+            return np.linalg.solve(J, rhs)
         except np.linalg.LinAlgError:
-            dxiSub = np.zeros_like(rhs)
-        return np.einsum("ab,gbz->gaz", jac, dxiSub)
+            return np.zeros((len(N), J.shape[2], rhs.shape[-1]))
 
-    subEl, q_s, dq_s, jac_s = slaveSub
-    subEl_m, q_m, dq_m, jac_m = masterSub
-    dxi_s = naturalDerivatives(subEl, q_s, dq_s, jac_s, [p[0] for p in points])
-    dxi_m = naturalDerivatives(subEl_m, q_m, dq_m, jac_m, [p[1] for p in points])
-    N_s = np.array([p[4] for p in points])
-    dNdxi_s = np.array([s_el.getShapeFunctionDerivatives(p[2]) for p in points])
-    dNdxi_m = np.array([m_el.getShapeFunctionDerivatives(p[3]) for p in points])
+    N_m = np.array([own_m.getShapeFunctions(p[2]) for p in points])
+    dNdxi_m = np.array([own_m.getShapeFunctionDerivatives(p[2]) for p in points])
+    dxi_s = naturalDerivatives(own_s, plane.of(own_s), dq_s, N_s, dNdxi_s)
+    dxi_m = naturalDerivatives(own_m, plane.of(own_m), dq_m, N_m, dNdxi_m)
     dN_s = np.einsum("gak,gaz->gkz", dNdxi_s, dxi_s)
     dN_m = np.einsum("gak,gaz->gkz", dNdxi_m, dxi_m)
 
     # The interpolated normal, Eq. (A11), linearised through Eq. (A1).
-    dNormals = pad(context.dNormals)
-    raw = N_s @ context.normals
-    dRaw = np.einsum("gk,kcz->gcz", N_s, dNormals) + np.einsum("kc,gak,gaz->gcz", context.normals, dNdxi_s, dxi_s)
+    raw = N_s @ owner.normals
+    dRaw = np.einsum("gk,kcz->gcz", N_s, dOwnNormals) + np.einsum("kc,gak,gaz->gcz", owner.normals, dNdxi_s, dxi_s)
     length = np.linalg.norm(raw, axis=1)
     unit = raw / length[:, None]
     dNormal = (dRaw - unit[:, :, None] * np.einsum("gc,gcz->gz", unit, dRaw)[:, None, :]) / length[:, None, None]
 
     # The element Jacobian J_e = |x,xi x x,eta| at the Gauss points and its derivative, through the
     # nodal coordinates and through the Gauss point coordinate (Popp et al. 2010, Eqs. (A25)-(A26)).
+    coords = owner.coords
     t = np.einsum("gak,ki->gai", dNdxi_s, coords)
     c = np.cross(t[:, 0], t[:, 1])
     u = c / np.linalg.norm(c, axis=1)[:, None]
     a0, a1 = np.cross(t[:, 1], u), np.cross(u, t[:, 0])
     dJcoords = dNdxi_s[:, 0, :, None] * a0[:, None, :] + dNdxi_s[:, 1, :, None] * a1[:, None, :]
-    dCoords = context.dCoords.reshape(-1, context.dCoords.shape[-1])
-    dJe = pad(dJcoords.reshape(len(points), -1) @ dCoords)
-    d2N = np.array([shapeFunctionSecondDerivatives(s_el, p[2]) for p in points])
+    dJe = dJcoords.reshape(len(points), -1) @ dOwnCoords.reshape(-1, dOwnCoords.shape[-1])
+    d2N = np.array([shapeFunctionSecondDerivatives(own_s, p[1]) for p in points])
     dJdxi = np.empty((len(points), 2))
     for m in range(2):
         along0 = np.einsum("gk,ki->gi", d2N[:, 0, m], coords)
@@ -500,13 +638,14 @@ def _gaussPointDerivatives3D(context, m_el, slaveSub, masterSub, dTri, dArea, po
         dJdxi[:, m] = np.einsum("gi,gi->g", u, np.cross(along0, t[:, 1]) + np.cross(t[:, 0], along1))
     dJe = dJe + np.einsum("ga,gaz->gz", dJdxi, dxi_s)
 
-    for g, w in enumerate(triangleGaussWeights):
-        records.Z.append(Z)
-        records.dN_s.append(dN_s[g])
-        records.dN_m.append(dN_m[g])
-        records.ddG.append(dArea * w)
-        records.dNormal.append(dNormal[g])
-        records.dJe.append(dJe[g])
+    ddG = widen(dArea)
+    for k, gIndex in enumerate(g):
+        records.Z.append(Zp)
+        records.dN_s.append(dN_s[k])
+        records.dN_m.append(dN_m[k])
+        records.ddG.append(ddG * triangleGaussWeights[gIndex])
+        records.dNormal.append(dNormal[k])
+        records.dJe.append(dJe[k])
 
 
 def _projectAlongNormal2D(el, coords, point, direction, xi0=0.0, iterations=20, tol=1e-12):

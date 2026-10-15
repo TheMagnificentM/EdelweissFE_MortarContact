@@ -170,26 +170,22 @@ def sutherlandHodgmanClipWithDerivatives(subject, dsubject, clip, dclip) -> tupl
         return (cp2[0] - cp1[0]) * (p[1] - cp1[1]) - (cp2[1] - cp1[1]) * (p[0] - cp1[0]) >= -1e-12
 
     def intersection(cp1, dcp1, cp2, dcp2, s, ds, e, de):
-        dc = [cp1[0] - cp2[0], cp1[1] - cp2[1]]
-        dp = [s[0] - e[0], s[1] - e[1]]
-        n1 = cp1[0] * cp2[1] - cp1[1] * cp2[0]
-        n2 = s[0] * e[1] - s[1] * e[0]
-        den = dc[0] * dp[1] - dc[1] * dp[0]
-        if den == 0.0:
+        s, e = np.asarray(s), np.asarray(e)
+        edge, dEdge = cp2 - cp1, dcp2 - dcp1
+        d_s = edge[0] * (s[1] - cp1[1]) - edge[1] * (s[0] - cp1[0])
+        d_e = edge[0] * (e[1] - cp1[1]) - edge[1] * (e[0] - cp1[0])
+        if d_s == d_e:
             return [e[0], e[1]], de
-        n3 = 1.0 / den
-        value = [(n1 * dp[0] - n2 * dc[0]) * n3, (n1 * dp[1] - n2 * dc[1]) * n3]
-
-        ddc = dcp1 - dcp2
-        ddp = ds - de
-        dn1 = dCross2(cp1, dcp1, cp2, dcp2)
-        dn2 = dCross2(s, ds, e, de)
-        dden = dCross2(dc, ddc, dp, ddp)
-        derivative = np.empty_like(ds)
-        for i in range(2):
-            numerator = n1 * dp[i] - n2 * dc[i]
-            dnumerator = dn1 * dp[i] + n1 * ddp[i] - dn2 * dc[i] - n2 * ddc[i]
-            derivative[i] = dnumerator * n3 - numerator * n3 * n3 * dden
+        ratio = d_s / (d_s - d_e)
+        t = min(max(ratio, 0.0), 1.0)
+        value = [s[0] + t * (e[0] - s[0]), s[1] + t * (e[1] - s[1])]
+        derivative = ds + t * (de - ds)
+        if t == ratio:
+            # Inside [0, 1] t moves with the points; at a clamp it is a constant.
+            dd_s = dCross2(edge, dEdge, s - cp1, ds - dcp1)
+            dd_e = dCross2(edge, dEdge, e - cp1, de - dcp1)
+            dt = (d_s * dd_e - d_e * dd_s) / (d_s - d_e) ** 2
+            derivative = derivative + np.outer(e - s, dt)
         return value, derivative
 
     outputList = [(subject[k], dsubject[k]) for k in range(len(subject))]
@@ -366,26 +362,3 @@ def surfaceJacobianNaturalDerivative(el, xi, coords) -> np.ndarray:
     c = cross3(t[0], t[1])
     u = c / np.linalg.norm(c)
     return np.array([u @ (cross3(d2N[0, m] @ coords, t[1]) + cross3(t[0], d2N[1, m] @ coords)) for m in range(2)])
-
-
-def subCellParentMap(parentNatural: np.ndarray, subCellNodes, subCellElement):
-    """The map from the natural coordinate of a linear sub-cell to that of its parent facet,
-    ``xi = sum_k N^sub_k(xi_sub) xi_k`` over the parent coordinates ``xi_k`` of the sub-cell's
-    corners, and its Jacobian ``dxi/dxi_sub``.
-
-    The sub-cells of :data:`~edelweissfe.utils.mortargeometry.subCellMap` are triangles and
-    parallelograms in the parent's natural space, so the map is affine -- the "simple affine (linear)
-    map ... between the sub-segment coordinates and actual segment (element) coordinates" of Puso,
-    Laursen & Solberg (2008), Eqs. (31)-(32), and the "geometric mappings from parent element space
-    to subsegment space" of Popp, Gitterle, Gee & Wall (2010), Eq. (42).
-
-    Returns a function ``xi_sub -> (xi, dxi/dxi_sub)``.
-    """
-    corners = parentNatural[list(subCellNodes)]
-
-    def toParent(xiSub):
-        N = subCellElement.getShapeFunctions(xiSub)
-        dN = subCellElement.getShapeFunctionDerivatives(xiSub)
-        return N @ corners, (dN @ corners).T
-
-    return toParent
