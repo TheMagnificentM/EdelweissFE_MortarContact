@@ -49,38 +49,12 @@ from edelweissfe.utils.contactfriction import (
     slipToleranceField,
     tangentPenaltyField,
 )
-from edelweissfe.utils.mortargeometry import (
-    buildBoundingVolumeHierarchy,
-    clipLineSegments,
-    curvedFacetHistoryPatches,
-    facetNormal,
-    getSubCells,
-    isConvexPolygon,
-    isInsideReferenceElement,
-    lineGaussPoints,
-    lineGaussWeights,
-    mapPlaneToNatural,
-    queryBoundingVolumeHierarchy,
-    sutherlandHodgmanClip,
-    tangentBasis,
-    toPlaneCoordinates,
-    triangleGaussPoints,
-    triangleGaussWeights,
-    triangulatePolygon,
-)
+from edelweissfe.utils.mortarcoupling import computeMortarCoupling
+from edelweissfe.utils.mortargeometry import curvedFacetHistoryPatches
 from edelweissfe.utils.mortarlinearization import (
-    chordSegment,
-    closestPointDerivative,
     elementNormalAtNode,
-    fanTriangleArea,
-    inversePlaneMapDerivative,
     mergeOverNodes,
-    nodeSlots,
-    planeCoordinates,
     scatterMatrix,
-    subCellPlane,
-    surfaceJacobian,
-    sutherlandHodgmanClipWithDerivatives,
 )
 from edelweissfe.utils.schema import buildSchemaFromOptions, schemaField
 
@@ -395,6 +369,17 @@ def _storedRows(A: csr_matrix, n_rows: int, rtol: float = 1e-12) -> tuple[list, 
         [A.indices[A.indptr[I] : A.indptr[I + 1]] for I in range(n_rows)],  # noqa: E741
         [data[A.indptr[I] : A.indptr[I + 1]] for I in range(n_rows)],  # noqa: E741
     )
+
+
+def _storedVectorRows(components: list, n_rows: int, rtol: float = 1e-12) -> list:
+    """Per row, the ``(len(row), dim)`` values of a vector-valued matrix given as one CSR matrix per
+    component, all of the same pattern; round-off values set to zero as in :func:`_storedRows`."""
+    scale = max((float(np.max(np.abs(A.data))) for A in components if A.data.size), default=0.0)
+    columns = []
+    for A in components:
+        data = np.where(np.abs(A.data) > rtol * scale, A.data, 0.0)
+        columns.append([data[A.indptr[I] : A.indptr[I + 1]] for I in range(n_rows)])  # noqa: E741
+    return [np.stack([c[I] for c in columns], axis=1) for I in range(n_rows)]  # noqa: E741
 
 
 def _nonzeroRows(A: csr_matrix, n_rows: int, rtol: float = 1e-12) -> tuple[list, list]:
@@ -751,17 +736,24 @@ class Constraint(ConstraintBase, MeshDependent):
         nNodes = len(self._nodes)
         return self._X + U_np[: self.sizeField * nNodes].reshape(nNodes, self.sizeField)[:, : self.model.domainSize]
 
-    def _weightedGap(self, I: int, x_slave: np.ndarray, x_master: np.ndarray, n_I: np.ndarray) -> float:  # noqa: E741
-        """The weighted gap ``g_I = -sum_K D_IK (x_K . n_I) + sum_J C_IJ (x_J . n_I)`` of non-mortar
-        node ``I`` on the frozen coupling matrices."""
+    def _weightedGap(self, I: int, x_slave: np.ndarray, x_master: np.ndarray) -> float:  # noqa: E741
+        """The weighted gap of non-mortar node ``I``, ``g_I = sum_J Cn_IJ . x_J - sum_K Dn_IK . x_K``
+        with the gap matrices of the current geometry: Popp, Gitterle, Gee & Wall (2010), Eq. (41), in
+        3D, Popp, Gee & Wall (2009), Eq. (50), in 2D (see :mod:`~edelweissfe.utils.mortarcoupling`)."""
 
         nzD, nzC = self.currentDNonzero[I], self.currentCNonzero[I]
         g_weak = 0.0
         if len(nzD):
-            g_weak -= self.currentDRow[I] @ (x_slave[nzD] @ n_I)
+            g_weak -= float(np.sum(self.currentDnRow[I] * x_slave[nzD]))
         if len(nzC):
-            g_weak += self.currentCRow[I] @ (x_master[nzC] @ n_I)
+            g_weak += float(np.sum(self.currentCnRow[I] * x_master[nzC]))
         return g_weak
+
+    def _multiplierRowScale(self, I: int) -> float:  # noqa: E741
+        """``1/kappa_I``, the factor of node ``I``'s multiplier row (Popp, Seitz, Gee & Wall 2013,
+        Eqs. (30)-(35)); one for a node without any integrated facet, whose row is empty anyway."""
+        kappa = self.currentNodalScale[I]
+        return 1.0 / kappa if kappa > 1e-12 else 1.0
 
     def _warnOnce(self, key: str, message: str):
         """Emit a runtime diagnostic at most once per constraint instance and cause.
@@ -1421,7 +1413,7 @@ class Constraint(ConstraintBase, MeshDependent):
 
         would_be = np.zeros(nSlave, dtype=bool)
         for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
-            g_weak = self._weightedGap(I, x_slave, x_master, self.currentNormals[I])
+            g_weak = self._weightedGap(I, x_slave, x_master)
             D_II = self.currentNodalWeights[I]
             inv_D = 1.0 / D_II if abs(D_II) > self.currentWeightTolerance else 0.0
             p_n = U_ref[idx_LM_0 + I] * np.sign(D_II)
@@ -1602,576 +1594,75 @@ class Constraint(ConstraintBase, MeshDependent):
 
         return normals
 
-    def _nonMortarFacetNeighbours(self) -> dict:
-        """Per non-mortar facet number, the non-mortar facets sharing at least one node with it.
-
-        The facets a Gauss point can be re-attributed to on the non-mortar side (see
-        _containingFacet): the chord of a curved edge deviates from the edge by a fraction of the
-        facet size, so the point always lies in a facet of the one-ring. Built once; the topology
-        of the contact surfaces does not change.
-        """
-        if not hasattr(self, "_nonMortarNeighbourCache"):
-            byNode = {}
-            for f in self.nonMortarFacets:
-                for nd in f.nodes:
-                    byNode.setdefault(nd, []).append(f)
-            self._nonMortarNeighbourCache = {
-                f.elNumber: list(
-                    {g.elNumber: g for nd in f.nodes for g in byNode[nd] if g.elNumber != f.elNumber}.values()
-                )
-                for f in self.nonMortarFacets
-            }
-        return self._nonMortarNeighbourCache
-
-    @staticmethod
-    def _containingFacet(el, coords_2d, point_2d, alternatives, inPlane):
-        """The facet that contains a Gauss point of the segmentation, and its natural coordinate there.
-
-        The segmentation clips the straight sub-cells of the facets (see subCellMap), and the
-        point is first mapped back into the facet whose sub-cell produced it. On a facet with
-        straight edges that facet contains the point. On a quadratic facet whose edges are CURVED
-        in the surface -- an O-grid, a circular mesh, or any quadratic mesh that has been
-        distorted -- it need not: the sliver between the chord and the true edge belongs to the
-        neighbouring facet, and the back-mapping into the wrong facet returns a natural
-        coordinate outside the reference domain, i.e. shape functions extrapolated beyond the
-        element. Measured on the crossed-interface patch test of the contact study (quadratic
-        hexahedra, 60 degrees): 6.9 % of the mortar-side Gauss points, up to |xi| = 1.17, and a
-        mortar-side consistency error max|C^T 1 - int N_m| / max|int N_m| of 1.0e-2 that no
-        quadrature order removes, since it is the attribution and not the integration that is
-        wrong. Re-attributed, the error drops to 2.2e-3, and the remainder is quadrature of the
-        triangles that straddle the curved edge (6.5e-5 with a 16-fold subdivided rule). On
-        full-integration C3D20 the patch-test pressure scatter goes from 5.6e-3 to 1.9e-3. (With
-        C3D20R the scatter stays at about 3 % either way: the reduced-integrated serendipity
-        element with curved edges does not pass the patch test by itself -- its reactions to a
-        uniform stress miss the consistent face loads by 3.1 %, with no contact in the model.)
-        Such a point is re-attributed to the facet among ``alternatives`` that contains it.
-
-        Returns ``(facet, natural coordinate, converged, moved)``, or ``(None, None, False,
-        False)`` if the point provably lies outside every facet -- which happens only beyond the
-        curved boundary of a surface, where there is nothing to integrate. A back-mapping that
-        did not converge proves nothing; such a point stays with its original facet and is
-        reported through the projection-failure diagnostic, exactly as before.
-        """
-        local, ok = mapPlaneToNatural(el, coords_2d, point_2d)
-        if ok and isInsideReferenceElement(el, local):
-            return el, local, ok, False
-        for other in alternatives:
-            if other is el:
-                continue
-            local_o, ok_o = mapPlaneToNatural(other, inPlane(other), point_2d)
-            if ok_o and isInsideReferenceElement(other, local_o):
-                return other, local_o, ok_o, True
-        if not ok:
-            return el, local, ok, False
-        return None, None, False, False
-
     def computeMortarCouplingMatrices(
         self, U_np: np.ndarray = None, withDerivatives: bool = False
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Compute the global mortar coupling matrices D (slave-slave) and C (slave-master).
-        Supports both 2D and 3D contact elements.
+    ) -> tuple[csr_matrix, csr_matrix]:
+        """The mortar matrices D (non-mortar x non-mortar) and C (non-mortar x mortar) at the
+        configuration ``U_np``; see :mod:`~edelweissfe.utils.mortarcoupling` for the segmentation and
+        integration and the sources they follow. The gap matrices and the nodal scaling factor of the
+        same configuration are kept as :attr:`lastCoupling`."""
+        normals = self.computeNormals(U_np, withDerivatives)
+        coupling = self._couple(U_np, normals, withDerivatives)
+        return coupling.D, coupling.M
 
-        With ``withDerivatives`` every Gauss point of the segmentation also carries the derivatives
-        of its two natural coordinates and of its integration weight with respect to the coordinates
-        of the nodes it depends on -- the auxiliary plane, the clipped polygon, the fan triangle and
-        the back-mapping, chained as in Popp, Gitterle, Gee & Wall (2010), Appendix A (see
-        :mod:`~edelweissfe.utils.mortarlinearization`) -- and the derivatives of the rows of D and C
-        are assembled from them into :attr:`_rowContributions` (see
-        :meth:`_assembleCouplingMatricesFromSegments`). The layout of the segmentation is held fixed
-        in the derivative, as in the reference.
-        """
-        dim = self.model.domainSize
-        if dim not in (2, 3):
-            raise NotImplementedError("Mortar coupling matrix integration is only implemented for 2D and 3D.")
+    def _couple(self, U_np: np.ndarray, normals: np.ndarray, withDerivatives: bool):
+        """Run :func:`~edelweissfe.utils.mortarcoupling.computeMortarCoupling` on the current state and
+        report its diagnostics."""
+        from edelweissfe.config.elementlibrary import getElementClass
 
-        n_slave = self.nNonMortarNodes
-        n_master = self.nMortarNodes
-
-        # Precompute current deformed coordinates for all nodes
-        current_coords = dict(zip(self._nodes, self._currentCoordinates(U_np)))
-
-        # Build AABB bounding boxes for all master facets to construct the BVH tree
-        facets_with_bounds = []
-        for m_el in self.mortarFacets:
-            m_coords = np.array([current_coords[n] for n in m_el.nodes])
-            centroid = np.mean(m_coords, axis=0)
-
-            aabb_min = np.min(m_coords, axis=0)
-            aabb_max = np.max(m_coords, axis=0)
-            margin = max(0.15 * np.max(aabb_max - aabb_min), 0.1)
-            aabb_min -= margin
-            aabb_max += margin
-
-            facets_with_bounds.append((m_el, centroid, aabb_min, aabb_max))
-
-        bvh_root = buildBoundingVolumeHierarchy(facets_with_bounds)
-
-        # ------------------------------------------------------------------
-        # PASS 1: Segmentation - collect all integration point records per
-        # slave facet: (N_s, master elNumber, N_m, dGamma)
-        # ------------------------------------------------------------------
-        seg_records = {}  # slave elNumber -> list of records
-        seg_masters = {}  # slave elNumber -> {master elNumber: m_el}
-        slave_els = {}  # slave elNumber -> (s_el, s_idx)
-
-        # Gauss point back-mapping failures (see mapPlaneToNatural): a non-converged
-        # natural coordinate is indistinguishable from a converged one and goes
-        # straight into N_s / N_m and thus into D and C, so it has to be counted here
-        # - nothing downstream can notice it.
-        n_proj_failed = 0
-        first_proj_failure = None
-
-        def projectionFailed(side, el):
-            nonlocal n_proj_failed, first_proj_failure
-            n_proj_failed += 1
-            if first_proj_failure is None:
-                first_proj_failure = (side, el.elNumber, el.elType)
-
-        # Gauss points re-attributed to the facet that actually contains them, and Gauss points
-        # that no facet contains -- see _containingFacet. Diagnostic; kept for the tests.
-        self.lastReattributedGaussPoints = 0
-        self.lastDroppedGaussPoints = 0
-        slave_neighbours = self._nonMortarFacetNeighbours()
-
-        ids = self._constraintNodeIds
-
-        for s_el in self.nonMortarFacets:
-            s_nodes = s_el.nodes
-
-            s_coords = np.array([current_coords[nd] for nd in s_nodes])
-            s_idx = np.array([self.nonMortarNodeToIndex[nd] for nd in s_nodes])
-            if withDerivatives:
-                ns = len(s_nodes)
-                s_ids = ids(s_el)
-
-            # Query the BVH tree once per slave facet to find nearby Master candidates
-            s_aabb_min = np.min(s_coords, axis=0)
-            s_aabb_max = np.max(s_coords, axis=0)
-            s_margin = max(0.15 * np.max(s_aabb_max - s_aabb_min), 0.1)
-
-            candidates = []
-            queryBoundingVolumeHierarchy(bvh_root, s_aabb_min - s_margin, s_aabb_max + s_margin, candidates)
-            if not candidates:
-                continue
-
-            # Loop over the linear sub-cells of the slave facet
-            for s_sub in getSubCells(s_el):
-                sc_coords = s_coords[s_sub]
-
-                if dim == 3:
-                    # 3D surface Mortar integration (Auxiliary plane projection & Sutherland-Hodgman clipping)
-                    n_vec = facetNormal(sc_coords)
-                    n_norm = np.linalg.norm(n_vec)
-                    if n_norm < 1e-14:
-                        continue  # degenerate sub-cell
-                    normal = n_vec / n_norm
-                    p0 = np.mean(sc_coords, axis=0)
-                    t1, t2 = tangentBasis(normal)
-
-                    s_sub_2d = toPlaneCoordinates(sc_coords, p0, t1, t2)
-                    s_full_2d = toPlaneCoordinates(s_coords, p0, t1, t2)
-                    if withDerivatives:
-                        # The plane depends on the corners of this slave sub-cell only.
-                        _, dnormal_s, _, dp0_s = subCellPlane(sc_coords, nodeSlots(ns, 3, 3 * ns)[s_sub])
-
-                    # Facets projected into THIS auxiliary plane, computed only when a Gauss
-                    # point has to be re-attributed (see _containingFacet).
-                    plane_cache = {}
-
-                    def inPlane(el, _cache=plane_cache, _p0=p0, _t1=t1, _t2=t2):
-                        if el.elNumber not in _cache:
-                            _cache[el.elNumber] = toPlaneCoordinates(
-                                np.array([current_coords[nd] for nd in el.nodes]), _p0, _t1, _t2
-                            )
-                        return _cache[el.elNumber]
-
-                    # The slave sub-cell is the CLIP polygon, so it must be convex
-                    # (see isConvexPolygon). For CONQUAD8 this requires the
-                    # mid-side node to stay on its own side of the element centre,
-                    # for CONQUAD9 the centre node to stay clear of the corners -
-                    # margins no usable volume element gets anywhere near, which is
-                    # why this is a warning and not a raise.
-                    if not isConvexPolygon(s_sub_2d):
-                        # Sutherland-Hodgman clips against each edge's half-plane, so a reflex vertex silently removes
-                        # area. Means a severely distorted quadratic facet (mid-side/centre node positions).
-                        self._warnOnce(
-                            "nonconvex_subcell",
-                            f"WARNING: non-convex sub-cell on non-mortar facet {s_el.elNumber} ({s_el.elType}), contact area lost",
-                        )
-
-                    for m_el in candidates:
-                        m_nodes = m_el.nodes
-                        m_coords = np.array([current_coords[nd] for nd in m_nodes])
-                        m_full_2d = toPlaneCoordinates(m_coords, p0, t1, t2)
-                        if withDerivatives:
-                            # Local coordinate vector of this pair: slave facet nodes, then mortar facet
-                            # nodes; a Gauss point re-attributed to another facet appends that facet's.
-                            nm = len(m_nodes)
-                            Z0 = np.concatenate((s_ids, ids(m_el)))
-                            dnormal0 = np.pad(dnormal_s, ((0, 0), (0, 3 * nm)))
-                            dp00 = np.pad(dp0_s, ((0, 0), (0, 3 * nm)))
-                            dX0 = nodeSlots(ns + nm, 3, 3 * (ns + nm))
-                            _, dq_sfull = planeCoordinates(s_coords, dX0[:ns], p0, dp00, normal, dnormal0, t1, t2)
-                            _, dq_mfull = planeCoordinates(m_coords, dX0[ns:], p0, dp00, normal, dnormal0, t1, t2)
-
-                        for m_sub in getSubCells(m_el):
-                            m_sub_2d = m_full_2d[m_sub]
-
-                            # The master sub-cell is the SUBJECT of the clip, which
-                            # Sutherland-Hodgman accepts non-convex - but the overlap
-                            # inherits its reflex vertices and the fan triangulation
-                            # below then over-counts the area (see isConvexPolygon).
-                            if not isConvexPolygon(m_sub_2d):
-                                # The overlap inherits the reflex vertex and the fan triangulation then integrates outside the
-                                # facet. Means a severely distorted quadratic facet (mid-side/centre node positions).
-                                self._warnOnce(
-                                    "nonconvex_master_subcell",
-                                    f"WARNING: non-convex sub-cell on mortar facet {m_el.elNumber} ({m_el.elType}), contact area over-counted",
-                                )
-
-                            if withDerivatives:
-                                overlap_2d, doverlap = sutherlandHodgmanClipWithDerivatives(
-                                    m_sub_2d, dq_mfull[m_sub], s_sub_2d, dq_sfull[s_sub]
-                                )
-                            else:
-                                overlap_2d = sutherlandHodgmanClip(m_sub_2d, s_sub_2d)
-                            if len(overlap_2d) < 3:
-                                continue
-
-                            for i_tri, tri in enumerate(triangulatePolygon(overlap_2d)):
-                                v0, v1, v2 = tri[0], tri[1], tri[2]
-                                area_jac = abs((v1[0] - v0[0]) * (v2[1] - v0[1]) - (v2[0] - v0[0]) * (v1[1] - v0[1]))
-                                if area_jac < 1e-14:
-                                    continue
-                                if withDerivatives:
-                                    # The fan runs from vertex 0 (see triangulatePolygon).
-                                    dtri = doverlap[[0, i_tri + 1, i_tri + 2]]
-                                    _, darea = fanTriangleArea(tri, dtri)
-
-                                for gp, w in zip(triangleGaussPoints, triangleGaussWeights):
-                                    L1, L2 = gp[0], gp[1]
-                                    x_gp_2d = (1.0 - L1 - L2) * v0 + L1 * v1 + L2 * v2
-
-                                    # The clipping ran on straight sub-cells, so the point
-                                    # need not lie in the two facets whose sub-cells produced
-                                    # it (see isInsideReferenceElement); _containingFacet finds
-                                    # the facets that do contain it.
-                                    rec_s, local_s, ok_s, moved_s = self._containingFacet(
-                                        s_el, s_full_2d, x_gp_2d, slave_neighbours[s_el.elNumber], inPlane
-                                    )
-                                    rec_m, local_m, ok_m, moved_m = self._containingFacet(
-                                        m_el, m_full_2d, x_gp_2d, candidates, inPlane
-                                    )
-                                    if rec_s is None or rec_m is None:
-                                        # On neither side a facet contains the point: it lies
-                                        # beyond the curved boundary of a surface, where there
-                                        # is no contact area to integrate.
-                                        self.lastDroppedGaussPoints += 1
-                                        continue
-                                    if moved_s or moved_m:
-                                        self.lastReattributedGaussPoints += 1
-                                    if not ok_s:
-                                        projectionFailed("slave", rec_s)
-                                    if not ok_m:
-                                        projectionFailed("master", rec_m)
-
-                                    N_s = rec_s.getShapeFunctions(local_s)
-                                    N_m = rec_m.getShapeFunctions(local_m)
-
-                                    s_num = rec_s.elNumber
-                                    if s_num not in seg_records:
-                                        seg_records[s_num] = []
-                                        seg_masters[s_num] = {}
-                                        slave_els[s_num] = (
-                                            rec_s,
-                                            np.array([self.nonMortarNodeToIndex[nd] for nd in rec_s.nodes]),
-                                        )
-                                    record = (N_s, rec_m.elNumber, N_m, area_jac * w)
-                                    if withDerivatives:
-                                        dx_gp = (1.0 - L1 - L2) * dtri[0] + L1 * dtri[1] + L2 * dtri[2]
-                                        record += (
-                                            self._gaussPointDerivatives(
-                                                (s_el, s_full_2d, dq_sfull, rec_s, local_s),
-                                                (m_el, m_full_2d, dq_mfull, rec_m, local_m),
-                                                Z0,
-                                                dx_gp,
-                                                darea * w,
-                                                (current_coords, p0, dp00, normal, dnormal0, t1, t2, inPlane),
-                                            ),
-                                        )
-                                    seg_records[s_num].append(record)
-                                    seg_masters[s_num][rec_m.elNumber] = rec_m
-
-                else:
-                    # 2D line segment Mortar integration
-                    for m_el in candidates:
-                        m_nodes = m_el.nodes
-                        m_coords = np.array([current_coords[nd] for nd in m_nodes])
-                        if withDerivatives:
-                            nm = len(m_nodes)
-                            Z0 = np.concatenate((s_ids, ids(m_el)))
-                            dX0 = nodeSlots(ns + nm, 2, 2 * (ns + nm))
-                        for m_sub in getSubCells(m_el):
-                            mc_coords = m_coords[m_sub]
-                            s_start, s_end, t_vec = clipLineSegments(sc_coords, mc_coords)
-                            if s_end - s_start < 1e-12:
-                                continue
-                            if withDerivatives:
-                                _, dstart, _, dend, _, dt_vec = chordSegment(
-                                    sc_coords, dX0[s_sub], mc_coords, dX0[ns + np.asarray(m_sub)]
-                                )
-
-                            half_len = 0.5 * (s_end - s_start)
-                            mid_s = 0.5 * (s_start + s_end)
-                            for gp_1d, w_1d in zip(lineGaussPoints, lineGaussWeights):
-                                s_gp = mid_s + half_len * gp_1d[0]
-                                x_gp = sc_coords[0] + s_gp * t_vec
-                                dG = half_len * w_1d
-
-                                local_s, ok_s = mapPlaneToNatural(s_el, s_coords, x_gp)
-                                local_m, ok_m = mapPlaneToNatural(m_el, m_coords, x_gp)
-                                if not ok_s:
-                                    projectionFailed("slave", s_el)
-                                if not ok_m:
-                                    projectionFailed("master", m_el)
-
-                                N_s = s_el.getShapeFunctions(local_s)
-                                N_m = m_el.getShapeFunctions(local_m)
-
-                                s_num = s_el.elNumber
-                                if s_num not in seg_records:
-                                    seg_records[s_num] = []
-                                    seg_masters[s_num] = {}
-                                    slave_els[s_num] = (s_el, s_idx)
-                                record = (N_s, m_el.elNumber, N_m, dG)
-                                if withDerivatives:
-                                    # s_gp = mid + half * gp along the chord, x_gp = sc0 + s_gp * t.
-                                    dhalf = 0.5 * (dend - dstart)
-                                    ds_gp = 0.5 * (dstart + dend) + gp_1d[0] * dhalf
-                                    dx_gp = dX0[s_sub[0]] + np.outer(t_vec, ds_gp) + s_gp * dt_vec
-                                    dxi_s = closestPointDerivative(s_el, s_coords, dX0[:ns], local_s, x_gp, dx_gp)
-                                    dxi_m = closestPointDerivative(m_el, m_coords, dX0[ns:], local_m, x_gp, dx_gp)
-                                    record += (
-                                        (
-                                            Z0,
-                                            s_el.getShapeFunctionDerivatives(local_s).T @ dxi_s,
-                                            m_el.getShapeFunctionDerivatives(local_m).T @ dxi_m,
-                                            dhalf * w_1d,
-                                        ),
-                                    )
-                                seg_records[s_num].append(record)
-                                seg_masters[s_num][m_el.elNumber] = m_el
-
-        if n_proj_failed:
-            side, el_num, el_type = first_proj_failure
-            # For those points the last Newton iterate is used, so the shape functions entering D and C are
-            # wrong by an unknown amount. The projection is not solvable for arbitrarily distorted or curved
-            # facets (Konyukhov & Schweizerhof 2008); check the facets around the one named.
+        coupling = computeMortarCoupling(
+            self.nonMortarFacets,
+            self.mortarFacets,
+            dict(zip(self._nodes, self._currentCoordinates(U_np))),
+            self.nodeToGlobalIndex,
+            self.nonMortarNodeToIndex,
+            self.mortarNodeToIndex,
+            normals,
+            self.currentNormalDerivatives if withDerivatives else None,
+            self.model.domainSize,
+            getElementClass("CONQUAD4", "edelweiss"),
+        )
+        if coupling.projectionFailures:
+            side, number, elType = coupling.firstProjectionFailure
+            # The last Newton iterate is used for those points, so their shape functions are wrong by an
+            # unknown amount. The projection is not solvable for arbitrarily distorted facets.
             self._warnOnce(
                 "gp_projection_failed",
-                f"WARNING: Gauss point projection not converged for {n_proj_failed} point(s), first on {side} facet "
-                f"{el_num} ({el_type})",
+                f"WARNING: Gauss point projection not converged for {coupling.projectionFailures} point(s), "
+                f"first on {side} facet {number} ({elType})",
             )
-
-        return self._assembleCouplingMatricesFromSegments(
-            seg_records, seg_masters, slave_els, current_coords, n_slave, n_master, withDerivatives
-        )
-
-    def _constraintNodeIds(self, el) -> np.ndarray:
-        """The constraint-local indices (non-mortar nodes first, then mortar nodes) of a facet's nodes."""
-        return np.array([self.nodeToGlobalIndex[nd] for nd in el.nodes], dtype=np.intp)
-
-    def _gaussPointDerivatives(self, slaveSide, masterSide, Z0, dx_gp, ddG, plane):
-        """Derivatives of the shape functions of both sides and of the integration weight at one Gauss
-        point of the 3D segmentation.
-
-        Each side's natural coordinate solves the in-plane isoparametric map of the facet the point
-        is attributed to (see :func:`~edelweissfe.utils.mortarlinearization.inversePlaneMapDerivative`),
-        and ``dN = N,xi dxi``. A point re-attributed to another facet than the one whose sub-cell
-        produced it (see :meth:`_containingFacet`) depends on that facet's nodes as well, which are
-        appended to the local coordinate vector.
-
-        Parameters
-        ----------
-        slaveSide, masterSide
-            ``(facet that produced the point, its plane coordinates, their Jacobian, facet the point
-            is attributed to, natural coordinate there)``.
-        Z0
-            Constraint-local node indices of the producing pair, slave facet first.
-        dx_gp
-            ``(2, 3 * len(Z0))`` Jacobian of the point in plane coordinates.
-        ddG
-            ``(3 * len(Z0),)`` Jacobian of its integration weight.
-        plane
-            ``(current_coords, p0, dp0, normal, dnormal, t1, t2, inPlane)`` of the auxiliary plane.
-
-        Returns
-        -------
-        tuple
-            ``(Z, dN_s, dN_m, ddG)`` over the local coordinate vector of the nodes ``Z``.
-        """
-        current_coords, p0, dp0, normal, dnormal, t1, t2, inPlane = plane
-        Z = [Z0]
-        sides = []
-        for own, own_q, own_dq, rec, local in (slaveSide, masterSide):
-            if rec is own:
-                sides.append((rec, own_q, own_dq, local, None))
-            else:
-                sides.append((rec, inPlane(rec), None, local, sum(len(z) for z in Z)))
-                Z.append(self._constraintNodeIds(rec))
-        Z = np.concatenate(Z)
-        nZ = 3 * len(Z)
-
-        def pad(d):
-            return d if d.shape[-1] == nZ else np.pad(d, [(0, 0)] * (d.ndim - 1) + [(0, nZ - d.shape[-1])])
-
-        dx = pad(dx_gp)
-        dN = []
-        for rec, q, dq, local, offset in sides:
-            if offset is None:
-                dq = pad(dq)
-            else:
-                coords = np.array([current_coords[nd] for nd in rec.nodes])
-                _, dq = planeCoordinates(
-                    coords, nodeSlots(len(coords), 3, nZ, offset), p0, pad(dp0), normal, pad(dnormal), t1, t2
-                )
-            try:
-                dxi, dNdxi = inversePlaneMapDerivative(rec, q, dq, local, dx)
-                dN.append(dNdxi.T @ dxi)
-            except np.linalg.LinAlgError:
-                # A point whose back-mapping has no Jacobian has no coordinate to differentiate either;
-                # it is reported as a projection failure by the caller.
-                dN.append(np.zeros((rec.nNodes, nZ)))
-        return Z, dN[0], dN[1], pad(ddG)
-
-    def _facetCouplingDerivatives(
-        self, records, s_el, s_idx, masters, s_coords, T_e, M_t, D_t, regular, D_full, covered, A_e
-    ):
-        """Derivatives of one non-mortar facet's blocks of D and C, chained from its Gauss points.
-
-        The blocks are ``D_blk = sum Phi (x) N_s dG`` and ``C_blk = sum Phi (x) N_m dG`` with the dual
-        shape functions ``Phi = A_e N_s``, and their derivatives carry the three terms of Popp,
-        Gitterle, Gee & Wall (2010), Eqs. (A4)-(A5): that of the dual coefficients, that of the
-        shape functions through the Gauss point coordinates, and that of the integration weight.
-
-        The dual coefficients are those of :meth:`_assembleCouplingMatricesFromSegments`. On the
-        regular path, ``A_e = diag(D_t) M_t^-1 T_e`` row-weighted by ``D_full / D_t`` where the
-        covered integral is positive, i.e. ``A_e = diag(r) M_t^-1 T_e`` with ``r_a = D_full,a``
-        (covered) or ``D_t,a``; its derivative is that of Popp et al. (2010), Eq. (A23), ``dA_e =
-        dD_e M_e^-1 - A_e dM_e M_e^-1``, written for these factors, with ``T_e`` constant (Popp,
-        Wohlmuth, Gee & Wall 2012, p. B432). ``D_full`` integrates over the whole facet with the
-        element's own quadrature, and only the surface Jacobian depends on the configuration (Popp
-        et al. 2010, Eqs. (A24)-(A26)). On the sliver fallback the reference-element coefficients
-        ``diag(D_full) M_e^-1 T_e`` are differentiated the same way. The row weighting is Cichosz &
-        Bischoff (2011); differentiating it is this implementation's chain rule.
-
-        Appends, per row, ``(columns are D?, column indices, derivative rows, support nodes)`` to
-        :attr:`_rowContributions`.
-        """
-        dim = self.model.domainSize
-        n_s = len(s_idx)
-        facet_ids = self._constraintNodeIds(s_el)
-        support = np.unique(np.concatenate([facet_ids] + [r[4][0] for r in records]))
-        P = dim * len(support)
-
-        # Every Gauss point's derivatives moved onto the facet's support and stacked, R points deep.
-        N_s = np.array([record[0] for record in records])
-        dG = np.array([record[3] for record in records])
-        dN_s = np.zeros((len(records), n_s, P))
-        ddG = np.zeros((len(records), P))
-        for r, record in enumerate(records):
-            Z, dNr, _, ddGr = record[4]
-            columns = (dim * np.searchsorted(support, Z)[:, None] + np.arange(dim)).ravel()
-            np.add.at(dN_s[r], (slice(None), columns), dNr)
-            np.add.at(ddG[r], columns, ddGr)
-
-        # The covered integrals M_t and D_t (Eq. (A23) on the integration cells).
-        N_t = N_s @ T_e.T
-        dN_t = np.einsum("ab,rbz->raz", T_e, dN_s)
-        dM_t = np.einsum("raz,rb,r->abz", dN_t, N_t, dG)
-        dM_t = dM_t + dM_t.transpose(1, 0, 2)
-        dM_t += np.einsum("ra,rb,rz->abz", N_t, N_t, ddG)
-        dD_t = np.einsum("raz,r->az", dN_t, dG) + N_t.T @ ddG
-
-        # The whole-facet integrals D_full (and M_e on the fallback), with the element's quadrature.
-        S_facet = scatterMatrix(facet_ids, support, dim)
-        dD_full = np.zeros((n_s, dim * n_s))
-        M_e = np.zeros((n_s, n_s))
-        dM_e = np.zeros((n_s, n_s, dim * n_s))
-        for xi, w in zip(*s_el.getQuadraturePoints()):
-            N_t = T_e @ s_el.getShapeFunctions(xi)
-            J, dJ = surfaceJacobian(s_el, xi, s_coords)
-            dD_full += np.outer(N_t, dJ) * w
-            if not regular:
-                M_e += np.outer(N_t, N_t) * J * w
-                dM_e += np.outer(N_t, N_t)[:, :, None] * dJ * w
-        dD_full = dD_full @ S_facet
-
-        if regular:
-            M_inv = np.linalg.inv(M_t)
-            B = M_inv @ T_e
-            dB = -np.einsum("ab,bcz,cd->adz", M_inv, dM_t, B)
-            r = D_t.copy()
-            dr = dD_t.copy()
-            r[covered] = D_full[covered]
-            dr[covered] = dD_full[covered]
-        else:
-            try:
-                M_inv = np.linalg.inv(M_e)
-            except np.linalg.LinAlgError:
-                M_inv = np.linalg.pinv(M_e)
-            B = M_inv @ T_e
-            dB = -np.einsum("ab,bcz,cd->adz", M_inv, dM_e @ S_facet, B)
-            r = D_full.copy()
-            dr = dD_full.copy()
-            c = covered
-            r[c] = D_full[c] * D_full[c] / D_t[c]
-            dr[c] = 2.0 * (D_full[c] / D_t[c])[:, None] * dD_full[c] - ((D_full[c] / D_t[c]) ** 2)[:, None] * dD_t[c]
-        dA = dr[:, None, :] * B[:, :, None] + r[:, None, None] * dB
-
-        Phi = N_s @ A_e.T
-        dPhi = np.einsum("abz,rb->raz", dA, N_s) + np.einsum("ab,rbz->raz", A_e, dN_s)
-        dD_blk = (
-            np.einsum("raz,rb,r->abz", dPhi, N_s, dG)
-            + np.einsum("ra,rbz,r->abz", Phi, dN_s, dG)
-            + np.einsum("ra,rb,rz->abz", Phi, N_s, ddG)
-        )
-        dC_blks = {}
-        for m_num in {record[1] for record in records}:
-            rows = [r for r, record in enumerate(records) if record[1] == m_num]
-            N_m = np.array([records[r][2] for r in rows])
-            dN_m = np.zeros((len(rows), N_m.shape[1], P))
-            for k, r in enumerate(rows):
-                Z, _, dNr, _ = records[r][4]
-                columns = (dim * np.searchsorted(support, Z)[:, None] + np.arange(dim)).ravel()
-                np.add.at(dN_m[k], (slice(None), columns), dNr)
-            dC_blks[m_num] = (
-                np.einsum("raz,rb,r->abz", dPhi[rows], N_m, dG[rows])
-                + np.einsum("ra,rbz,r->abz", Phi[rows], dN_m, dG[rows])
-                + np.einsum("ra,rb,rz->abz", Phi[rows], N_m, ddG[rows])
+        for side, number in coupling.nonConvex[:1]:
+            # A clip polygon has to be convex; a reflex vertex means a severely distorted quadratic facet.
+            self._warnOnce(
+                f"nonconvex_{side}",
+                f"WARNING: non-convex sub-segment on {side} facet {number}, contact area inexact",
             )
-
-        for a, I in enumerate(s_idx):  # noqa: E741 - I is the non-mortar node index of the formulation
-            self._rowContributions[I].append((True, s_idx, dD_blk[a], support))
-            for m_num, dC_blk in dC_blks.items():
-                m_idx = np.array([self.mortarNodeToIndex[nd] for nd in masters[m_num].nodes])
-                self._rowContributions[I].append((False, m_idx, dC_blk[a], support))
+        if coupling.slivers:
+            # The covered-area biorthogonality system is singular: the reference-element dual basis is used.
+            self._warnOnce(
+                "sliver_fallback",
+                f"WARNING: degenerate overlap on non-mortar facet {coupling.slivers[0]}, reference dual basis used",
+            )
+        self.lastCoupling = coupling
+        return coupling
 
     def _linearisedRows(self) -> list:
-        """The derivatives of every non-mortar node's rows of D and C and of its normal, gathered onto
-        one local node list per node.
+        """The derivatives of every non-mortar node's rows and of its normal and scaling factor, on one
+        local node list per node.
 
         Returns, per non-mortar node ``I``, a dict with
 
         ``nodes``
-            the sorted constraint-local node indices the node's coupling depends on: the coupled
-            nodes themselves, every node a Gauss point of its rows depends on, and the nodes of the
-            facets around it (through the normal);
+            the sorted constraint-local node indices the node's coupling depends on;
         ``dD``, ``dC``
-            ``(len(row), dim * len(nodes))`` derivatives of the stored entries of row ``I`` of D
-            and C, in the order of :attr:`currentDNonzero` / :attr:`currentCNonzero`;
+            ``(len(row), dim * len(nodes))`` derivatives of the entries of row ``I`` of D and C, in the
+            order of :attr:`currentDNonzero` / :attr:`currentCNonzero`;
+        ``dDn``, ``dCn``
+            ``(len(row), dim, dim * len(nodes))`` the same for the gap matrices;
         ``dn``
-            ``(dim, dim * len(nodes))`` derivative of the nodal normal.
+            ``(dim, dim * len(nodes))`` derivative of the nodal normal;
+        ``dkappa``
+            ``(dim * len(nodes),)`` derivative of the nodal scaling factor.
         """
         dim = self.model.domainSize
         nSlave = self.nNonMortarNodes
@@ -2179,27 +1670,39 @@ class Constraint(ConstraintBase, MeshDependent):
         for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
             colsD, colsC = self.currentDNonzero[I], self.currentCNonzero[I]
             normalNodes, dn = self.currentNormalDerivatives[I]
-            contributions = self._rowContributions[I]
+            contributions = self.lastCoupling.rowContributions[I]
             nodes = np.unique(
                 np.concatenate(
                     [np.asarray(colsD, dtype=np.intp), nSlave + np.asarray(colsC, dtype=np.intp), normalNodes]
                     + [support for *_, support in contributions]
                 )
-            )
-            dD = np.zeros((len(colsD), dim * len(nodes)))
-            dC = np.zeros((len(colsC), dim * len(nodes)))
-            for isD, cols, d, support in contributions:
-                target, ownCols = (dD, colsD) if isD else (dC, colsC)
-                # The row stores every column it was assembled from (see _storedRows).
+            ).astype(np.intp)
+            P = dim * len(nodes)
+            out = {
+                "D": np.zeros((len(colsD), P)),
+                "M": np.zeros((len(colsC), P)),
+                "Dn": np.zeros((len(colsD), dim, P)),
+                "Mn": np.zeros((len(colsC), dim, P)),
+                "kappa": np.zeros(P),
+            }
+            for kind, cols, d, support in contributions:
+                moved = d @ scatterMatrix(support, nodes, dim)
+                if kind == "kappa":
+                    out["kappa"] += moved
+                    continue
+                ownCols = colsD if kind in ("D", "Dn") else colsC
+                # The rows store every column they were assembled from (see _storedRows).
                 sorter = np.argsort(ownCols)
-                position = sorter[np.searchsorted(ownCols, cols, sorter=sorter)]
-                np.add.at(target, position, d @ scatterMatrix(support, nodes, dim))
+                np.add.at(out[kind], sorter[np.searchsorted(ownCols, cols, sorter=sorter)], moved)
             rows.append(
                 {
                     "nodes": nodes,
-                    "dD": dD,
-                    "dC": dC,
+                    "dD": out["D"],
+                    "dC": out["M"],
+                    "dDn": out["Dn"],
+                    "dCn": out["Mn"],
                     "dn": dn @ scatterMatrix(normalNodes, nodes, dim),
+                    "dkappa": out["kappa"],
                 }
             )
         return rows
@@ -2408,7 +1911,7 @@ class Constraint(ConstraintBase, MeshDependent):
             dRow = self.currentDRow[I]
             cRow = self.currentCRow[I]
 
-            g_I_weak = self._weightedGap(I, x_slave, x_master, n_I)
+            g_I_weak = self._weightedGap(I, x_slave, x_master)
 
             # Sign-consistent contact measures, valid for BOTH signs of the nodal
             # weight D_II = int(Phi_I). D_II is positive for a fully covered node of
@@ -2570,8 +2073,13 @@ class Constraint(ConstraintBase, MeshDependent):
                 w = np.concatenate((dRow, -cRow))
                 idcs = (sf * node_ids[:, None] + _dim_offsets).ravel()
                 v = (w[:, None] * n_I[None, :]).ravel()
+                # The gradient of the gap, -dg_I/dx: the rows of the gap matrices. In 2D they are
+                # D_IK n_I and C_IJ n_I and coincide with v (Popp, Gee & Wall 2009, Eq. (50)); in 3D
+                # they carry the normal at the Gauss points (Popp et al. 2010, Eq. (41)), and the
+                # tangent is no longer symmetric.
+                vGap = np.concatenate((self.currentDnRow[I], -self.currentCnRow[I])).ravel()
                 PExt[idcs] -= lambda_I * v
-                K[np.ix_(idcs, idcs)] += kappa_I * np.outer(v, v)
+                K[np.ix_(idcs, idcs)] += kappa_I * np.outer(v, vGap)
                 if consistent:
                     dlambda = self._geometricTangent(I, lambda_I, coords, K, penaltyTerms=(kappa_I, g_pen, sgn_D, D_II))
                     if friction:
@@ -2580,7 +2088,7 @@ class Constraint(ConstraintBase, MeshDependent):
                         )
                 elif friction:
                     self._assembleFriction(
-                        I, w, v, idcs, n_I, max(p_trial, 0.0), kappa_I * sgn_D, abs(D_II), dU, PExt, K
+                        I, w, vGap, idcs, n_I, max(p_trial, 0.0), kappa_I * sgn_D, abs(D_II), dU, PExt, K
                     )
                 continue
 
@@ -2636,33 +2144,36 @@ class Constraint(ConstraintBase, MeshDependent):
                 self.activeSet[I] = bool(s_n > -self.c_n * self.currentGapTolerance * abs(inv_D))
 
             # Assembly in the literature sign convention (lambda_n >= 0 in
-            # compression). Throughout, K = -dPExt/dU, which is what makes the
-            # multiplier block symmetric:
+            # compression), K = -dPExt/dU:
             #   slave force   -lambda_I * D_IK * n_I     -> K[x_s, lambda] = +D_IK*n
             #   master force  +lambda_I * C_IJ * n_I     -> K[x_m, lambda] = -C_IJ*n
-            #   lambda row    +g_weak (active)           -> K[lambda, x_s] = +D_IK*n,
-            #                                               K[lambda, x_m] = -C_IJ*n
-            # The active lambda row therefore carries the OPPOSITE overall sign to
-            # the one it had while lambda was the slave traction; that is a row
-            # scaling by -1 and is exactly what keeps K[x, lambda] = K[lambda, x].
-            # The inactive row (lambda = 0) has no coupling and is unaffected.
+            #   lambda row    +g_weak (active)           -> K[lambda, x_s] = +Dn_IK,
+            #                                               K[lambda, x_m] = -Cn_IJ
+            # with the gap matrices Dn, Cn (Popp et al. 2010, Eq. (41); in 2D D_IK n_I, Popp,
+            # Gee & Wall 2009, Eq. (50), and the block is symmetric). The whole row of the
+            # multiplier -- constraint and forces alike -- is scaled by the nodal factor of
+            # Popp, Seitz, Gee & Wall (2013), Eqs. (30)-(35): D/kappa_I, C/kappa_I and g/kappa_I,
+            # so that lambda_I is their scaled multiplier, Eq. (29). One factor per row leaves the
+            # constraint unchanged and keeps the entries of the system of one order of magnitude
+            # however little of a facet is integrated.
             if self.activeSet[I]:
-                PExt[idx_LM_I] += g_I_weak
+                scale = self._multiplierRowScale(I)
+                PExt[idx_LM_I] += scale * g_I_weak
 
-                for K_nd, D_IK in zip(nzD, dRow):
+                for K_nd, D_IK, Dn_IK in zip(nzD, dRow, self.currentDnRow[I]):
                     s_dofs = slice(sf * K_nd, sf * K_nd + dim)
-                    D_IK_n = D_IK * n_I
+                    D_IK_n = scale * D_IK * n_I
                     PExt[s_dofs] -= lambda_I * D_IK_n
                     K[s_dofs, idx_LM_I] += D_IK_n
-                    K[idx_LM_I, s_dofs] += D_IK_n
+                    K[idx_LM_I, s_dofs] += scale * Dn_IK
 
-                for J, C_IJ in zip(nzC, cRow):
+                for J, C_IJ, Cn_IJ in zip(nzC, cRow, self.currentCnRow[I]):
                     m_global = nSlave + J
                     m_dofs = slice(sf * m_global, sf * m_global + dim)
-                    C_IJ_n = C_IJ * n_I
+                    C_IJ_n = scale * C_IJ * n_I
                     PExt[m_dofs] += lambda_I * C_IJ_n
                     K[m_dofs, idx_LM_I] -= C_IJ_n
-                    K[idx_LM_I, m_dofs] -= C_IJ_n
+                    K[idx_LM_I, m_dofs] -= scale * Cn_IJ
 
                 if consistent:
                     self._geometricTangent(I, lambda_I, coords, K, multiplierRow=idx_LM_I)
@@ -2702,15 +2213,13 @@ class Constraint(ConstraintBase, MeshDependent):
         the deformation, under ``geometryUpdate=consistent``.
 
         The assembly of :meth:`applyConstraint` differentiates the residual with D, C and n_I held
-        fixed. What the moving geometry adds is, with the weighted gap vector ``G_I = sum_K D_IK x_K -
-        sum_J C_IJ x_J`` and ``g_I = -n_I . G_I``,
-
-            dg_I = -G_I . dn_I - n_I . (sum_K x_K dD_IK - sum_J x_J dC_IJ)
-
-        in the constraint row (Popp, Gitterle, Gee & Wall 2010, Eqs. (A8)-(A11) with the nodal gap of
-        Popp, Gee & Wall 2009, Eq. (A36)), and in the forces ``-lambda_I D_IK n_I`` and ``+lambda_I
-        C_IJ n_I`` the derivatives ``lambda_I (n_I dD_IK + D_IK dn_I)`` and their mortar
-        counterparts -- the matrix C~ of Popp et al. (2010), Eq. (51).
+        fixed. What the moving geometry adds is, in the constraint row, the geometric part of the
+        derivative of the weighted gap, ``dg_I = -sum_K x_K . dDn_IK + sum_J x_J . dCn_IJ`` with the gap
+        matrices (Popp, Gitterle, Gee & Wall 2010, Eqs. (A8)-(A11); in 2D the nodal gap of Popp, Gee &
+        Wall 2009, Eq. (A36)), and in the forces ``-lambda_I D_IK n_I`` and ``+lambda_I C_IJ n_I`` the
+        derivatives ``lambda_I (n_I dD_IK + D_IK dn_I)`` and their mortar counterparts -- the matrix C~
+        of Popp et al. (2010), Eq. (51). The multiplier row carries the nodal scaling of Popp, Seitz,
+        Gee & Wall (2013), whose derivative enters through their Eqs. (31), (33) and (35).
 
         For the penalty form the pressure itself moves with the geometry as well: with ``p =
         z + kappa_I g_pen``, ``kappa_I = eps_N/|D_II|`` and ``g_pen = -sgn(D_II) g_I``, its geometric
@@ -2751,9 +2260,9 @@ class Constraint(ConstraintBase, MeshDependent):
         n_I = self.currentNormals[I]
         x_s, x_m = coords[colsD], coords[nSlave + np.asarray(colsC, dtype=np.intp)]
 
-        G = dRow @ x_s - cRow @ x_m
-        dG = x_s.T @ dD - x_m.T @ dC
-        dg = -(G @ dn) - n_I @ dG
+        # The geometric part of dg_I with the gap matrices: -sum_K x_K . dDn_IK + sum_J x_J . dCn_IJ,
+        # Popp et al. (2010), Eqs. (A8)-(A11) (in 2D, Popp, Gee & Wall 2009, Eq. (A36)).
+        dg = -np.einsum("kc,kcz->z", x_s, lin["dDn"]) + np.einsum("lc,lcz->z", x_m, lin["dCn"])
 
         # Rows of the forces on the coupled nodes, -lambda w_a n_I with w = [D_IK, -C_IJ].
         rowsD = (sf * np.asarray(colsD, dtype=np.intp)[:, None] + np.arange(dim)).ravel()
@@ -2762,9 +2271,17 @@ class Constraint(ConstraintBase, MeshDependent):
         forceC = n_I[None, :, None] * dC[:, None, :] + cRow[:, None, None] * dn[None]
 
         if multiplierRow is not None:
-            K[multiplierRow, local] -= dg
-            K[np.ix_(rowsD, local)] += lambda_I * forceD.reshape(-1, len(local))
-            K[np.ix_(rowsC, local)] -= lambda_I * forceC.reshape(-1, len(local))
+            # The row scaled by 1/kappa_I: d(g/kappa) = dg/kappa - g dkappa/kappa^2, and the same for the
+            # forces, Popp, Seitz, Gee & Wall (2013), Eqs. (31), (33) and (35).
+            kappa = self.currentNodalScale[I]
+            scale = self._multiplierRowScale(I)
+            dScale = -lin["dkappa"] / kappa**2 if kappa > 1e-12 else np.zeros_like(lin["dkappa"])
+            gap = self.currentWeakGap[I]
+            vD = (dRow[:, None] * n_I[None, :]).ravel()
+            vC = (-cRow[:, None] * n_I[None, :]).ravel()
+            K[multiplierRow, local] -= scale * dg + gap * dScale
+            K[np.ix_(rowsD, local)] += lambda_I * (scale * forceD.reshape(-1, len(local)) + np.outer(vD, dScale))
+            K[np.ix_(rowsC, local)] -= lambda_I * (scale * forceC.reshape(-1, len(local)) - np.outer(vC, dScale))
             return
 
         kappa_I, g_pen, sgn_D, D_II = penaltyTerms
@@ -2859,8 +2376,12 @@ class Constraint(ConstraintBase, MeshDependent):
         dRelative = (dGOld - dG) / A - np.outer(relative, dA) / A
 
         n_I = self.currentNormals[I]
-        # dp = sgn(D_II) dlambda: the part through the positions (kappa_I w_b n_I) and the geometric part.
-        dp = sgn_D * (kappa_I * (w[:, None] * n_I[None, :]).ravel() + dlambdaGeometric @ S)
+        # dp = sgn(D_II) dlambda: the part through the positions -- kappa_I times the rows of the gap
+        # matrices, -dg_I/dx -- and the geometric part.
+        gapGradient = np.zeros((len(nodes), dim))
+        np.add.at(gapGradient, np.searchsorted(nodes, colsD), self.currentDnRow[I])
+        np.add.at(gapGradient, np.searchsorted(nodes, nSlave + np.asarray(colsC, dtype=np.intp)), -self.currentCnRow[I])
+        dp = sgn_D * (kappa_I * gapGradient.ravel() + dlambdaGeometric @ S)
 
         forces, tangent = self._friction.evaluateLinearised(
             I,
@@ -3632,7 +3153,8 @@ class Constraint(ConstraintBase, MeshDependent):
             # The normals of the last rebuild before a restart, if the checkpoint held them.
             previousNormals = self.__dict__.pop("_restoredFrictionNormals", None)
         self.currentNormals = self.computeNormals(U_ref, withDerivatives)
-        D_full, C_full = self.computeMortarCouplingMatrices(U_ref, withDerivatives)
+        coupling = self._couple(U_ref, self.currentNormals, withDerivatives)
+        D_full, C_full = coupling.D, coupling.M
         # The FULL (element-locally sparse) D matrix is used for forces,
         # stiffness and weak gap. With the basis transformation T_e the
         # biorthogonality holds w.r.t. N_tilde, so D is not diagonal for
@@ -3645,6 +3167,11 @@ class Constraint(ConstraintBase, MeshDependent):
         # row-sum identity sum_K D_IK = sum_J C_IJ (same-domain integration).
         self.currentD = D_full
         self.currentC = C_full
+        # The nodal scaling factor of Popp, Seitz, Gee & Wall (2013), Eq. (36): one where every facet of
+        # a node is integrated entirely, the integrated fraction otherwise. It scales the rows of the
+        # multiplier formulation (see applyConstraint) and is the coverage the diagnostics report.
+        self.currentNodalScale = coupling.kappa
+        self.currentCoverage = coupling.kappa
         # sum_K D_IK = int(Phi_I) = int(N_tilde_I): positive for a fully covered node of the
         # standard elements, but not guaranteed (see the negative-weight diagnostic below).
         self.currentNodalWeights = np.asarray(D_full.sum(axis=1)).ravel()
@@ -3702,18 +3229,14 @@ class Constraint(ConstraintBase, MeshDependent):
                     f"WARNING: {len(significant)} non-mortar node(s) with negative mortar weight (worst "
                     f"{worst:.3e} of max) in increment {timeStep.number}",
                 )
-        # Precompute the sparsity patterns AND the row values once per increment.
-        # The geometry is frozen for the increment, so both are constant while
-        # applyConstraint runs once per Newton iteration.
+        # The rows of D, C and the gap matrices, every stored entry with its round-off values set to
+        # zero (see _storedRows). D, C and the gap matrices share one pattern, so the columns agree.
+        self.currentDNonzero, self.currentDRow = _storedRows(D_full, nSlave)
+        self.currentCNonzero, self.currentCRow = _storedRows(C_full, nSlave)
+        self.currentDnRow = _storedVectorRows(coupling.Dn, nSlave)
+        self.currentCnRow = _storedVectorRows(coupling.Mn, nSlave)
         if withDerivatives:
-            # Every stored entry with its derivative, the round-off values set to zero (see
-            # _storedRows): the residual is that of the filtered rows, the tangent misses nothing.
-            self.currentDNonzero, self.currentDRow = _storedRows(D_full, nSlave)
-            self.currentCNonzero, self.currentCRow = _storedRows(C_full, nSlave)
             self._linearisation = self._linearisedRows()
-        else:
-            self.currentDNonzero, self.currentDRow = _nonzeroRows(D_full, nSlave)
-            self.currentCNonzero, self.currentCRow = _nonzeroRows(C_full, nSlave)
 
         # The penalty parameter needs the nodal weights, so it is derived here
         # rather than at the top of the assembly like c_n.
@@ -3749,252 +3272,3 @@ class Constraint(ConstraintBase, MeshDependent):
             self._carryFrictionHistory(U_ref, previousNormals)
 
         self._reportSetupOnce()
-
-    def _assembleCouplingMatricesFromSegments(
-        self, seg_records, seg_masters, slave_els, current_coords, n_slave, n_master, withDerivatives=False
-    ) -> tuple[csr_matrix, csr_matrix]:
-        """Turn the segment quadrature of one increment into the two mortar coupling matrices.
-
-        The second of the two passes: the first clips the two surfaces against each other and
-        records an integration point per clipped cell, this one builds the dual basis those points
-        imply and assembles D and C from it. The dual coefficients are rebuilt per facet from the
-        covered area rather than taken from a reference element, and the rows of a partly covered
-        facet are weighted back to their whole-facet integral; both steps are explained where they
-        happen below.
-
-        Parameters
-        ----------
-        seg_records
-            Per non-mortar facet number, the integration point records ``(N_s, mortar element
-            number, N_m, dGamma)`` collected by the segmentation.
-        seg_masters
-            Per non-mortar facet number, the mortar elements it was found to overlap.
-        slave_els
-            Per non-mortar facet number, the element and its node indices.
-        current_coords
-            The deformed coordinates of every node of both surfaces.
-        n_slave
-            Number of non-mortar nodes.
-        n_master
-            Number of mortar nodes.
-        withDerivatives
-            Whether the records carry derivatives, from which the derivatives of the rows of D and C
-            are then assembled as well (see :meth:`_facetCouplingDerivatives`).
-
-        Returns
-        -------
-        tuple[csr_matrix, csr_matrix]
-            The non-mortar matrix D and the mortar matrix C.
-        """
-        # D and C are assembled sparsely from the element-local blocks. The sparsity
-        # is a property of the dual formulation, not an implementation detail: the
-        # point of the dual space of Wohlmuth (2000) is a nodal basis function that
-        # satisfies the interface constraint and "at the same time has local
-        # support", so that the mortar map "can be represented by a diagonal matrix"
-        # instead of a linear system. Popp, Wohlmuth, Gee & Wall (2012) carry this to
-        # second order, where the basis transformation splits D into two trivially
-        # invertible factors and the biorthogonality reduces the inverse "either to a
-        # diagonal matrix (see section 4.2) or to at least a sparse matrix (see
-        # section 4.4)" - the quadratic case here. Dense storage would therefore cost
-        # O(n_slave^2) for a structurally sparse object.
-        D_rows, D_cols, D_vals = [], [], []
-        C_rows, C_cols, C_vals = [], [], []
-
-        # ------------------------------------------------------------------
-        # PASS 2: Dual coefficients from the actual segment quadrature
-        # and assembly
-        # ------------------------------------------------------------------
-        # Numerator and denominator of the per-node coverage fraction, filled facet by facet below.
-        coverageCovered = np.zeros(n_slave)
-        coverageFull = np.zeros(n_slave)
-        if withDerivatives:
-            # Per non-mortar node, the derivatives of the pieces of its rows of D and C, one per facet.
-            self._rowContributions = [[] for _ in range(n_slave)]
-
-        for s_num, records in seg_records.items():
-            s_el, s_idx = slave_els[s_num]
-            n_s = len(s_idx)
-
-            # Biorthogonality system on the true integration domain:
-            # M_t[a,b] = int_seg(N_tilde_a * N_tilde_b), D_t[a] = int_seg(N_tilde_a)
-            #
-            # Two things decide that these integrals run over the SEGMENTS rather than over a
-            # reference element. First, Popp, Gitterle, Gee & Wall (2010) after their Eq. (22):
-            # "the biorthogonality condition has to be fulfilled in the physical space and not in
-            # the finite element parameter space" -- it makes no difference only where the element
-            # Jacobian is constant. Second, and this is the first of the two remedies of Cichosz &
-            # Bischoff (2011) for partly covered facets, their Eq. (41): "the underlying integrals
-            # now have to be evaluated on the contact area instead of the entire slave element".
-            # The extra factor T_e is the basis transformation of Popp et al. (2012), which Cichosz
-            # & Bischoff (2D, linear) do not need; composing the two is this implementation's own
-            # step, not something either paper states.
-            T_e = s_el.getBasisTransformation()
-            M_t = np.zeros((n_s, n_s))
-            D_t = np.zeros(n_s)
-            for N_s, _, _, dG, *_ in records:
-                N_tilde = T_e @ N_s
-                M_t += np.outer(N_tilde, N_tilde) * dG
-                D_t += N_tilde * dG
-
-            # For sliver overlaps M_t becomes (near-)singular; fall back to the
-            # reference-element coefficients in that case.
-            cond_M_t = np.linalg.cond(M_t)
-            if cond_M_t < 1e12:
-                A_e = np.diag(D_t) @ np.linalg.inv(M_t) @ T_e
-            else:
-                # Measured over the Control_Tests and patch-test suite: 4 of 3989
-                # slave-element evaluations take this path, all of them in the
-                # curved Hertz models with CONQUAD8. It is not a dead branch, and
-                # it has a consequence worth naming.
-                #
-                # D_II = int_overlap(N_tilde) would be non-negative for ANY
-                # sub-region if N_tilde were pointwise non-negative. It is not,
-                # for CONQUAD8 at alpha = 1/3: the transformed corner function
-                # dips to -1/324 over exactly 12.5 % of the reference square (the
-                # negative region is the triangle (1-xi) + (1-eta) < 1, of area 1/2
-                # out of 4), and
-                # pointwise non-negativity would need alpha >= 3/8 (CONLINE3 gets
-                # it at alpha = 1/3 because its threshold is 1/4). So a partial
-                # overlap can produce D_II < 0 on the CONSISTENT path already -
-                # see the dual-basis tests in
-                # tests/test_contactelement.py.
-                #
-                # This branch is worse by orders of magnitude: the reference-
-                # element dual functions are used instead, and those change sign
-                # over half the element, so the integral over a sub-region takes
-                # any sign AND any magnitude. Measured: below ~0.1 % coverage
-                # D_II flips sign, at -1.0 of the largest weight.
-                # Biorthogonality then holds on the full element only, and the nodal weights D_II can take any
-                # sign and magnitude there -- for CONQUAD8 as well.
-                self._warnOnce(
-                    "sliver_fallback",
-                    f"WARNING: degenerate overlap on non-mortar facet {s_num} (cond = {cond_M_t:.2e}), reference dual basis used",
-                )
-                # Evaluated only HERE, not for every slave facet up front: the
-                # reference-element coefficients cost an element mass matrix plus its
-                # inversion, and this branch is taken for 4 of 3989 slave-element
-                # evaluations over the test suite. These are the element's own
-                # reference-element coefficients, for this one element and the
-                # same (deformed) coordinates.
-                A_e = s_el.computeLocalMassMatrices(np.array([current_coords[nd] for nd in s_el.nodes]))[2]
-
-            # WEIGHTING OF THE BOUNDARY ROWS -- the second remedy of Cichosz & Bischoff (2011),
-            # their Eqs. (43) to (45), whose diagnosis is exactly the one below: the nodal weight
-            # of a boundary element decreases "quadratically with the contact area" while the
-            # contact force decreases "approximately linearly", so "the corresponding nodal value
-            # of the Lagrange multiplier is increasing by 1/a".
-            #
-            # A non-mortar facet that is only partly covered by the mortar surface integrates its
-            # own basis functions over the covered part alone, so its nodal weight decreases
-            # QUADRATICALLY with the covered area while the force that has to cross there decreases
-            # only LINEARLY. The multiplier, being the ratio of the two, grows without bound as the
-            # coverage shrinks, and those values are assembled into the stiffness matrix: its
-            # condition number degrades with them, and with it the Newton convergence - measured on
-            # a facet covered to 8e-06 of its area, a multiplier of 2.1e+05 against a contact
-            # pressure of 10 elsewhere on the same interface.
-            #
-            # The remedy is to weight each row by the reciprocal of its own covered integral, so
-            # that the weighted nodal weight is the integral over the WHOLE facet again. Both D and
-            # C rows carry the same factor, which leaves the row-sum identity intact and with it the
-            # NORMALISED gap g_weak/D_II, since numerator and denominator carry the same factor. The
-            # multiplier is rescaled inversely and becomes a pressure of ordinary magnitude again.
-            #
-            # For a FIXED active set this is a rescaling of the constraint and the displacement
-            # solution is identical. Across the active-set decision it is not: the indicator
-            # compares p_n against c_n*g_sep, the normalised gap is invariant under the rescaling
-            # and p_n is not, so a node near the activation threshold can switch differently.
-            # That is a change for the better rather than a side effect to tolerate - before the
-            # rescaling, p_n at a thinly covered node was a force divided by a vanishing area and
-            # was compared against a genuine pressure; afterwards both sides of the comparison are
-            # pressures. Measured on the curved indenter of the archived Hertz series: three nodes
-            # at the edge of the contact zone move, by at most 3.4 % of the peak pressure, and the
-            # agreement with the analytical solution is unchanged at 1.0 %.
-            #
-            # No case distinction is needed. On a fully covered facet the covered and the whole
-            # integral coincide and the factor is exactly one, which is why an inner facet and a
-            # boundary facet can be treated by the same expression. That is Cichosz & Bischoff's
-            # own point: with the weighting in place "there is no difference between slave mortar
-            # integrals in inner and boundary elements and the switch introduced in Eq. (42) can be
-            # skipped".
-            #
-            # Their weighting factor is defined parametrically, kappa_k = [int_covered N_k dxi]^-1,
-            # which for their straight two-node elements returns the row to the whole-element value
-            # l_e/2. The ratio of the two PHYSICAL integrals used here lands on the same value and
-            # generalises it to a curved facet, whose Jacobian does not cancel out of a parametric
-            # expression.
-            #
-            # NOTE what this costs: D_II is no longer the covered area of a node. It is the area of
-            # its facets, covered or not. The coverage itself is kept separately below, because the
-            # diagnostics need it and it can no longer be read off the weights.
-            D_full = np.diag(s_el.computeLocalMassMatrices(np.array([current_coords[nd] for nd in s_el.nodes]))[1])
-            # Only where the covered integral is POSITIVE. The weighting is derived for a covered
-            # integral that is a measure, and a quadratic facet covered in the region where its
-            # transformed corner function is negative does not provide one - there the factor would
-            # flip the sign of the row, which is an equivalent constraint but silently redefines
-            # what the sign of the multiplier means, and the active-set indicator reads that sign.
-            # Those rows are left alone, so the sign handling they were written for keeps applying
-            # to them unchanged.
-            covered = D_t > 0.0
-            rowScale = np.ones_like(D_t)
-            rowScale[covered] = D_full[covered] / D_t[covered]
-            A_e = A_e * rowScale[:, None]
-
-            # Coverage bookkeeping, assembled per node over all its facets: how much of the area
-            # this node's basis function spans is actually opposed by the other surface. Purely
-            # diagnostic - nothing in the formulation reads it - but it is the quantity that tells a
-            # partially covered node from a fully covered one now that the weights no longer do.
-            for local, node in enumerate(s_el.nodes):
-                idx = self.nonMortarNodeToIndex[node]
-                coverageCovered[idx] += D_t[local]
-                coverageFull[idx] += D_full[local]
-
-            # Assemble the D block and per-master C blocks of this slave element
-            D_blk = np.zeros((n_s, n_s))
-            C_blks = {}
-            for N_s, m_num, N_m, dG, *_ in records:
-                M_bar = A_e @ N_s
-                D_blk += np.outer(M_bar, N_s) * dG
-                if m_num not in C_blks:
-                    C_blks[m_num] = np.zeros((n_s, len(seg_masters[s_num][m_num].nodes)))
-                C_blks[m_num] += np.outer(M_bar, N_m) * dG
-
-            if withDerivatives:
-                self._facetCouplingDerivatives(
-                    records,
-                    s_el,
-                    s_idx,
-                    seg_masters[s_num],
-                    np.array([current_coords[nd] for nd in s_el.nodes]),
-                    T_e,
-                    M_t,
-                    D_t,
-                    cond_M_t < 1e12,
-                    D_full,
-                    covered,
-                    A_e,
-                )
-
-            rr, cc = np.meshgrid(s_idx, s_idx, indexing="ij")
-            D_rows.append(rr.ravel())
-            D_cols.append(cc.ravel())
-            D_vals.append(D_blk.ravel())
-            for m_num, C_blk in C_blks.items():
-                m_idx = np.array([self.mortarNodeToIndex[nd] for nd in seg_masters[s_num][m_num].nodes])
-                rr, cc = np.meshgrid(s_idx, m_idx, indexing="ij")
-                C_rows.append(rr.ravel())
-                C_cols.append(cc.ravel())
-                C_vals.append(C_blk.ravel())
-
-        # coo -> csr sums duplicate entries, which is exactly what the dense "+="
-        # accumulation did. The summation ORDER differs, so the result agrees with the
-        # dense one to round-off rather than bit for bit.
-        D = _cooToCsr(D_vals, D_rows, D_cols, (n_slave, n_slave))
-        C = _cooToCsr(C_vals, C_rows, C_cols, (n_slave, n_master))
-
-        # Fraction of each node's own facet area that the other surface actually opposes. Zero for a
-        # node with nothing opposite it, one for a fully covered one. Diagnostic only.
-        self.currentCoverage = np.zeros(n_slave)
-        opposed = coverageFull > 0.0
-        self.currentCoverage[opposed] = coverageCovered[opposed] / coverageFull[opposed]
-
-        return D, C

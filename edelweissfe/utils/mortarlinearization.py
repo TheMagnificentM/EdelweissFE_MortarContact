@@ -285,12 +285,62 @@ def inversePlaneMapDerivative(el, qNodes, dqNodes, xi, dxGauss) -> tuple[np.ndar
 
 
 def shapeFunctionSecondDerivatives(el, xi) -> np.ndarray:
-    """``d^2 N / dxi^2`` of a line element, for the closest-point linearisation in 2D."""
+    """``d^2 N / dxi_a dxi_b`` of a contact element, shape ``(nLocalDim, nLocalDim, nNodes)``.
+
+    Needed wherever a first derivative depends on the natural coordinate that is itself
+    differentiated: the closest-point projection in 2D and the derivative of the element Jacobian
+    with respect to the Gauss point coordinate in the nodal scaling factor of Popp, Seitz, Gee &
+    Wall (2013), Eq. (38). Written out from the shape functions of
+    :meth:`~edelweissfe.elements.contactelement.element.ContactElement.getShapeFunctions`.
+    """
     elType = el.elType.upper()
     if elType == "CONLINE2":
-        return np.zeros(2)
+        return np.zeros((1, 1, 2))
     if elType == "CONLINE3":
-        return np.array([1.0, 1.0, -2.0])
+        return np.array([[[1.0, 1.0, -2.0]]])
+    if elType == "CONTRI3":
+        return np.zeros((2, 2, 3))
+    if elType == "CONTRI6":
+        rr = np.array([4.0, 4.0, 0.0, -8.0, 0.0, 0.0])
+        ss = np.array([4.0, 0.0, 4.0, 0.0, 0.0, -8.0])
+        rs = np.array([4.0, 0.0, 0.0, -4.0, 4.0, -4.0])
+        return np.array([[rr, rs], [rs, ss]])
+    xi, eta = xi[0], xi[1]
+    if elType == "CONQUAD4":
+        mixed = 0.25 * np.array([1.0, -1.0, 1.0, -1.0])
+        return np.array([[np.zeros(4), mixed], [mixed, np.zeros(4)]])
+    if elType == "CONQUAD8":
+        corners = np.array([[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]])
+        a, b = corners[:, 0], corners[:, 1]
+        cxx = 0.5 * (1.0 + b * eta)
+        cyy = 0.5 * (1.0 + a * xi)
+        cxy = 0.25 * a * b * (2.0 * a * xi + 2.0 * b * eta + 1.0)
+        mxx = np.array([-(1.0 - eta), 0.0, -(1.0 + eta), 0.0])
+        myy = np.array([0.0, -(1.0 + xi), 0.0, -(1.0 - xi)])
+        mxy = np.array([xi, -eta, -xi, eta])
+        return np.array(
+            [
+                [np.concatenate((cxx, mxx)), np.concatenate((cxy, mxy))],
+                [np.concatenate((cxy, mxy)), np.concatenate((cyy, myy))],
+            ]
+        )
+    if elType == "CONQUAD9":
+
+        def lagrange(t):
+            return (
+                np.array([0.5 * t * (t - 1.0), 1.0 - t * t, 0.5 * t * (t + 1.0)]),
+                np.array([t - 0.5, -2.0 * t, t + 0.5]),
+                np.array([1.0, -2.0, 1.0]),
+            )
+
+        lx, dlx, d2lx = lagrange(xi)
+        ly, dly, d2ly = lagrange(eta)
+        # Node order of getShapeFunctions as (index in xi, index in eta) of the 1D factors.
+        order = [(0, 0), (2, 0), (2, 2), (0, 2), (1, 0), (2, 1), (1, 2), (0, 1), (1, 1)]
+        xx = np.array([d2lx[i] * ly[j] for i, j in order])
+        yy = np.array([lx[i] * d2ly[j] for i, j in order])
+        xy = np.array([dlx[i] * dly[j] for i, j in order])
+        return np.array([[xx, xy], [xy, yy]])
     raise NotImplementedError(f"No second derivatives for element type '{elType}'.")
 
 
@@ -307,7 +357,7 @@ def closestPointDerivative(el, xNodes, dxNodes, xi, xGauss, dxGauss) -> np.ndarr
     """
     N = el.getShapeFunctions(xi)
     dN = el.getShapeFunctionDerivatives(xi)[0]
-    d2N = shapeFunctionSecondDerivatives(el, xi)
+    d2N = shapeFunctionSecondDerivatives(el, xi)[0, 0]
     x = N @ xNodes
     tangent = dN @ xNodes
     curvature = d2N @ xNodes
@@ -411,3 +461,60 @@ def mergeOverNodes(parts: list, dim: int, support: np.ndarray | None = None) -> 
     for nodes, jacobian in parts:
         out += jacobian @ scatterMatrix(np.asarray(nodes, dtype=np.intp), support, dim)
     return support, out
+
+
+def surfaceJacobianNaturalDerivative(el, xi, coords) -> np.ndarray:
+    """``dJ/dxi`` of the surface Jacobian of :func:`surfaceJacobian` at fixed nodal coordinates,
+    shape ``(nLocalDim,)`` -- the term ``J_e,xi`` of Popp, Seitz, Gee & Wall (2013), Eq. (38)."""
+    dN = el.getShapeFunctionDerivatives(xi)
+    d2N = shapeFunctionSecondDerivatives(el, xi)
+    t = dN @ coords
+    if dN.shape[0] == 1:
+        return np.array([(t[0] / np.linalg.norm(t[0])) @ (d2N[0, 0] @ coords)])
+    c = np.cross(t[0], t[1])
+    u = c / np.linalg.norm(c)
+    return np.array([u @ (np.cross(d2N[0, m] @ coords, t[1]) + np.cross(t[0], d2N[1, m] @ coords)) for m in range(2)])
+
+
+def subCellParentMap(parentNatural: np.ndarray, subCellNodes, subCellElement):
+    """The map from the natural coordinate of a linear sub-cell to that of its parent facet,
+    ``xi = sum_k N^sub_k(xi_sub) xi_k`` over the parent coordinates ``xi_k`` of the sub-cell's
+    corners, and its Jacobian ``dxi/dxi_sub``.
+
+    The sub-cells of :data:`~edelweissfe.utils.mortargeometry.subCellMap` are triangles and
+    parallelograms in the parent's natural space, so the map is affine -- the "simple affine (linear)
+    map ... between the sub-segment coordinates and actual segment (element) coordinates" of Puso,
+    Laursen & Solberg (2008), Eqs. (31)-(32), and the "geometric mappings from parent element space
+    to subsegment space" of Popp, Gitterle, Gee & Wall (2010), Eq. (42).
+
+    Returns a function ``xi_sub -> (xi, dxi/dxi_sub)``.
+    """
+    corners = parentNatural[list(subCellNodes)]
+
+    def toParent(xiSub):
+        N = subCellElement.getShapeFunctions(xiSub)
+        dN = subCellElement.getShapeFunctionDerivatives(xiSub)
+        return N @ corners, (dN @ corners).T
+
+    return toParent
+
+
+def interpolatedNormal(N, dN_dxi, normals, dNormals, dxi) -> tuple[np.ndarray, np.ndarray]:
+    """``n = sum_k N_k n_k / |sum_k N_k n_k|`` and its Jacobian, with the shape functions moving with
+    the natural coordinate ``xi``: the interpolated normal of Popp, Gitterle, Gee & Wall (2010),
+    Eqs. (A11) and (A15), linearised through Eq. (A1).
+
+    Parameters
+    ----------
+    N, dN_dxi
+        Shape functions ``(n,)`` and their natural derivatives ``(nLocalDim, n)`` at ``xi``.
+    normals, dNormals
+        Nodal unit normals ``(n, dim)`` and their Jacobians ``(n, dim, nZ)``.
+    dxi
+        Jacobian ``(nLocalDim, nZ)`` of ``xi``, or ``None`` where ``xi`` is fixed.
+    """
+    raw = N @ normals
+    dRaw = np.tensordot(N, dNormals, axes=1)
+    if dxi is not None:
+        dRaw = dRaw + normals.T @ (dN_dxi.T @ dxi)
+    return unitVector(raw, dRaw)

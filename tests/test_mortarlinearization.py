@@ -45,11 +45,15 @@ from edelweissfe.utils.mortarlinearization import (
     closestPointDerivative,
     elementNormalAtNode,
     fanTriangleArea,
+    interpolatedNormal,
     inversePlaneMapDerivative,
     nodeSlots,
     planeCoordinates,
+    shapeFunctionSecondDerivatives,
+    subCellParentMap,
     subCellPlane,
     surfaceJacobian,
+    surfaceJacobianNaturalDerivative,
     sutherlandHodgmanClipWithDerivatives,
 )
 
@@ -233,6 +237,72 @@ class TestSurfaceJacobian(unittest.TestCase):
                 _, dJ = surfaceJacobian(el, xi, X)
                 num = finiteDifference(lambda z: el.getJacobianAndAreaWeight(xi, z.reshape(-1, dim)), X.ravel())
                 assertJacobian(self, dJ, num)
+
+
+class TestElementDerivatives(unittest.TestCase):
+    def test_second_derivatives_of_the_shape_functions(self):
+        for elType in ("CONLINE2", "CONLINE3", "CONTRI3", "CONQUAD4", "CONTRI6", "CONQUAD8", "CONQUAD9"):
+            el = Element(elType, 1)
+            xi = np.array([0.23, -0.31])[: (1 if "LINE" in elType else 2)]
+            if "TRI" in elType:
+                xi = np.array([0.21, 0.33])
+            numeric = np.moveaxis(finiteDifference(lambda z: el.getShapeFunctionDerivatives(z), xi), -1, 1)
+            assertJacobian(self, shapeFunctionSecondDerivatives(el, xi), numeric)
+
+    def test_natural_derivative_of_the_surface_jacobian(self):
+        rng = np.random.default_rng(4)
+        for elType in ("CONQUAD4", "CONTRI3", "CONQUAD8", "CONQUAD9", "CONTRI6", "CONLINE2", "CONLINE3"):
+            el = Element(elType, 1)
+            nat = np.array(el.getNodalNaturalCoordinates(), float).reshape(el.nNodes, -1)
+            dim = 3 if nat.shape[1] == 2 else 2
+            X = np.hstack([nat, np.zeros((el.nNodes, dim - nat.shape[1]))]) + 0.05 * rng.standard_normal(
+                (el.nNodes, dim)
+            )
+            xi = el.getQuadraturePoints()[0][1]
+            numeric = finiteDifference(lambda z: el.getJacobianAndAreaWeight(z, X), np.array(xi, float))
+            assertJacobian(self, surfaceJacobianNaturalDerivative(el, xi, X), numeric)
+
+    def test_the_sub_cell_map_reproduces_the_corners_and_is_affine(self):
+        from edelweissfe.utils.mortargeometry import subCellMap
+
+        for elType, cells in subCellMap.items():
+            parent = Element(elType, 1)
+            natural = np.array(parent.getNodalNaturalCoordinates(), float).reshape(parent.nNodes, -1)
+            for cell in cells:
+                subType = {2: "CONLINE2", 3: "CONTRI3", 4: "CONQUAD4"}[len(cell)]
+                sub = Element(subType, 1)
+                toParent = subCellParentMap(natural, cell, sub)
+                subNatural = np.array(sub.getNodalNaturalCoordinates(), float).reshape(len(cell), -1)
+                for k in range(len(cell)):
+                    np.testing.assert_allclose(toParent(subNatural[k])[0], natural[cell[k]], atol=1e-14)
+                probe = subNatural.mean(axis=0) + 0.1
+                numeric = finiteDifference(lambda z: toParent(z)[0], probe)
+                assertJacobian(self, toParent(probe)[1], numeric)
+
+    def test_interpolated_normal(self):
+        rng = np.random.default_rng(6)
+        el = Element("CONQUAD8", 1)
+        n = 8
+        z0 = np.concatenate([rng.standard_normal(3 * n) + np.tile([0, 0, 3.0], n), [0.2, -0.1]])
+
+        def normal(z):
+            raw = z[: 3 * n].reshape(n, 3)
+            units = raw / np.linalg.norm(raw, axis=1)[:, None]
+            N = el.getShapeFunctions(z[3 * n :])
+            v = N @ units
+            return v / np.linalg.norm(v)
+
+        raw = z0[: 3 * n].reshape(n, 3)
+        lengths = np.linalg.norm(raw, axis=1)
+        units = raw / lengths[:, None]
+        dUnits = np.zeros((n, 3, len(z0)))
+        for k in range(n):
+            dUnits[k, :, 3 * k : 3 * k + 3] = (np.eye(3) - np.outer(units[k], units[k])) / lengths[k]
+        dxi = np.zeros((2, len(z0)))
+        dxi[:, 3 * n :] = np.eye(2)
+        xi = z0[3 * n :]
+        _, d = interpolatedNormal(el.getShapeFunctions(xi), el.getShapeFunctionDerivatives(xi), units, dUnits, dxi)
+        assertJacobian(self, d, finiteDifference(normal, z0))
 
 
 class _FacetPair:

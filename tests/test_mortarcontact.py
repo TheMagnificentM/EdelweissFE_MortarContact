@@ -403,31 +403,29 @@ class TestCouplingMatrices(unittest.TestCase):
         self.assertTrue(active.any(), "no node was coupled at all -- test is vacuous")
         np.testing.assert_allclose(D[active].sum(axis=1), C[active].sum(axis=1), atol=1e-12)
 
-    def test_the_nodal_weights_are_the_area_of_the_facets_not_of_the_overlap(self):
-        """The weights are deliberately NOT the shared area.
+    def test_the_nodal_weights_are_the_integrated_area_and_the_scaled_ones_the_facet_area(self):
+        """D is integrated over the overlap only, so shifting the mortar face by 0.3 out of a unit face
+        reduces its trace from 1 to 0.7. The rows the multiplier formulation works with are scaled by
+        the nodal factor of Popp, Seitz, Gee & Wall (2013), Eq. (36), and the scaled weights
+        D_II/kappa_I are the integrals over the whole facets again -- exactly so for a constant facet
+        Jacobian -- which is what keeps the entries of the system "of constant order of magnitude"
+        however little of a facet is integrated (their Section 4.2)."""
 
-        Rows belonging to a partly covered facet are rescaled so that their weight is the integral
-        over the whole facet again, which is what keeps the multiplier a pressure of ordinary
-        magnitude there instead of the ratio of a finite force to a vanishing area. Shifting the
-        mortar face by 0.3 therefore leaves the trace at the full unit face rather than reducing it
-        to 0.7 -- while the coverage, which the next test looks at, does drop to 0.7.
-
-        This is the property to watch if the rescaling is ever removed: the constraint itself is
-        unchanged by it -- both coupling matrices carry the same factor, so the weighted gap and the
-        solution are the same -- but every reading of a nodal weight as an area depends on it.
-        """
-
-        for shift in (0.0, 0.3):
+        for shift, trace in ((0.0, 1.0), (0.3, 0.7)):
             model = _TwoBlockModel.build(masterShift=shift)
             constraint = self._assembled(model)
 
             D = np.asarray(constraint.currentD.todense())
-            self.assertAlmostEqual(float(np.trace(D)), 1.0, places=11, msg=f"shift {shift}")
+            self.assertAlmostEqual(float(np.trace(D)), trace, places=11, msg=f"shift {shift}")
+            scaled = np.asarray(constraint.currentNodalWeights) / constraint.currentNodalScale
+            np.testing.assert_allclose(scaled, 0.25, rtol=1e-11, err_msg=f"shift {shift}")
 
-    def test_the_coverage_reports_the_shared_area(self):
-        """What the weights no longer say, the coverage does: the fraction of a node's own facet
-        area that the other surface opposes. One where the two faces coincide, 0.7 where the mortar
-        face is shifted by 0.3 out of a unit face, and zero for a node with nothing opposite it."""
+    def test_the_coverage_is_the_nodal_scaling_factor(self):
+        """The coverage reported is the scaling factor of Popp et al. (2013), Eq. (36): per node, the
+        parametric integral of its shape function over the integrated part of its facets, normalised
+        to one for a facet integrated entirely. One where the two faces coincide; for the mortar face
+        shifted by 0.3, x in [0.3, 1] is xi in [-0.4, 1], where the bilinear shape functions integrate
+        to 0.49 at the nodes on the shifted side and 0.91 at the others."""
 
         model = _TwoBlockModel.build()
         constraint = self._assembled(model)
@@ -435,18 +433,13 @@ class TestCouplingMatrices(unittest.TestCase):
 
         model = _TwoBlockModel.build(masterShift=0.3)
         constraint = self._assembled(model)
-        coverage = constraint.currentCoverage
-        weights = np.asarray(constraint.currentNodalWeights)
+        coverage = np.sort(constraint.currentCoverage)
+        np.testing.assert_allclose(coverage, [0.49, 0.49, 0.91, 0.91], atol=1e-11)
 
-        # Area-weighted mean over the nodes, which is the covered fraction of the whole face.
-        self.assertAlmostEqual(float(coverage @ weights / weights.sum()), 0.7, places=11)
-        self.assertTrue(np.all(coverage <= 1.0 + 1e-12))
-        self.assertLess(float(coverage.min()), 1.0, "nothing is partially covered -- test is vacuous")
-
-    def test_the_rescaling_is_the_identity_where_the_facet_is_fully_covered(self):
-        """The reason no case distinction is needed: on a fully covered facet the covered and the
-        whole integral coincide, so the factor is exactly one and an inner facet passes through the
-        same expression as a boundary facet, untouched."""
+    def test_the_scaling_is_the_identity_where_the_facet_is_fully_covered(self):
+        """On a fully covered facet the factor is exactly one and the weights are the whole-facet
+        integrals, so an inner facet passes through the same expression as a boundary facet,
+        untouched."""
 
         model = _TwoBlockModel.build()
         constraint = self._assembled(model)
@@ -458,6 +451,7 @@ class TestCouplingMatrices(unittest.TestCase):
 
         indices = [constraint.nonMortarNodeToIndex[node] for node in facet.nodes]
         np.testing.assert_allclose(weights[indices], fullFacetWeights, rtol=1e-11)
+        np.testing.assert_allclose(constraint.currentNodalScale[indices], 1.0, rtol=1e-11)
 
 
 class TestPenaltyActivation(unittest.TestCase):
@@ -983,13 +977,13 @@ class TestExplicitDynamics(unittest.TestCase):
         nDof = constraint.nDof
 
         rebuilds = []
-        original = constraint.computeMortarCouplingMatrices
+        original = constraint._couple
 
-        def counting(U_np=None, withDerivatives=False):
+        def counting(U_np, normals, withDerivatives):
             rebuilds.append(True)
-            return original(U_np, withDerivatives)
+            return original(U_np, normals, withDerivatives)
 
-        constraint.computeMortarCouplingMatrices = counting
+        constraint._couple = counting
 
         def assemble(incrementNumber):
             constraint.applyConstraint(
@@ -1154,20 +1148,21 @@ class TestExplicitDynamics(unittest.TestCase):
 
 
 class TestCurvedEdgeAttribution(unittest.TestCase):
-    """A Gauss point belongs to the facet that contains it, not to the facet whose straight
-    sub-cell produced it.
+    """Quadratic facets are segmented on their linear sub-segments, and a Gauss point is carried into
+    its parent facet by the affine map between sub-segment and parent coordinates -- Puso, Laursen &
+    Solberg (2008), Eqs. (31)-(32), and Popp, Gitterle, Gee & Wall (2010), Eq. (42). The point thus
+    always belongs to the facet whose sub-segment produced it.
 
-    The segmentation clips the linear sub-cells of quadratic facets. Where two mortar facets share
-    an edge that is CURVED in the surface, the sliver between the chord and the true edge is clipped
-    as part of one facet while it lies in the other; mapped back into the wrong one, its points get
-    natural coordinates outside the reference domain and extrapolated shape functions. The mortar
-    matrix then no longer reproduces the consistent nodal loads of a uniform pressure on the mortar
-    side, which is the patch test condition on that side.
+    Where an edge shared by two mortar facets is CURVED in the surface, the sub-segments follow its
+    chord, and the integration domain no longer follows the facets -- the approximation Popp et al.
+    (2010), Section 4.2, name: it "only affects the integration domain itself, which no longer
+    reflects the underlying quadratic surfaces correctly". A uniform multiplier then reproduces the
+    consistent mortar-side loads of a uniform pressure only up to an error proportional to the
+    curvature of the edge.
 
     Fixture: one flat CONQUAD8 non-mortar facet on the unit square, opposed by two CONQUAD8 mortar
-    facets that tile the same square along a shared edge whose mid-side node is moved 0.15 off the
-    chord. Both surfaces cover exactly the same area, so every discrepancy is attribution or
-    quadrature.
+    facets that tile the same square along a shared edge whose mid-side node is moved off the chord.
+    Both surfaces cover exactly the same area, so every discrepancy is the sub-segment approximation.
     """
 
     @staticmethod
@@ -1227,23 +1222,24 @@ class TestCurvedEdgeAttribution(unittest.TestCase):
                         loads[constraint.mortarNodeToIndex[n]] += el.getShapeFunctions(xi)[k] * J * wa * wb
         return float(np.max(np.abs(np.asarray(C.sum(axis=0)).ravel() - loads)) / np.max(np.abs(loads)))
 
-    def test_points_beyond_a_curved_chord_go_to_the_facet_that_contains_them(self):
-        model = self.build()
-        constraint = MortarContact(
-            "contact",
-            model,
-            Journal(verbose=False),
-            nonMortarSurface="nonMortar_facets",
-            mortarSurface="mortar_facets",
-            cn=1000.0,
-        )
-        error = self.mortarConsistencyError(constraint)
+    def test_the_sub_segment_approximation_vanishes_with_the_curvature_of_the_edge(self):
+        errors = []
+        for bulge in (0.0, 0.04, 0.02):
+            model = self.build(bulge)
+            constraint = MortarContact(
+                "contact",
+                model,
+                Journal(verbose=False),
+                nonMortarSurface="nonMortar_facets",
+                mortarSurface="mortar_facets",
+                cn=1000.0,
+            )
+            errors.append(self.mortarConsistencyError(constraint))
 
-        self.assertGreater(constraint.lastReattributedGaussPoints, 0, "no point was re-attributed -- vacuous")
-        self.assertEqual(constraint.lastDroppedGaussPoints, 0)
-        # Measured: 6.1e-3 with the attribution of the clipping, 2.1e-4 with the containing facet;
-        # what remains is the quadrature of a triangle that straddles the curved edge.
-        self.assertLess(error, 1e-3)
+        # Exact for a straight edge; measured 1.17e-2 and 5.83e-3 for bulges of 0.04 and 0.02, i.e.
+        # proportional to the curvature of the edge.
+        self.assertLess(errors[0], 1e-14)
+        self.assertAlmostEqual(errors[1] / errors[2], 2.0, delta=0.05)
 
 
 class TestFriction(unittest.TestCase):
@@ -1252,6 +1248,14 @@ class TestFriction(unittest.TestCase):
     The two blocks of :class:`_TwoBlockModel` touch across the plane y = 1, so the nodal normals are
     the y axis and the tangent plane is x-z. A tangential increment is staged by moving the mortar
     (upper) block in x through ``dU``, which is what the slip measure reads.
+
+    Tests that state an exact property of the slip measure of the frozen geometry -- ``D dU_s - C
+    dU_m`` within an increment and its correction at a rebuild -- and the finite-difference checks of
+    its tangent run with ``geometryUpdate=frozen``. The consistent geometry measures the objective slip
+    of Gitterle et al. (2010), Eq. (53), which equals the relative motion only up to second order where
+    the overlap changes, as it does here; and its tangent cannot be checked by finite differences on
+    these blocks, whose facet edges coincide in z, which puts the overlap on a kink. It is checked in
+    ``tests/test_mortarlinearization.py``.
     """
 
     penaltyStiffness = 1.0e3
@@ -1312,7 +1316,7 @@ class TestFriction(unittest.TestCase):
 
     def _checkTangent(self, mu, slide, expectedState, **options):
         timeStep = _frozenTimeStep()
-        constraint = self._constraint(mu=mu, **options)
+        constraint = self._constraint(mu=mu, geometryUpdate="frozen", **options)
         U = self._masterSlide(constraint, slide)
         dU = U.copy()
         self._assemble(constraint, U, dU, timeStep)
@@ -1350,7 +1354,7 @@ class TestFriction(unittest.TestCase):
         """With slipTolerance a sticking node carries mu p (slide / gamma_crit), proportional to p."""
 
         slide = 1e-4
-        constraint = self._constraint(mu=0.3, slipTolerance=0.05)
+        constraint = self._constraint(mu=0.3, slipTolerance=0.05, geometryUpdate="frozen")
         U = self._masterSlide(constraint, slide)
         self._assemble(constraint, U, U, _frozenTimeStep())
         active = constraint.activeSet
@@ -1399,7 +1403,7 @@ class TestFriction(unittest.TestCase):
         """In stick, the traction is the pointwise penalty law: eps_T times the relative motion."""
 
         slide = 1e-4
-        constraint = self._constraint(mu=10.0, tangentPenalty=2.0e3)
+        constraint = self._constraint(mu=10.0, tangentPenalty=2.0e3, geometryUpdate="frozen")
         U = self._masterSlide(constraint, slide)
         self._assemble(constraint, U, U, _frozenTimeStep())
         active = constraint.activeSet
@@ -1517,7 +1521,7 @@ class TestFriction(unittest.TestCase):
         """A flat slide does not change the gap vector, so the rebuild leaves the stick traction alone."""
 
         slide = 1e-4
-        constraint = self._constraint(mu=10.0)
+        constraint = self._constraint(mu=10.0, geometryUpdate="frozen")
         U = self._masterSlide(constraint, slide)
         self._stage(constraint, [np.zeros_like(U), U])
         before = constraint._friction.tractionConverged.copy()
