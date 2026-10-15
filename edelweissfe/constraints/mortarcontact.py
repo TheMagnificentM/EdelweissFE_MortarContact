@@ -2721,13 +2721,20 @@ class Constraint(ConstraintBase, MeshDependent):
 
         Ordered like the node set ``<name>_nonMortarNodes`` (see :meth:`_publishNonMortarNodeSet`).
         In the penalty branch it is eps_N times the pointwise penetration (plus the augmented
-        estimate); in the multiplier branch it is the multiplier, with the sign of the nodal weight
-        taken out.
+        estimate). In the multiplier branch it is the traction recovered from the scaled multiplier,
+        ``lambda_I / kappa_I`` (Popp, Seitz, Gee & Wall 2013, Eq. (39)), with the sign of the nodal
+        weight taken out. At a node whose facets are only thinly integrated this is the coefficient of
+        a dual shape function over a small support and exceeds the pressure around it (Cichosz &
+        Bischoff 2011); the force the node transmits is ``lambda_I D_II / kappa_I`` in either case.
         """
 
         weights = getattr(self, "currentNodalWeights", None)
         sign = np.sign(weights) if weights is not None else np.ones(self.nNonMortarNodes)
-        return self.nodalMultipliers * np.where(sign == 0.0, 1.0, sign)
+        pressures = self.nodalMultipliers * np.where(sign == 0.0, 1.0, sign)
+        if self.formulation == "lagrange" and hasattr(self, "currentNodalScale"):
+            kappa = self.currentNodalScale
+            pressures = np.divide(pressures, kappa, out=np.zeros_like(pressures), where=kappa > 1e-12)
+        return pressures
 
     def getTangentialTractions(self) -> np.ndarray:
         """The frictional traction of each non-mortar node, a pressure-valued vector in global
