@@ -180,6 +180,22 @@ class TestClipping(unittest.TestCase):
             np.testing.assert_array_equal(poly, sutherlandHodgmanClipWithDerivatives(s, dZ[:4], c, dZ[4:])[0])
 
 
+    def test_nearly_parallel_edges_keep_their_crossing_parameter(self):
+        # A subject edge crossing a clip edge at an angle with sine 1e-6: the crossing moves by
+        # dx / sin(theta), which only holds for perturbations far below a Newton step. Below
+        # PARALLEL_EDGE_SINE the parameter is held fixed, and the vertex moves with the end points.
+        from edelweissfe.utils.mortarlinearization import PARALLEL_EDGE_SINE
+
+        clip = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+        tilt = 1e-6
+        subject = np.array([[0.2, 1.0 - tilt * 0.3], [0.8, 1.0 + tilt * 0.3], [0.8, 2.0], [0.2, 2.0]])
+        self.assertLess(tilt, PARALLEL_EDGE_SINE)
+        dZ = nodeSlots(8, 2, 16)
+        poly, dpoly = sutherlandHodgmanClipWithDerivatives(subject, dZ[:4], clip, dZ[4:])
+        np.testing.assert_array_equal(poly, sutherlandHodgmanClip(subject, clip))
+        self.assertLess(np.max(np.abs(dpoly)), 2.0)
+
+
 class TestSurfaceJacobian(unittest.TestCase):
     def test_surface_jacobian(self):
         rng = np.random.default_rng(9)
