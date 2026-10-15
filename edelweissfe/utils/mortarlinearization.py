@@ -152,6 +152,18 @@ def planeCoordinates(points, dpoints, p0, dp0, normal, dnormal, t1, t2) -> tuple
 # ------------------------------------------------------------------------------------- clipping
 
 
+#: Below this sine of the angle between a subject edge and a clip edge, the parameter of their
+#: crossing is held fixed in the linearisation. The crossing of two edges at an angle theta moves by
+#: dx / sin(theta) when one of them moves by dx, so the derivative is exact but describes the
+#: crossing only for perturbations far smaller than theta times the edge length -- and beyond that
+#: the crossing leaves the edge and is clamped. On conforming meshes the edges of the two surfaces
+#: meet at angles of the order of the strain, and a Newton correction is many times larger than
+#: that range: measured on the Hertz case of the contact study (C3D20R, penalty), an entry of
+#: -1.8e7 in the tangent where central differences give 98, and an active set that cycled with
+#: period two. Not from a source.
+PARALLEL_EDGE_SINE = 1e-3
+
+
 def sutherlandHodgmanClipWithDerivatives(subject, dsubject, clip, dclip) -> tuple[np.ndarray, np.ndarray]:
     """:func:`~edelweissfe.utils.mortargeometry.sutherlandHodgmanClip`, with the Jacobian of every
     vertex of the overlap.
@@ -180,8 +192,12 @@ def sutherlandHodgmanClipWithDerivatives(subject, dsubject, clip, dclip) -> tupl
         t = min(max(ratio, 0.0), 1.0)
         value = [s[0] + t * (e[0] - s[0]), s[1] + t * (e[1] - s[1])]
         derivative = ds + t * (de - ds)
-        if t == ratio:
-            # Inside [0, 1] t moves with the points; at a clamp it is a constant.
+        edgeLength = float(np.hypot(edge[0], edge[1]))
+        subjectLength = float(np.hypot(e[0] - s[0], e[1] - s[1]))
+        sine = abs(d_s - d_e) / max(edgeLength * subjectLength, 1e-300)
+        if t == ratio and sine >= PARALLEL_EDGE_SINE:
+            # Inside [0, 1] t moves with the points; at a clamp it is a constant, and so it is for
+            # nearly parallel edges (see PARALLEL_EDGE_SINE).
             dd_s = dCross2(edge, dEdge, s - cp1, ds - dcp1)
             dd_e = dCross2(edge, dEdge, e - cp1, de - dcp1)
             dt = (d_s * dd_e - d_e * dd_s) / (d_s - d_e) ** 2

@@ -2016,8 +2016,9 @@ class Constraint(ConstraintBase, MeshDependent):
                 # useActiveSet = False pins the branch from outside - the same
                 # switch the Lagrange branch honours. It is what lets a consistency
                 # check perturb the state without the branch flipping underneath it,
-                # and what a deliberately tied (bilateral) contact would use.
-                if self.useActiveSet:
+                # and what a deliberately tied (bilateral) contact would use. A set frozen by the
+                # anti-cycling rule (see _freezeActiveSetIfSettled) is kept the same way.
+                if self.useActiveSet and not self.activeSetFrozen:
                     # A CLOSED node is an active node. The branch test is against the noise floor
                     # of the gap the pressure is made from (see currentGapTolerance), and the band
                     # |g_pen| <= currentGapTolerance -- a gap that is zero up to the rounding of the
@@ -2059,7 +2060,10 @@ class Constraint(ConstraintBase, MeshDependent):
                         self._friction.markOpen(I)
                     continue
 
-                lambda_I = max(p_trial, 0.0) * sgn_D
+                # On a set frozen against a cycle the branch is fixed, and so is its law: the pressure
+                # is the linear p_trial, which the stiffness below differentiates, rather than its
+                # positive part.
+                lambda_I = (p_trial if self.activeSetFrozen else max(p_trial, 0.0)) * sgn_D
                 self.nodalMultipliers[I] = lambda_I
 
                 # The whole nodal contribution is rank one. With the weights
@@ -2421,14 +2425,20 @@ class Constraint(ConstraintBase, MeshDependent):
         there are only finitely many states), or the iteration cap is reached. Only the last is
         reported, because only it leaves the set unconfirmed.
 
+        The penalty branch re-derives its set from the pressure in every iteration and needs no
+        settling criterion; of the three triggers only the limit cycle applies to it. A cycle there
+        is the same proven non-convergence -- measured on the sliding case of the contact study
+        (C3D20R, consistent geometry): six apex nodes switching between all open and all penetrated
+        with period four, in the load-free increment -- and freezing the set ends it the same way.
+
         Parameters
         ----------
         penalty
-            Whether the penalty branch is active, which has no active set to freeze.
+            Whether the penalty branch is active, for which only the cycle freezes the set.
         timeStep
             The current time step, for the increment number in the diagnostic.
         """
-        if self.useActiveSet and not self.activeSetFrozen and not penalty:
+        if self.useActiveSet and not self.activeSetFrozen:
             state = self.activeSet.tobytes()
             changed = state != self._last_state
             if changed:
@@ -2438,6 +2448,10 @@ class Constraint(ConstraintBase, MeshDependent):
             cycle = changed and (state in self._seen_states)
             self._seen_states.add(state)
             self._last_state = state
+            if penalty:
+                if cycle:
+                    self.activeSetFrozen = True
+                return
             settled = self.activeSetStableCount >= 2 and self.currentIteration >= 2
             hit_cap = self.currentIteration >= 20
             if settled or cycle or hit_cap:
