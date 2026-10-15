@@ -427,7 +427,14 @@ The intersection of a subject edge with the line of a clip edge, Eq. (A19), is c
 subject edge from the signed distances of its end points to that line, with the parameter limited to
 the edge. Where the edges of the two meshes coincide, rounding can put the two end points on
 different sides of the line, and the intersection of the two nearly parallel lines would then lie
-anywhere along them; limited, it stays on the edge. That limit is not from a source.
+anywhere along them; limited, it stays on the edge. That limit is not from a source. In the
+linearisation the crossing parameter is held fixed, too, where the sine of the angle between the two
+edges is below :math:`10^{-3}`: the crossing then moves by :math:`\mathrm{d}x/\sin\theta` when an edge
+moves by :math:`\mathrm{d}x`, a derivative that is exact but holds only for perturbations far below a
+Newton correction. On conforming curved meshes, where the edges of the two surfaces meet at angles of
+the order of the strain, it put :math:`-1.8\cdot10^{7}` into a penalty tangent where central
+differences give 98 (Hertz case of the contact study, C3D20R), and the active set cycled. Not from a
+source either.
 
 In two dimensions the segments come from projecting nodes along the continuous normal field, Popp,
 Gee and Wall (2009), Section 4: the end nodes of a non-mortar element onto the mortar element along
@@ -892,7 +899,9 @@ Three safeguards surround it:
 * the set is frozen for the remainder of an increment once it has settled -- unchanged over two
   iterations -- so that the iteration can converge on a fixed set rather than chase a moving one;
 * it is also frozen when a discrete state already visited in this increment recurs, because a cycle
-  would otherwise repeat indefinitely without either converging or failing;
+  would otherwise repeat indefinitely without either converging or failing. This rule applies to the
+  penalty branch as well, whose set otherwise follows the pressure; a node held active there carries
+  the linear penalty pressure, which is what its stiffness differentiates;
 * and a hard cap of 20 iterations remains as a last resort. Reaching it is reported, because the
   increment then converges onto a set that was never confirmed and its solution is not guaranteed
   to satisfy the conditions above.
