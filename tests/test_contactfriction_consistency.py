@@ -166,4 +166,13 @@ def test_every_formulation_slides_on_the_same_friction_cone(formulation, tmp_pat
     # The friction resultant on the lower block is mu times its normal resultant -- up to the small
     # inclination of the contact normals the drag tilts the upper block into.
     assert normal > 0.0
-    assert drag / normal == pytest.approx(-MU, rel=0.02)
+    assert drag / normal == pytest.approx(-MU, rel=0.02 if formulation != "mortar" else 0.03)
+    if formulation == "mortar":
+        # The mortar contact takes its normals from the non-mortar side, the upper block, which the
+        # drag tilts about y. With the pressure-weighted tilt theta of those normals, a resultant on
+        # the cone is exactly (mu - tan theta)/(1 + mu tan theta) -- what the 0.03 above leaves room
+        # for, checked here to the solver tolerance instead.
+        normals = constraint.currentNormals[loaded]
+        weights = (pressures * np.abs(constraint.currentNodalWeights))[loaded]
+        tilt = np.average(normals[:, 0], weights=weights) / -np.average(normals[:, 2], weights=weights)
+        assert drag / normal == pytest.approx(-(MU + tilt) / (1.0 - MU * tilt), rel=1e-3)

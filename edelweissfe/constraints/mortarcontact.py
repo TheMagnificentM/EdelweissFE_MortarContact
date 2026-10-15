@@ -68,6 +68,20 @@ from edelweissfe.utils.mortargeometry import (
     triangleGaussWeights,
     triangulatePolygon,
 )
+from edelweissfe.utils.mortarlinearization import (
+    chordSegment,
+    closestPointDerivative,
+    elementNormalAtNode,
+    fanTriangleArea,
+    inversePlaneMapDerivative,
+    mergeOverNodes,
+    nodeSlots,
+    planeCoordinates,
+    scatterMatrix,
+    subCellPlane,
+    surfaceJacobian,
+    sutherlandHodgmanClipWithDerivatives,
+)
 from edelweissfe.utils.schema import buildSchemaFromOptions, schemaField
 
 """
@@ -258,6 +272,21 @@ class MortarContactSchema:
         default="lagrange",
     )
 
+    geometryUpdate: str = schemaField(
+        description=(
+            "How the mortar geometry -- segmentation, coupling matrices D and C, nodal normals -- follows the "
+            "deformation in an implicit analysis. 'consistent', the default, rebuilds it at every Newton "
+            "iterate and carries its full linearisation in the tangent (Popp, Gitterle, Gee & Wall 2010), so "
+            "the converged state of an increment satisfies the contact conditions in its own configuration. "
+            "'frozen' builds it once per increment from the last converged configuration and holds it fixed, "
+            "which is cheaper per iteration but staggered: the result carries an error of first order in the "
+            "increment size. Explicit dynamics always uses the frozen geometry, rebuilt every "
+            "contact-update-frequency increments, since it assembles no tangent."
+        ),
+        dtype=str,
+        default="consistent",
+    )
+
     penaltyStiffness: float = schemaField(
         description=(
             "Stiffness of the penalty pressure, used only for formulation=penalty: the pressure is "
@@ -340,6 +369,25 @@ def _cooToCsr(vals: list, rows: list, cols: list, shape: tuple) -> csr_matrix:
         (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
         shape=shape,
     ).tocsr()
+
+
+def _storedRows(A: csr_matrix, n_rows: int, rtol: float = 1e-12) -> tuple[list, list]:
+    """Per-row (column indices, values) of EVERY entry a CSR matrix stores, with the values that
+    :func:`_nonzeroRows` would drop set to exactly zero.
+
+    The counterpart of :func:`_nonzeroRows` for the consistent linearisation. An entry below the
+    noise floor is round-off of zero in THIS configuration, but not necessarily in the next: a
+    coupling that vanishes because the two meshes happen to coincide along one direction does not
+    vanish once they do not, and its derivative is not zero. So the column stays, carrying its
+    derivative, while its value is zero -- which leaves every sum it enters bit-identical to the
+    filtered one, since adding 0.0 changes nothing.
+    """
+    tol = rtol * np.max(np.abs(A.data)) if A.data.size else 0.0
+    data = np.where(np.abs(A.data) > tol, A.data, 0.0)
+    return (
+        [A.indices[A.indptr[I] : A.indptr[I + 1]] for I in range(n_rows)],  # noqa: E741
+        [data[A.indptr[I] : A.indptr[I + 1]] for I in range(n_rows)],  # noqa: E741
+    )
 
 
 def _nonzeroRows(A: csr_matrix, n_rows: int, rtol: float = 1e-12) -> tuple[list, list]:
@@ -463,6 +511,12 @@ class Constraint(ConstraintBase, MeshDependent):
             raise ValueError(
                 f"MortarContact '{name}': unknown formulation '{kwargs['formulation']}'. "
                 f"Valid choices are 'lagrange' (default) and 'penalty'."
+            )
+        self.geometryUpdate = str(kwargs["geometryUpdate"]).strip().lower()
+        if self.geometryUpdate not in ("consistent", "frozen"):
+            raise ValueError(
+                f"MortarContact '{name}': unknown geometryUpdate '{kwargs['geometryUpdate']}'. "
+                f"Valid choices are 'consistent' (default) and 'frozen'."
             )
 
         self._updateFootprint()
@@ -1401,10 +1455,16 @@ class Constraint(ConstraintBase, MeshDependent):
     def nDof(self) -> int:
         return self._nDof
 
+    @property
+    def consistentGeometry(self) -> bool:
+        """Whether the geometry follows the iterate with its full linearisation (``geometryUpdate``),
+        which needs a tangent and therefore an implicit solver."""
+        return self.geometryUpdate == "consistent" and not self._explicit
+
     def getNumberOfAdditionalNeededScalarVariables(self) -> int:
         return self.nMultipliers
 
-    def computeNormals(self, U_np: np.ndarray = None) -> np.ndarray:
+    def computeNormals(self, U_np: np.ndarray = None, withDerivatives: bool = False) -> np.ndarray:
         """Averaged outward-pointing unit normal at every non-mortar (slave) node.
 
         The averaged nodal normal: the element normal
@@ -1445,6 +1505,12 @@ class Constraint(ConstraintBase, MeshDependent):
 
         If U_np is provided, the normal vectors are calculated in the deformed
         configuration. Otherwise, they are calculated in the undeformed one.
+
+        With ``withDerivatives`` the derivative of every nodal normal with respect to the
+        coordinates of the nodes of its adjacent facets is stored as well, in
+        :attr:`currentNormalDerivatives`: per node, ``(nodes, dn)`` with the constraint-local node
+        indices and ``dn`` of shape ``(dim, dim * len(nodes))`` -- Popp, Gitterle, Gee & Wall
+        (2010), Eqs. (A1)-(A3), for the unweighted sum of unit element normals used here.
         """
         dim = self.model.domainSize
         normals = np.zeros((self.nNonMortarNodes, dim))
@@ -1452,10 +1518,14 @@ class Constraint(ConstraintBase, MeshDependent):
         node_to_idx = self.nonMortarNodeToIndex
         current = self._currentCoordinates(U_np)
 
+        # Per node, the derivatives of the unit contributions of its facets, with the facets' nodes.
+        contributions = [[] for _ in range(self.nNonMortarNodes)] if withDerivatives else None
+
         # Iterate over all non-mortar facets
         for el in self.nonMortarFacets:
             facet_nodes = el.nodes
-            coords = current[[self.nodeToGlobalIndex[node] for node in facet_nodes]]
+            facet_ids = [self.nodeToGlobalIndex[node] for node in facet_nodes]
+            coords = current[facet_ids]
 
             # Element normal evaluated AT each node's own natural coordinate,
             # normalized, and summed over the adjacent facets - the averaged nodal
@@ -1480,16 +1550,32 @@ class Constraint(ConstraintBase, MeshDependent):
                 if len_n <= 1e-14:
                     continue
                 normals[node_to_idx[node]] += n_node / len_n
+                if withDerivatives:
+                    # d(n/|n|) of this facet's contribution, over the facet's nodes (Eq. (A2)).
+                    _, dn_node = elementNormalAtNode(dN_at_nodes[local], coords, dim)
+                    unit = n_node / len_n
+                    contributions[node_to_idx[node]].append(
+                        (facet_ids, (np.eye(dim) - np.outer(unit, unit)) @ dn_node / len_n)
+                    )
 
         # Normalize the normal vectors
         degenerate = []
+        if withDerivatives:
+            self.currentNormalDerivatives = []
         for i in range(self.nNonMortarNodes):
             norm = np.linalg.norm(normals[i])
             if norm > 1e-14:
+                if withDerivatives:
+                    # The sum of the unit contributions, normalised once more (Eq. (A1)).
+                    nodes, dsum = mergeOverNodes(contributions[i], dim)
+                    unit = normals[i] / norm
+                    self.currentNormalDerivatives.append((nodes, (np.eye(dim) - np.outer(unit, unit)) @ dsum / norm))
                 normals[i] /= norm
             else:
                 normals[i] = np.zeros(dim)
                 degenerate.append(i)
+                if withDerivatives:
+                    self.currentNormalDerivatives.append((np.zeros(0, dtype=np.intp), np.zeros((dim, 0))))
 
         if degenerate:
             # A zero normal is not a harmless special case: g_weak and p_n are both
@@ -1572,9 +1658,20 @@ class Constraint(ConstraintBase, MeshDependent):
             return el, local, ok, False
         return None, None, False, False
 
-    def computeMortarCouplingMatrices(self, U_np: np.ndarray = None) -> tuple[np.ndarray, np.ndarray]:
+    def computeMortarCouplingMatrices(
+        self, U_np: np.ndarray = None, withDerivatives: bool = False
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Compute the global mortar coupling matrices D (slave-slave) and C (slave-master).
         Supports both 2D and 3D contact elements.
+
+        With ``withDerivatives`` every Gauss point of the segmentation also carries the derivatives
+        of its two natural coordinates and of its integration weight with respect to the coordinates
+        of the nodes it depends on -- the auxiliary plane, the clipped polygon, the fan triangle and
+        the back-mapping, chained as in Popp, Gitterle, Gee & Wall (2010), Appendix A (see
+        :mod:`~edelweissfe.utils.mortarlinearization`) -- and the derivatives of the rows of D and C
+        are assembled from them into :attr:`_rowContributions` (see
+        :meth:`_assembleCouplingMatricesFromSegments`). The layout of the segmentation is held fixed
+        in the derivative, as in the reference.
         """
         dim = self.model.domainSize
         if dim not in (2, 3):
@@ -1629,11 +1726,16 @@ class Constraint(ConstraintBase, MeshDependent):
         self.lastDroppedGaussPoints = 0
         slave_neighbours = self._nonMortarFacetNeighbours()
 
+        ids = self._constraintNodeIds
+
         for s_el in self.nonMortarFacets:
             s_nodes = s_el.nodes
 
             s_coords = np.array([current_coords[nd] for nd in s_nodes])
             s_idx = np.array([self.nonMortarNodeToIndex[nd] for nd in s_nodes])
+            if withDerivatives:
+                ns = len(s_nodes)
+                s_ids = ids(s_el)
 
             # Query the BVH tree once per slave facet to find nearby Master candidates
             s_aabb_min = np.min(s_coords, axis=0)
@@ -1661,6 +1763,9 @@ class Constraint(ConstraintBase, MeshDependent):
 
                     s_sub_2d = toPlaneCoordinates(sc_coords, p0, t1, t2)
                     s_full_2d = toPlaneCoordinates(s_coords, p0, t1, t2)
+                    if withDerivatives:
+                        # The plane depends on the corners of this slave sub-cell only.
+                        _, dnormal_s, _, dp0_s = subCellPlane(sc_coords, nodeSlots(ns, 3, 3 * ns)[s_sub])
 
                     # Facets projected into THIS auxiliary plane, computed only when a Gauss
                     # point has to be re-attributed (see _containingFacet).
@@ -1691,6 +1796,16 @@ class Constraint(ConstraintBase, MeshDependent):
                         m_nodes = m_el.nodes
                         m_coords = np.array([current_coords[nd] for nd in m_nodes])
                         m_full_2d = toPlaneCoordinates(m_coords, p0, t1, t2)
+                        if withDerivatives:
+                            # Local coordinate vector of this pair: slave facet nodes, then mortar facet
+                            # nodes; a Gauss point re-attributed to another facet appends that facet's.
+                            nm = len(m_nodes)
+                            Z0 = np.concatenate((s_ids, ids(m_el)))
+                            dnormal0 = np.pad(dnormal_s, ((0, 0), (0, 3 * nm)))
+                            dp00 = np.pad(dp0_s, ((0, 0), (0, 3 * nm)))
+                            dX0 = nodeSlots(ns + nm, 3, 3 * (ns + nm))
+                            _, dq_sfull = planeCoordinates(s_coords, dX0[:ns], p0, dp00, normal, dnormal0, t1, t2)
+                            _, dq_mfull = planeCoordinates(m_coords, dX0[ns:], p0, dp00, normal, dnormal0, t1, t2)
 
                         for m_sub in getSubCells(m_el):
                             m_sub_2d = m_full_2d[m_sub]
@@ -1707,15 +1822,24 @@ class Constraint(ConstraintBase, MeshDependent):
                                     f"WARNING: non-convex sub-cell on mortar facet {m_el.elNumber} ({m_el.elType}), contact area over-counted",
                                 )
 
-                            overlap_2d = sutherlandHodgmanClip(m_sub_2d, s_sub_2d)
+                            if withDerivatives:
+                                overlap_2d, doverlap = sutherlandHodgmanClipWithDerivatives(
+                                    m_sub_2d, dq_mfull[m_sub], s_sub_2d, dq_sfull[s_sub]
+                                )
+                            else:
+                                overlap_2d = sutherlandHodgmanClip(m_sub_2d, s_sub_2d)
                             if len(overlap_2d) < 3:
                                 continue
 
-                            for tri in triangulatePolygon(overlap_2d):
+                            for i_tri, tri in enumerate(triangulatePolygon(overlap_2d)):
                                 v0, v1, v2 = tri[0], tri[1], tri[2]
                                 area_jac = abs((v1[0] - v0[0]) * (v2[1] - v0[1]) - (v2[0] - v0[0]) * (v1[1] - v0[1]))
                                 if area_jac < 1e-14:
                                     continue
+                                if withDerivatives:
+                                    # The fan runs from vertex 0 (see triangulatePolygon).
+                                    dtri = doverlap[[0, i_tri + 1, i_tri + 2]]
+                                    _, darea = fanTriangleArea(tri, dtri)
 
                                 for gp, w in zip(triangleGaussPoints, triangleGaussWeights):
                                     L1, L2 = gp[0], gp[1]
@@ -1755,7 +1879,20 @@ class Constraint(ConstraintBase, MeshDependent):
                                             rec_s,
                                             np.array([self.nonMortarNodeToIndex[nd] for nd in rec_s.nodes]),
                                         )
-                                    seg_records[s_num].append((N_s, rec_m.elNumber, N_m, area_jac * w))
+                                    record = (N_s, rec_m.elNumber, N_m, area_jac * w)
+                                    if withDerivatives:
+                                        dx_gp = (1.0 - L1 - L2) * dtri[0] + L1 * dtri[1] + L2 * dtri[2]
+                                        record += (
+                                            self._gaussPointDerivatives(
+                                                (s_el, s_full_2d, dq_sfull, rec_s, local_s),
+                                                (m_el, m_full_2d, dq_mfull, rec_m, local_m),
+                                                Z0,
+                                                dx_gp,
+                                                darea * w,
+                                                (current_coords, p0, dp00, normal, dnormal0, t1, t2, inPlane),
+                                            ),
+                                        )
+                                    seg_records[s_num].append(record)
                                     seg_masters[s_num][rec_m.elNumber] = rec_m
 
                 else:
@@ -1763,11 +1900,19 @@ class Constraint(ConstraintBase, MeshDependent):
                     for m_el in candidates:
                         m_nodes = m_el.nodes
                         m_coords = np.array([current_coords[nd] for nd in m_nodes])
+                        if withDerivatives:
+                            nm = len(m_nodes)
+                            Z0 = np.concatenate((s_ids, ids(m_el)))
+                            dX0 = nodeSlots(ns + nm, 2, 2 * (ns + nm))
                         for m_sub in getSubCells(m_el):
                             mc_coords = m_coords[m_sub]
                             s_start, s_end, t_vec = clipLineSegments(sc_coords, mc_coords)
                             if s_end - s_start < 1e-12:
                                 continue
+                            if withDerivatives:
+                                _, dstart, _, dend, _, dt_vec = chordSegment(
+                                    sc_coords, dX0[s_sub], mc_coords, dX0[ns + np.asarray(m_sub)]
+                                )
 
                             half_len = 0.5 * (s_end - s_start)
                             mid_s = 0.5 * (s_start + s_end)
@@ -1791,7 +1936,23 @@ class Constraint(ConstraintBase, MeshDependent):
                                     seg_records[s_num] = []
                                     seg_masters[s_num] = {}
                                     slave_els[s_num] = (s_el, s_idx)
-                                seg_records[s_num].append((N_s, m_el.elNumber, N_m, dG))
+                                record = (N_s, m_el.elNumber, N_m, dG)
+                                if withDerivatives:
+                                    # s_gp = mid + half * gp along the chord, x_gp = sc0 + s_gp * t.
+                                    dhalf = 0.5 * (dend - dstart)
+                                    ds_gp = 0.5 * (dstart + dend) + gp_1d[0] * dhalf
+                                    dx_gp = dX0[s_sub[0]] + np.outer(t_vec, ds_gp) + s_gp * dt_vec
+                                    dxi_s = closestPointDerivative(s_el, s_coords, dX0[:ns], local_s, x_gp, dx_gp)
+                                    dxi_m = closestPointDerivative(m_el, m_coords, dX0[ns:], local_m, x_gp, dx_gp)
+                                    record += (
+                                        (
+                                            Z0,
+                                            s_el.getShapeFunctionDerivatives(local_s).T @ dxi_s,
+                                            m_el.getShapeFunctionDerivatives(local_m).T @ dxi_m,
+                                            dhalf * w_1d,
+                                        ),
+                                    )
+                                seg_records[s_num].append(record)
                                 seg_masters[s_num][m_el.elNumber] = m_el
 
         if n_proj_failed:
@@ -1806,8 +1967,235 @@ class Constraint(ConstraintBase, MeshDependent):
             )
 
         return self._assembleCouplingMatricesFromSegments(
-            seg_records, seg_masters, slave_els, current_coords, n_slave, n_master
+            seg_records, seg_masters, slave_els, current_coords, n_slave, n_master, withDerivatives
         )
+
+    def _constraintNodeIds(self, el) -> np.ndarray:
+        """The constraint-local indices (non-mortar nodes first, then mortar nodes) of a facet's nodes."""
+        return np.array([self.nodeToGlobalIndex[nd] for nd in el.nodes], dtype=np.intp)
+
+    def _gaussPointDerivatives(self, slaveSide, masterSide, Z0, dx_gp, ddG, plane):
+        """Derivatives of the shape functions of both sides and of the integration weight at one Gauss
+        point of the 3D segmentation.
+
+        Each side's natural coordinate solves the in-plane isoparametric map of the facet the point
+        is attributed to (see :func:`~edelweissfe.utils.mortarlinearization.inversePlaneMapDerivative`),
+        and ``dN = N,xi dxi``. A point re-attributed to another facet than the one whose sub-cell
+        produced it (see :meth:`_containingFacet`) depends on that facet's nodes as well, which are
+        appended to the local coordinate vector.
+
+        Parameters
+        ----------
+        slaveSide, masterSide
+            ``(facet that produced the point, its plane coordinates, their Jacobian, facet the point
+            is attributed to, natural coordinate there)``.
+        Z0
+            Constraint-local node indices of the producing pair, slave facet first.
+        dx_gp
+            ``(2, 3 * len(Z0))`` Jacobian of the point in plane coordinates.
+        ddG
+            ``(3 * len(Z0),)`` Jacobian of its integration weight.
+        plane
+            ``(current_coords, p0, dp0, normal, dnormal, t1, t2, inPlane)`` of the auxiliary plane.
+
+        Returns
+        -------
+        tuple
+            ``(Z, dN_s, dN_m, ddG)`` over the local coordinate vector of the nodes ``Z``.
+        """
+        current_coords, p0, dp0, normal, dnormal, t1, t2, inPlane = plane
+        Z = [Z0]
+        sides = []
+        for own, own_q, own_dq, rec, local in (slaveSide, masterSide):
+            if rec is own:
+                sides.append((rec, own_q, own_dq, local, None))
+            else:
+                sides.append((rec, inPlane(rec), None, local, sum(len(z) for z in Z)))
+                Z.append(self._constraintNodeIds(rec))
+        Z = np.concatenate(Z)
+        nZ = 3 * len(Z)
+
+        def pad(d):
+            return d if d.shape[-1] == nZ else np.pad(d, [(0, 0)] * (d.ndim - 1) + [(0, nZ - d.shape[-1])])
+
+        dx = pad(dx_gp)
+        dN = []
+        for rec, q, dq, local, offset in sides:
+            if offset is None:
+                dq = pad(dq)
+            else:
+                coords = np.array([current_coords[nd] for nd in rec.nodes])
+                _, dq = planeCoordinates(
+                    coords, nodeSlots(len(coords), 3, nZ, offset), p0, pad(dp0), normal, pad(dnormal), t1, t2
+                )
+            try:
+                dxi = inversePlaneMapDerivative(rec, q, dq, local, dx)
+            except np.linalg.LinAlgError:
+                # A point whose back-mapping has no Jacobian has no coordinate to differentiate either;
+                # it is reported as a projection failure by the caller.
+                dxi = np.zeros((2, nZ))
+            dN.append(rec.getShapeFunctionDerivatives(local).T @ dxi)
+        return Z, dN[0], dN[1], pad(ddG)
+
+    def _facetCouplingDerivatives(
+        self, records, s_el, s_idx, masters, s_coords, T_e, M_t, D_t, regular, D_full, covered, A_e
+    ):
+        """Derivatives of one non-mortar facet's blocks of D and C, chained from its Gauss points.
+
+        The blocks are ``D_blk = sum Phi (x) N_s dG`` and ``C_blk = sum Phi (x) N_m dG`` with the dual
+        shape functions ``Phi = A_e N_s``, and their derivatives carry the three terms of Popp,
+        Gitterle, Gee & Wall (2010), Eqs. (A4)-(A5): that of the dual coefficients, that of the
+        shape functions through the Gauss point coordinates, and that of the integration weight.
+
+        The dual coefficients are those of :meth:`_assembleCouplingMatricesFromSegments`. On the
+        regular path, ``A_e = diag(D_t) M_t^-1 T_e`` row-weighted by ``D_full / D_t`` where the
+        covered integral is positive, i.e. ``A_e = diag(r) M_t^-1 T_e`` with ``r_a = D_full,a``
+        (covered) or ``D_t,a``; its derivative is that of Popp et al. (2010), Eq. (A23), ``dA_e =
+        dD_e M_e^-1 - A_e dM_e M_e^-1``, written for these factors, with ``T_e`` constant (Popp,
+        Wohlmuth, Gee & Wall 2012, p. B432). ``D_full`` integrates over the whole facet with the
+        element's own quadrature, and only the surface Jacobian depends on the configuration (Popp
+        et al. 2010, Eqs. (A24)-(A26)). On the sliver fallback the reference-element coefficients
+        ``diag(D_full) M_e^-1 T_e`` are differentiated the same way. The row weighting is Cichosz &
+        Bischoff (2011); differentiating it is this implementation's chain rule.
+
+        Appends, per row, ``(columns are D?, column indices, derivative rows, support nodes)`` to
+        :attr:`_rowContributions`.
+        """
+        dim = self.model.domainSize
+        n_s = len(s_idx)
+        facet_ids = self._constraintNodeIds(s_el)
+        support = np.unique(np.concatenate([facet_ids] + [r[4][0] for r in records]))
+        P = dim * len(support)
+
+        # Every Gauss point's derivatives moved onto the facet's support and stacked, R points deep.
+        N_s = np.array([record[0] for record in records])
+        dG = np.array([record[3] for record in records])
+        dN_s = np.zeros((len(records), n_s, P))
+        ddG = np.zeros((len(records), P))
+        for r, record in enumerate(records):
+            Z, dNr, _, ddGr = record[4]
+            columns = (dim * np.searchsorted(support, Z)[:, None] + np.arange(dim)).ravel()
+            np.add.at(dN_s[r], (slice(None), columns), dNr)
+            np.add.at(ddG[r], columns, ddGr)
+
+        # The covered integrals M_t and D_t (Eq. (A23) on the integration cells).
+        N_t = N_s @ T_e.T
+        dN_t = np.einsum("ab,rbz->raz", T_e, dN_s)
+        dM_t = np.einsum("raz,rb,r->abz", dN_t, N_t, dG)
+        dM_t = dM_t + dM_t.transpose(1, 0, 2)
+        dM_t += np.einsum("ra,rb,rz->abz", N_t, N_t, ddG)
+        dD_t = np.einsum("raz,r->az", dN_t, dG) + N_t.T @ ddG
+
+        # The whole-facet integrals D_full (and M_e on the fallback), with the element's quadrature.
+        S_facet = scatterMatrix(facet_ids, support, dim)
+        dD_full = np.zeros((n_s, dim * n_s))
+        M_e = np.zeros((n_s, n_s))
+        dM_e = np.zeros((n_s, n_s, dim * n_s))
+        for xi, w in zip(*s_el.getQuadraturePoints()):
+            N_t = T_e @ s_el.getShapeFunctions(xi)
+            J, dJ = surfaceJacobian(s_el, xi, s_coords)
+            dD_full += np.outer(N_t, dJ) * w
+            if not regular:
+                M_e += np.outer(N_t, N_t) * J * w
+                dM_e += np.outer(N_t, N_t)[:, :, None] * dJ * w
+        dD_full = dD_full @ S_facet
+
+        if regular:
+            M_inv = np.linalg.inv(M_t)
+            B = M_inv @ T_e
+            dB = -np.einsum("ab,bcz,cd->adz", M_inv, dM_t, B)
+            r = D_t.copy()
+            dr = dD_t.copy()
+            r[covered] = D_full[covered]
+            dr[covered] = dD_full[covered]
+        else:
+            try:
+                M_inv = np.linalg.inv(M_e)
+            except np.linalg.LinAlgError:
+                M_inv = np.linalg.pinv(M_e)
+            B = M_inv @ T_e
+            dB = -np.einsum("ab,bcz,cd->adz", M_inv, dM_e @ S_facet, B)
+            r = D_full.copy()
+            dr = dD_full.copy()
+            c = covered
+            r[c] = D_full[c] * D_full[c] / D_t[c]
+            dr[c] = 2.0 * (D_full[c] / D_t[c])[:, None] * dD_full[c] - ((D_full[c] / D_t[c]) ** 2)[:, None] * dD_t[c]
+        dA = dr[:, None, :] * B[:, :, None] + r[:, None, None] * dB
+
+        Phi = N_s @ A_e.T
+        dPhi = np.einsum("abz,rb->raz", dA, N_s) + np.einsum("ab,rbz->raz", A_e, dN_s)
+        dD_blk = (
+            np.einsum("raz,rb,r->abz", dPhi, N_s, dG)
+            + np.einsum("ra,rbz,r->abz", Phi, dN_s, dG)
+            + np.einsum("ra,rb,rz->abz", Phi, N_s, ddG)
+        )
+        dC_blks = {}
+        for m_num in {record[1] for record in records}:
+            rows = [r for r, record in enumerate(records) if record[1] == m_num]
+            N_m = np.array([records[r][2] for r in rows])
+            dN_m = np.zeros((len(rows), N_m.shape[1], P))
+            for k, r in enumerate(rows):
+                Z, _, dNr, _ = records[r][4]
+                columns = (dim * np.searchsorted(support, Z)[:, None] + np.arange(dim)).ravel()
+                np.add.at(dN_m[k], (slice(None), columns), dNr)
+            dC_blks[m_num] = (
+                np.einsum("raz,rb,r->abz", dPhi[rows], N_m, dG[rows])
+                + np.einsum("ra,rbz,r->abz", Phi[rows], dN_m, dG[rows])
+                + np.einsum("ra,rb,rz->abz", Phi[rows], N_m, ddG[rows])
+            )
+
+        for a, I in enumerate(s_idx):  # noqa: E741 - I is the non-mortar node index of the formulation
+            self._rowContributions[I].append((True, s_idx, dD_blk[a], support))
+            for m_num, dC_blk in dC_blks.items():
+                m_idx = np.array([self.mortarNodeToIndex[nd] for nd in masters[m_num].nodes])
+                self._rowContributions[I].append((False, m_idx, dC_blk[a], support))
+
+    def _linearisedRows(self) -> list:
+        """The derivatives of every non-mortar node's rows of D and C and of its normal, gathered onto
+        one local node list per node.
+
+        Returns, per non-mortar node ``I``, a dict with
+
+        ``nodes``
+            the sorted constraint-local node indices the node's coupling depends on: the coupled
+            nodes themselves, every node a Gauss point of its rows depends on, and the nodes of the
+            facets around it (through the normal);
+        ``dD``, ``dC``
+            ``(len(row), dim * len(nodes))`` derivatives of the stored entries of row ``I`` of D
+            and C, in the order of :attr:`currentDNonzero` / :attr:`currentCNonzero`;
+        ``dn``
+            ``(dim, dim * len(nodes))`` derivative of the nodal normal.
+        """
+        dim = self.model.domainSize
+        nSlave = self.nNonMortarNodes
+        rows = []
+        for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
+            colsD, colsC = self.currentDNonzero[I], self.currentCNonzero[I]
+            normalNodes, dn = self.currentNormalDerivatives[I]
+            contributions = self._rowContributions[I]
+            nodes = np.unique(
+                np.concatenate(
+                    [np.asarray(colsD, dtype=np.intp), nSlave + np.asarray(colsC, dtype=np.intp), normalNodes]
+                    + [support for *_, support in contributions]
+                )
+            )
+            dD = np.zeros((len(colsD), dim * len(nodes)))
+            dC = np.zeros((len(colsC), dim * len(nodes)))
+            for isD, cols, d, support in contributions:
+                target, ownCols = (dD, colsD) if isD else (dC, colsC)
+                # The row stores every column it was assembled from (see _storedRows).
+                sorter = np.argsort(ownCols)
+                position = sorter[np.searchsorted(ownCols, cols, sorter=sorter)]
+                np.add.at(target, position, d @ scatterMatrix(support, nodes, dim))
+            rows.append(
+                {
+                    "nodes": nodes,
+                    "dD": dD,
+                    "dC": dC,
+                    "dn": dn @ scatterMatrix(normalNodes, nodes, dim),
+                }
+            )
+        return rows
 
     def requiresCorrectionBeforeConvergence(self) -> bool:
         """True on the first assembly of an increment in the penalty branch.
@@ -2003,6 +2391,7 @@ class Constraint(ConstraintBase, MeshDependent):
         nodalPenalty = self._nodalPenaltyStiffness() if penalty else None
         friction = penalty and self._friction.enabled
         _dim_offsets = np.arange(dim)
+        consistent = self.consistentGeometry
 
         for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
             idx_LM_I = idx_LM_0 + I
@@ -2177,7 +2566,13 @@ class Constraint(ConstraintBase, MeshDependent):
                 v = (w[:, None] * n_I[None, :]).ravel()
                 PExt[idcs] -= lambda_I * v
                 K[np.ix_(idcs, idcs)] += kappa_I * np.outer(v, v)
-                if friction:
+                if consistent:
+                    dlambda = self._geometricTangent(I, lambda_I, coords, K, penaltyTerms=(kappa_I, g_pen, sgn_D, D_II))
+                    if friction:
+                        self._assembleFrictionConsistent(
+                            I, max(p_trial, 0.0), dlambda, kappa_I, sgn_D, D_II, coords, PExt, K
+                        )
+                elif friction:
                     self._assembleFriction(
                         I, w, v, idcs, n_I, max(p_trial, 0.0), kappa_I * sgn_D, abs(D_II), dU, PExt, K
                     )
@@ -2262,6 +2657,9 @@ class Constraint(ConstraintBase, MeshDependent):
                     PExt[m_dofs] += lambda_I * C_IJ_n
                     K[m_dofs, idx_LM_I] -= C_IJ_n
                     K[idx_LM_I, m_dofs] -= C_IJ_n
+
+                if consistent:
+                    self._geometricTangent(I, lambda_I, coords, K, multiplierRow=idx_LM_I)
             else:
                 PExt[idx_LM_I] -= lambda_I
                 K[idx_LM_I, idx_LM_I] += 1.0
@@ -2284,6 +2682,196 @@ class Constraint(ConstraintBase, MeshDependent):
             # this only fires on an increment that is genuinely struggling.
             self._friction.freezeIfChattering(self.currentIteration)
         self._reportThinlyCoveredNodes(timeStep)
+
+    def _geometricTangent(
+        self,
+        I: int,  # noqa: E741 - the non-mortar node index of the formulation
+        lambda_I: float,
+        coords: np.ndarray,
+        K: np.ndarray,
+        multiplierRow: int | None = None,
+        penaltyTerms: tuple | None = None,
+    ):
+        """The terms of the tangent of an active non-mortar node that come from the geometry following
+        the deformation, under ``geometryUpdate=consistent``.
+
+        The assembly of :meth:`applyConstraint` differentiates the residual with D, C and n_I held
+        fixed. What the moving geometry adds is, with the weighted gap vector ``G_I = sum_K D_IK x_K -
+        sum_J C_IJ x_J`` and ``g_I = -n_I . G_I``,
+
+            dg_I = -G_I . dn_I - n_I . (sum_K x_K dD_IK - sum_J x_J dC_IJ)
+
+        in the constraint row (Popp, Gitterle, Gee & Wall 2010, Eqs. (A8)-(A11) with the nodal gap of
+        Popp, Gee & Wall 2009, Eq. (A36)), and in the forces ``-lambda_I D_IK n_I`` and ``+lambda_I
+        C_IJ n_I`` the derivatives ``lambda_I (n_I dD_IK + D_IK dn_I)`` and their mortar
+        counterparts -- the matrix C~ of Popp et al. (2010), Eq. (51).
+
+        For the penalty form the pressure itself moves with the geometry as well: with ``p =
+        z + kappa_I g_pen``, ``kappa_I = eps_N/|D_II|`` and ``g_pen = -sgn(D_II) g_I``, its geometric
+        derivative is ``sgn(D_II) dkappa_I g_pen - kappa_I dg_I`` with ``sgn(D_II) dkappa_I =
+        -kappa_I dD_II / |D_II|``, and it enters every force ``-lambda_I w_a n_I``.
+
+        Parameters
+        ----------
+        I
+            The non-mortar node.
+        lambda_I
+            Its multiplier, in the sign convention of the assembly.
+        coords
+            Current coordinates of all constraint nodes.
+        K
+            The constraint's tangent, ``-dPExt/dU``, added to in place.
+        multiplierRow
+            The row of the multiplier (formulation=lagrange), whose constraint row receives ``-dg_I``.
+        penaltyTerms
+            ``(kappa_I, g_pen, sgn(D_II), D_II)`` for formulation=penalty.
+
+        Returns
+        -------
+        np.ndarray | None
+            For formulation=penalty, the geometric part of ``dlambda_I`` over the coordinates of
+            the node's local nodes (see :meth:`_linearisedRows`), which the friction law needs too.
+        """
+        dim = self.model.domainSize
+        sf = self.sizeField
+        nSlave = self.nNonMortarNodes
+        lin = self._linearisation[I]
+        nodes = lin["nodes"]
+        local = (sf * nodes[:, None] + np.arange(dim)).ravel()
+
+        colsD, colsC = self.currentDNonzero[I], self.currentCNonzero[I]
+        dRow, cRow = self.currentDRow[I], self.currentCRow[I]
+        dD, dC, dn = lin["dD"], lin["dC"], lin["dn"]
+        n_I = self.currentNormals[I]
+        x_s, x_m = coords[colsD], coords[nSlave + np.asarray(colsC, dtype=np.intp)]
+
+        G = dRow @ x_s - cRow @ x_m
+        dG = x_s.T @ dD - x_m.T @ dC
+        dg = -(G @ dn) - n_I @ dG
+
+        # Rows of the forces on the coupled nodes, -lambda w_a n_I with w = [D_IK, -C_IJ].
+        rowsD = (sf * np.asarray(colsD, dtype=np.intp)[:, None] + np.arange(dim)).ravel()
+        rowsC = (sf * (nSlave + np.asarray(colsC, dtype=np.intp))[:, None] + np.arange(dim)).ravel()
+        forceD = n_I[None, :, None] * dD[:, None, :] + dRow[:, None, None] * dn[None]
+        forceC = n_I[None, :, None] * dC[:, None, :] + cRow[:, None, None] * dn[None]
+
+        if multiplierRow is not None:
+            K[multiplierRow, local] -= dg
+            K[np.ix_(rowsD, local)] += lambda_I * forceD.reshape(-1, len(local))
+            K[np.ix_(rowsC, local)] -= lambda_I * forceC.reshape(-1, len(local))
+            return
+
+        kappa_I, g_pen, sgn_D, D_II = penaltyTerms
+        dD_II = dD.sum(axis=0)
+        dlambda = -kappa_I * g_pen * dD_II / abs(D_II) - kappa_I * dg
+        vD = (dRow[:, None] * n_I[None, :]).ravel()
+        vC = (-cRow[:, None] * n_I[None, :]).ravel()
+        K[np.ix_(rowsD, local)] += np.outer(vD, dlambda) + lambda_I * forceD.reshape(-1, len(local))
+        K[np.ix_(rowsC, local)] += np.outer(vC, dlambda) - lambda_I * forceC.reshape(-1, len(local))
+        return dlambda
+
+    def _assembleFrictionConsistent(
+        self,
+        I: int,  # noqa: E741 - the non-mortar node index of the formulation
+        p: float,
+        dlambdaGeometric: np.ndarray,
+        kappa_I: float,
+        sgn_D: float,
+        D_II: float,
+        coords: np.ndarray,
+        PExt: np.ndarray,
+        K: np.ndarray,
+    ):
+        """Penalty-regularised Coulomb friction at one active non-mortar node, on the geometry of the
+        iterate (``geometryUpdate=consistent``).
+
+        The law and the mapping onto it are those of :meth:`_assembleFriction` -- forces ``w_a t``
+        with ``w = [D_IK, -C_IJ]``, pointwise quantities over ``|D_II|`` -- but the slip is the
+        OBJECTIVE one of Gitterle, Popp, Gee & Wall (2010), Eq. (53),
+
+            u_tau = P_T [ -(D - D_n) x_s + (C - C_n) x_m ]_I / |D_II| ,
+
+        with D_n, C_n the coupling matrices of the last converged configuration and every other
+        quantity at the iterate; Yang, Laursen & Meng (2005), Eq. (47), is the same measure. A rigid
+        rotation leaves D and C unchanged and therefore produces no slip, so no correction of the
+        history is needed between increments. The 3D form -- a tangent plane instead of the single
+        tangent of Gitterle et al., who treat 2D -- is the projected relative velocity of Farah
+        (2018), Eq. (3.43). Its linearisation follows their Eq. (A3), with the normal, the
+        coupling matrices and the pressure all differentiated (see
+        :meth:`~edelweissfe.utils.contactfriction.CoulombFriction.evaluateLinearised`).
+
+        Parameters
+        ----------
+        I
+            The non-mortar node.
+        p
+            The physical contact pressure, >= 0.
+        dlambdaGeometric
+            The geometric part of the derivative of the multiplier (see :meth:`_geometricTangent`).
+        kappa_I, sgn_D, D_II
+            The nodal penalty stiffness, the sign of the nodal weight and the weight itself.
+        coords
+            Current coordinates of all constraint nodes.
+        PExt, K
+            As in :meth:`applyConstraint`.
+        """
+        dim = self.model.domainSize
+        sf = self.sizeField
+        nSlave = self.nNonMortarNodes
+        lin = self._linearisation[I]
+
+        (convergedColsD, convergedD), (convergedColsC, convergedC) = self._convergedRows
+        oldColsD, oldD = convergedColsD[I], convergedD[I]
+        oldColsC, oldC = convergedColsC[I], convergedC[I]
+        nodes = np.unique(np.concatenate((lin["nodes"], oldColsD, nSlave + oldColsC))).astype(np.intp)
+        S = scatterMatrix(lin["nodes"], nodes, dim)
+        dD, dC, dn = lin["dD"] @ S, lin["dC"] @ S, lin["dn"] @ S
+        nZ = dim * len(nodes)
+
+        def weights(colsD, valsD, colsC, valsC):
+            # The coupling of a row over the local nodes: +D_IK on the slave, -C_IJ on the master nodes.
+            w = np.zeros(len(nodes))
+            np.add.at(w, np.searchsorted(nodes, colsD), valsD)
+            np.add.at(w, np.searchsorted(nodes, nSlave + np.asarray(colsC, dtype=np.intp)), -np.asarray(valsC))
+            return w
+
+        colsD, colsC = self.currentDNonzero[I], self.currentCNonzero[I]
+        w = weights(colsD, self.currentDRow[I], colsC, self.currentCRow[I])
+        wOld = weights(oldColsD, oldD, oldColsC, oldC)
+        dw = np.zeros((len(nodes), nZ))
+        np.add.at(dw, np.searchsorted(nodes, colsD), dD)
+        np.add.at(dw, np.searchsorted(nodes, nSlave + np.asarray(colsC, dtype=np.intp)), -dC)
+
+        # The gap vectors with the current and with the converged coupling, both at the iterate.
+        x = coords[nodes]
+        eye = np.eye(dim)
+        G, dG = w @ x, np.kron(w[None, :], eye) + x.T @ dw
+        GOld, dGOld = wOld @ x, np.kron(wOld[None, :], eye)
+        A = abs(D_II)
+        dA = sgn_D * dD.sum(axis=0)
+        relative = (GOld - G) / A
+        dRelative = (dGOld - dG) / A - np.outer(relative, dA) / A
+
+        n_I = self.currentNormals[I]
+        # dp = sgn(D_II) dlambda: the part through the positions (kappa_I w_b n_I) and the geometric part.
+        dp = sgn_D * (kappa_I * (w[:, None] * n_I[None, :]).ravel() + dlambdaGeometric @ S)
+
+        forces, tangent = self._friction.evaluateLinearised(
+            I,
+            w,
+            dw,
+            n_I,
+            dn,
+            relative,
+            dRelative,
+            p,
+            dp,
+            self.epsN,
+            pressureTolerance=kappa_I * self.currentGapTolerance,
+        )
+        idcs = (sf * nodes[:, None] + np.arange(dim)).ravel()
+        PExt[idcs] += forces
+        K[np.ix_(idcs, idcs)] += tangent
 
     def _freezeActiveSetIfSettled(self, penalty: bool, timeStep: TimeStep):
         """Decide whether the active set may stop being re-evaluated for the rest of this increment.
@@ -2914,12 +3502,15 @@ class Constraint(ConstraintBase, MeshDependent):
     def _refreshFrozenGeometry(self, step_key: tuple, U_np: np.ndarray, dU: np.ndarray, timeStep: TimeStep):
         """Re-freeze the geometry at the start of an increment, or count an iteration within one.
 
-        Everything geometric -- the nodal normals, the segmentation, and the two coupling matrices --
-        is evaluated once per increment from the LAST CONVERGED configuration and then held fixed
-        for that increment's Newton iterations. This is the method that decides which of the two
-        has happened and, on a new increment, does the evaluating: it also resets the active-set
-        bookkeeping, restores the augmented multiplier estimate, and derives the relative
-        tolerances that the per-node loop compares against.
+        Under ``geometryUpdate=frozen``, everything geometric -- the nodal normals, the segmentation,
+        and the two coupling matrices -- is evaluated once per increment from the LAST CONVERGED
+        configuration and then held fixed for that increment's Newton iterations. This is the method
+        that decides which of the two has happened and, on a new increment, does the evaluating: it
+        also resets the active-set bookkeeping, restores the augmented multiplier estimate, and
+        derives the relative tolerances that the per-node loop compares against.
+
+        Under ``geometryUpdate=consistent`` the bookkeeping is the same, but the geometry is rebuilt
+        at every call, at the iterate itself and with its linearisation.
 
         Parameters
         ----------
@@ -2933,7 +3524,6 @@ class Constraint(ConstraintBase, MeshDependent):
         timeStep
             The current time step, for the increment number in the diagnostics.
         """
-        nSlave = self.nNonMortarNodes
 
         # TWO conditions, deliberately separate. The per-increment bookkeeping below
         # follows the increment, as it always did. The GEOMETRY follows the solver's
@@ -2979,6 +3569,24 @@ class Constraint(ConstraintBase, MeshDependent):
         else:
             self.currentIteration += 1
 
+        if self.consistentGeometry:
+            # The geometry of the ITERATE, rebuilt at every assembly together with its
+            # linearisation (see _buildGeometry). Nothing of it is carried from one iterate to
+            # the next, so the connectivity tick has nothing left to decide.
+            self._geometryStale = False
+            if newIncrement and self._friction.enabled:
+                # The objective slip of Gitterle et al. (2010), Eq. (53), is the change of the
+                # coupling matrices over the increment, so those of its start are kept.
+                convergedD, convergedC = self.computeMortarCouplingMatrices(U_np - dU)
+                # Filtered exactly as the rows of the iterate are (see _buildGeometry), so that an
+                # iterate at the converged configuration reads a slip of exactly zero.
+                self._convergedRows = (
+                    _storedRows(convergedD, self.nNonMortarNodes),
+                    _storedRows(convergedC, self.nNonMortarNodes),
+                )
+            self._buildGeometry(U_np, timeStep, withDerivatives=True)
+            return
+
         if not rebuildGeometry:
             return
 
@@ -2987,13 +3595,33 @@ class Constraint(ConstraintBase, MeshDependent):
         # only when the solver's connectivity tick has marked it stale.
         self._geometryStale = False
         # Last converged state - see the reference-configuration note above.
-        U_ref = U_np - dU
+        self._buildGeometry(U_np - dU, timeStep)
+
+    def _buildGeometry(self, U_ref: np.ndarray, timeStep: TimeStep, withDerivatives: bool = False):
+        """Build the geometry -- nodal normals, segmentation, coupling matrices -- at the configuration
+        ``U_ref``, and everything derived from it.
+
+        Under ``geometryUpdate=frozen`` this runs once per connectivity tick at the last converged
+        configuration. Under ``consistent`` it runs at every iterate, and ``withDerivatives`` then
+        also builds the derivatives of the normals and of every row of D and C with respect to the
+        nodal coordinates (see :meth:`computeNormals`, :meth:`computeMortarCouplingMatrices`).
+
+        Parameters
+        ----------
+        U_ref
+            The constraint-local solution vector the geometry is built at.
+        timeStep
+            The current time step, for the increment number in the diagnostics.
+        withDerivatives
+            Whether to build the linearisation as well.
+        """
+        nSlave = self.nNonMortarNodes
         previousNormals = getattr(self, "currentNormals", None)
         if previousNormals is None:
             # The normals of the last rebuild before a restart, if the checkpoint held them.
             previousNormals = self.__dict__.pop("_restoredFrictionNormals", None)
-        self.currentNormals = self.computeNormals(U_ref)
-        D_full, C_full = self.computeMortarCouplingMatrices(U_ref)
+        self.currentNormals = self.computeNormals(U_ref, withDerivatives)
+        D_full, C_full = self.computeMortarCouplingMatrices(U_ref, withDerivatives)
         # The FULL (element-locally sparse) D matrix is used for forces,
         # stiffness and weak gap. With the basis transformation T_e the
         # biorthogonality holds w.r.t. N_tilde, so D is not diagonal for
@@ -3066,8 +3694,15 @@ class Constraint(ConstraintBase, MeshDependent):
         # Precompute the sparsity patterns AND the row values once per increment.
         # The geometry is frozen for the increment, so both are constant while
         # applyConstraint runs once per Newton iteration.
-        self.currentDNonzero, self.currentDRow = _nonzeroRows(D_full, nSlave)
-        self.currentCNonzero, self.currentCRow = _nonzeroRows(C_full, nSlave)
+        if withDerivatives:
+            # Every stored entry with its derivative, the round-off values set to zero (see
+            # _storedRows): the residual is that of the filtered rows, the tangent misses nothing.
+            self.currentDNonzero, self.currentDRow = _storedRows(D_full, nSlave)
+            self.currentCNonzero, self.currentCRow = _storedRows(C_full, nSlave)
+            self._linearisation = self._linearisedRows()
+        else:
+            self.currentDNonzero, self.currentDRow = _nonzeroRows(D_full, nSlave)
+            self.currentCNonzero, self.currentCRow = _nonzeroRows(C_full, nSlave)
 
         # The penalty parameter needs the nodal weights, so it is derived here
         # rather than at the top of the assembly like c_n.
@@ -3099,13 +3734,13 @@ class Constraint(ConstraintBase, MeshDependent):
             )
             self._frictionSetup = self._friction.setCharacteristicLength(h)
 
-        if self._friction.enabled:
+        if self._friction.enabled and not withDerivatives:
             self._carryFrictionHistory(U_ref, previousNormals)
 
         self._reportSetupOnce()
 
     def _assembleCouplingMatricesFromSegments(
-        self, seg_records, seg_masters, slave_els, current_coords, n_slave, n_master
+        self, seg_records, seg_masters, slave_els, current_coords, n_slave, n_master, withDerivatives=False
     ) -> tuple[csr_matrix, csr_matrix]:
         """Turn the segment quadrature of one increment into the two mortar coupling matrices.
 
@@ -3131,6 +3766,9 @@ class Constraint(ConstraintBase, MeshDependent):
             Number of non-mortar nodes.
         n_master
             Number of mortar nodes.
+        withDerivatives
+            Whether the records carry derivatives, from which the derivatives of the rows of D and C
+            are then assembled as well (see :meth:`_facetCouplingDerivatives`).
 
         Returns
         -------
@@ -3158,6 +3796,9 @@ class Constraint(ConstraintBase, MeshDependent):
         # Numerator and denominator of the per-node coverage fraction, filled facet by facet below.
         coverageCovered = np.zeros(n_slave)
         coverageFull = np.zeros(n_slave)
+        if withDerivatives:
+            # Per non-mortar node, the derivatives of the pieces of its rows of D and C, one per facet.
+            self._rowContributions = [[] for _ in range(n_slave)]
 
         for s_num, records in seg_records.items():
             s_el, s_idx = slave_els[s_num]
@@ -3179,7 +3820,7 @@ class Constraint(ConstraintBase, MeshDependent):
             T_e = s_el.getBasisTransformation()
             M_t = np.zeros((n_s, n_s))
             D_t = np.zeros(n_s)
-            for N_s, _, _, dG in records:
+            for N_s, _, _, dG, *_ in records:
                 N_tilde = T_e @ N_s
                 M_t += np.outer(N_tilde, N_tilde) * dG
                 D_t += N_tilde * dG
@@ -3299,12 +3940,28 @@ class Constraint(ConstraintBase, MeshDependent):
             # Assemble the D block and per-master C blocks of this slave element
             D_blk = np.zeros((n_s, n_s))
             C_blks = {}
-            for N_s, m_num, N_m, dG in records:
+            for N_s, m_num, N_m, dG, *_ in records:
                 M_bar = A_e @ N_s
                 D_blk += np.outer(M_bar, N_s) * dG
                 if m_num not in C_blks:
                     C_blks[m_num] = np.zeros((n_s, len(seg_masters[s_num][m_num].nodes)))
                 C_blks[m_num] += np.outer(M_bar, N_m) * dG
+
+            if withDerivatives:
+                self._facetCouplingDerivatives(
+                    records,
+                    s_el,
+                    s_idx,
+                    seg_masters[s_num],
+                    np.array([current_coords[nd] for nd in s_el.nodes]),
+                    T_e,
+                    M_t,
+                    D_t,
+                    cond_M_t < 1e12,
+                    D_full,
+                    covered,
+                    A_e,
+                )
 
             rr, cc = np.meshgrid(s_idx, s_idx, indexing="ij")
             D_rows.append(rr.ravel())

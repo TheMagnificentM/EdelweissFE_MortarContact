@@ -972,19 +972,22 @@ class TestExplicitDynamics(unittest.TestCase):
         solver ticks once per increment, so for it the two coincide and nothing changes. An explicit
         solver ticks every ``contact-update-frequency`` increments, and every increment in between
         has to reuse the geometry it already has -- otherwise the segmentation runs per time step,
-        which is what makes an explicit mortar analysis unaffordable.
+        which is what makes an explicit mortar analysis unaffordable. The throttle belongs to the
+        frozen geometry; a consistent one is rebuilt at every iterate by definition.
         """
 
         model = self._penetratingModel()
-        constraint = _TwoBlockModel.constraint(model, formulation="penalty", penaltyStiffness=1.0e6)
+        constraint = _TwoBlockModel.constraint(
+            model, formulation="penalty", penaltyStiffness=1.0e6, geometryUpdate="frozen"
+        )
         nDof = constraint.nDof
 
         rebuilds = []
         original = constraint.computeMortarCouplingMatrices
 
-        def counting(U_np=None):
+        def counting(U_np=None, withDerivatives=False):
             rebuilds.append(True)
-            return original(U_np)
+            return original(U_np, withDerivatives)
 
         constraint.computeMortarCouplingMatrices = counting
 

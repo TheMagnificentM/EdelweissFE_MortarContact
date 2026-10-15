@@ -611,6 +611,120 @@ class CoulombFriction:
         )
         return forces[0], (tangent[0] if tangent is not None else None)
 
+    def evaluateLinearised(
+        self,
+        k: int,
+        w: np.ndarray,
+        dw: np.ndarray,
+        n: np.ndarray,
+        dn: np.ndarray,
+        relative: np.ndarray,
+        dRelative: np.ndarray,
+        p: float,
+        dp: np.ndarray,
+        normalPenalty: float,
+        pressureTolerance: float = 0.0,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """The law of :meth:`evaluate` at the single point ``k``, for a formulation whose coupling and
+        normal move with the deformation, so that every input carries its own derivative.
+
+        The forces are ``w_a t`` on the coupled nodes (``A c`` of :meth:`evaluate`), the predictor is
+        ``P_T t_n - eps_T P_T relative`` with ``P_T = I - n n``, and the tangent chains the return map
+        through all of them: ``dP_T = -(dn n + n dn)`` turns the history and the slip into the
+        current tangent plane, and ``dw`` carries the change of the coupling -- the linearisation of
+        the frictional terms of Gitterle, Popp, Gee & Wall (2010), Appendix A, Eqs. (A1)-(A3), for this
+        penalty-regularised law. The stick/slip state, its freezing and the bookkeeping are those of
+        :meth:`evaluate`.
+
+        Parameters
+        ----------
+        k
+            The point.
+        w, dw
+            ``(nNodes,)`` force weights over the local nodes and their Jacobian ``(nNodes, nZ)``.
+        n, dn
+            The unit normal and its Jacobian ``(nDim, nZ)``.
+        relative, dRelative
+            The pointwise relative tangential displacement of the increment, before projection, and
+            its Jacobian ``(nDim, nZ)``.
+        p, dp
+            The normal pressure, >= 0, and its Jacobian ``(nZ,)``.
+        normalPenalty
+            The normal penalty modulus, which eps_T follows when ``tangentPenalty`` is 0.
+        pressureTolerance
+            A pressure at or below it counts as no pressure.
+
+        Returns
+        -------
+        tuple
+            ``(nNodes*nDim,)`` nodal forces to add to PExt and the ``(nNodes*nDim, nZ)`` tangent
+            ``-dPExt/dZ``.
+        """
+
+        nDim = self.nDim
+        nNodes, nZ = dw.shape
+        eye = np.eye(nDim)
+        projector = eye - np.outer(n, n)
+        dProjector = -(dn[:, None, :] * n[None, :, None] + n[:, None, None] * dn[None, :, :])
+        slipLimit = self.mu * p
+        self.pressureCurrent[k] = p
+        self.slipLimit[k] = slipLimit
+
+        if not p > pressureTolerance:
+            # No pressure: no friction, no tangent, reported as slipping (no resistance).
+            self.slipLimit[k] = 0.0
+            self.tractionCurrent[k] = 0.0
+            self.slipState[k] = SLIP
+            self.trialMagnitude[k] = 0.0
+            self.trialAlignment[k] = 1.0
+            return np.zeros(nNodes * nDim), np.zeros((nNodes * nDim, nZ))
+
+        epsT, slope = self.tangentModulus(p, normalPenalty)
+        history = self.tractionConverged[k]
+        slip = projector @ relative
+        dSlip = np.einsum("ijz,j->iz", dProjector, relative) + projector @ dRelative
+        trial = projector @ history - epsT * slip
+        dTrial = np.einsum("ijz,j->iz", dProjector, history) - epsT * dSlip - slope * np.outer(slip, dp)
+        trialMagnitude = float(np.linalg.norm(trial))
+        alignment = 1.0
+
+        if self.slipStateFrozen and self.frozenSlip[k]:
+            # Held in slip along the direction it had when frozen, projected into the current plane.
+            held = projector @ self.frozenDirection[k]
+            length = float(np.linalg.norm(held))
+            direction = held / length
+            dDirection = (
+                (eye - np.outer(direction, direction))
+                @ np.einsum("ijz,j->iz", dProjector, self.frozenDirection[k])
+                / length
+            )
+            if trialMagnitude > 0.0:
+                alignment = float(trial @ direction) / trialMagnitude
+            traction = slipLimit * direction
+            dTraction = self.mu * np.outer(direction, dp) + slipLimit * dDirection
+            state = SLIP
+        elif trialMagnitude <= slipLimit:
+            traction = trial
+            dTraction = dTrial
+            state = STICK
+        else:
+            # The return map of evaluate, with its derivative (Simo & Laursen 1992; Wriggers 2006,
+            # Eqs. 8.39-8.40): d(mu p t/|t|) = (mu p/|t|)(I - d d) dt + mu d dp.
+            direction = trial / trialMagnitude
+            scale = slipLimit / trialMagnitude
+            traction = slipLimit * direction
+            dTraction = scale * (eye - np.outer(direction, direction)) @ dTrial + self.mu * np.outer(direction, dp)
+            state = SLIP
+
+        self.tractionCurrent[k] = traction
+        self.slipState[k] = state
+        self.trialMagnitude[k] = trialMagnitude
+        self.trialAlignment[k] = alignment
+
+        forces = (w[:, None] * traction[None, :]).ravel()
+        tangent = -(w[:, None, None] * dTraction[None] + traction[None, :, None] * dw[:, None, :])
+        return forces, tangent.reshape(nNodes * nDim, nZ)
+
     # ------------------------------------------------------------------ anti-chattering
 
     def startIncrementAttempt(self):
