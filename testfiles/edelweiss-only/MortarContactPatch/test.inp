@@ -12,7 +12,7 @@
 **   sigma_yy = -E * 0.01 = -10    contact pressure = 10, constant over the interface
 **
 ** Measured against that solution:
-**   max|u_x|                  ~ 1e-16
+**   max|u_x|                  ~ 8e-17
 **   max|u_y - u_y(y)|         ~ 2e-16  of a prescribed 0.02
 **   contact pressure           10.000000000 at every non-mortar node
 **
