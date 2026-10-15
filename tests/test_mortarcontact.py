@@ -67,7 +67,6 @@ from edelweissfe.models.femodel import FEModel
 from edelweissfe.points.node import Node
 from edelweissfe.sets.elementset import ElementSet
 from edelweissfe.utils.mortargeometry import (
-    clipLineSegments,
     facetNormal,
     isConvexPolygon,
     sutherlandHodgmanClip,
@@ -150,21 +149,6 @@ class TestOverlapGeometry(unittest.TestCase):
 
         self.assertFalse(isConvexPolygon(window))
         self.assertLess(clippedArea, 0.75 - 1e-9, "the non-convex window did not lose any area -- test is vacuous")
-
-    def test_one_dimensional_segments_clip_to_their_overlap(self):
-        """The two-dimensional path intersects intervals instead of polygons, and reaches none of
-        the code above."""
-
-        slaveSegment = np.array([[0.0, 0.0], [2.0, 0.0]])
-        masterSegment = np.array([[1.5, 0.0], [4.0, 0.0]])
-
-        start, end, direction = clipLineSegments(slaveSegment, masterSegment)
-        # The interval is returned in the ARC LENGTH of the slave segment, not as a fraction of it:
-        # the slave runs from 0 to 2, the master covers it from 1.5 onwards, so the overlap is 0.5
-        # long and begins at 1.5.
-        self.assertAlmostEqual(start, 1.5, places=13)
-        self.assertAlmostEqual(end - start, 0.5, places=13)
-        np.testing.assert_allclose(direction, [1.0, 0.0], atol=1e-13)
 
     def test_the_tangent_basis_and_the_plane_map_are_inverse(self):
         """Every overlap is computed in the tangent plane of the non-mortar face.

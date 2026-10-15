@@ -40,19 +40,14 @@ and the derivatives are chained down to D, C and the weighted gap. The chain is 
 forward mode: every function returns a value together with its Jacobian with respect to a local
 vector of nodal coordinates, and a caller composes them by matrix products.
 
-What is differentiated is the geometry as :mod:`~edelweissfe.utils.mortargeometry` builds it, which
-departs from Popp et al. in three places, each differentiated by the chain rule rather than taken
-from a paper:
-
-* the auxiliary plane belongs to a slave SUB-CELL and its normal is the sub-cell's own facet normal,
-  not the interpolated nodal normal of their Eq. (A15);
-* the back-projection of a Gauss point is the inverse of the in-plane isoparametric map (3D) or a
-  closest-point projection (2D), not a projection along the auxiliary normal (their Eq. (A12));
-* the polygon is fanned from its first vertex, not from its centroid (their Eqs. (A20)-(A21)).
+What is differentiated is the geometry as :mod:`~edelweissfe.utils.mortarcoupling` builds it after
+Popp et al. (2010) and (2009). One step of it differs from the reference: the clipped polygon is
+fanned from its first vertex rather than triangulated around its centroid (their Eqs.
+(A20)-(A21)). Both tile a convex polygon exactly; they place the Gauss points differently.
 
 As in the papers, a derivative holds for a FIXED layout: which vertices the clip polygon consists
-of, which edges intersect, how it is triangulated and which facet a Gauss point is attributed to
-are decided by the value computation and held fixed in the derivative.
+of, which edges intersect and how it is triangulated are decided by the value computation and held
+fixed in the derivative.
 
 The in-plane basis ``t1, t2`` of the auxiliary plane is varied without rotation about the normal,
 ``dt_i = -(t_i . dn) n``. Every quantity that leaves this module -- areas, natural coordinates,
@@ -134,40 +129,6 @@ def elementNormalAtNode(dN_node: np.ndarray, coords: np.ndarray, dim: int) -> tu
 
 
 # ------------------------------------------------------------------------------- auxiliary plane
-
-
-def subCellPlane(scCoords: np.ndarray, dscCoords: np.ndarray):
-    """The auxiliary plane of a linear slave sub-cell, as
-    :func:`~edelweissfe.utils.mortargeometry.facetNormal` and the caller build it, with its
-    derivatives.
-
-    Parameters
-    ----------
-    scCoords
-        ``(k, 3)`` corner coordinates of the sub-cell, ``k`` = 3 or 4.
-    dscCoords
-        ``(k, 3, nZ)`` their Jacobians.
-
-    Returns
-    -------
-    tuple
-        ``(normal, dnormal, p0, dp0)``: the unit normal and the centroid with their Jacobians
-        ``(3, nZ)``. ``None`` for a degenerate sub-cell.
-    """
-    if len(scCoords) == 3:
-        a, b = scCoords[1] - scCoords[0], scCoords[2] - scCoords[0]
-        da, db = dscCoords[1] - dscCoords[0], dscCoords[2] - dscCoords[0]
-    else:
-        a, b = scCoords[2] - scCoords[0], scCoords[3] - scCoords[1]
-        da, db = dscCoords[2] - dscCoords[0], dscCoords[3] - dscCoords[1]
-    c = 0.5 * cross3(a, b)
-    dc = 0.5 * (-skew(b) @ da + skew(a) @ db)
-    if np.linalg.norm(c) < 1e-14:
-        return None
-    normal, dnormal = unitVector(c, dc)
-    p0 = np.mean(scCoords, axis=0)
-    dp0 = np.mean(dscCoords, axis=0)
-    return normal, dnormal, p0, dp0
 
 
 def planeCoordinates(points, dpoints, p0, dp0, normal, dnormal, t1, t2) -> tuple[np.ndarray, np.ndarray]:
@@ -268,35 +229,12 @@ def fanTriangleArea(v, dv) -> tuple[float, np.ndarray]:
 # ---------------------------------------------------------------------------------- back-mapping
 
 
-def inversePlaneMapDerivative(el, qNodes, dqNodes, xi, dxGauss) -> tuple[np.ndarray, np.ndarray]:
-    """Jacobian of the natural coordinate ``xi`` that solves ``sum_k N_k(xi) q_k = x_gp`` in the
-    auxiliary plane (the 3D back-mapping of :func:`~edelweissfe.utils.mortargeometry.mapPlaneToNatural`).
-
-    Differentiating the defining equation gives ``J dxi + sum_k N_k dq_k = dx_gp`` with the in-plane
-    Jacobian ``J = sum_k q_k (x) N_k,xi``, the counterpart of Popp et al. (2010), Eqs. (A13)-(A14),
-    for an in-plane rather than a normal projection.
-
-    Returns ``dxi`` ``(2, nZ)`` and, since every caller needs it next, the shape-function
-    derivatives ``N,xi`` ``(2, nNodes)`` at ``xi``. Raises ``np.linalg.LinAlgError`` where ``J`` is
-    singular.
-    """
-    N = el.getShapeFunctions(xi)
-    dN = el.getShapeFunctionDerivatives(xi)
-    (a, b), (c, d) = (dN @ qNodes).T
-    det = a * d - b * c
-    if det == 0.0:
-        raise np.linalg.LinAlgError("singular in-plane Jacobian")
-    rhs = dxGauss - np.tensordot(N, dqNodes, axes=1)
-    return np.array([d * rhs[0] - b * rhs[1], a * rhs[1] - c * rhs[0]]) / det, dN
-
-
 def shapeFunctionSecondDerivatives(el, xi) -> np.ndarray:
     """``d^2 N / dxi_a dxi_b`` of a contact element, shape ``(nLocalDim, nLocalDim, nNodes)``.
 
-    Needed wherever a first derivative depends on the natural coordinate that is itself
-    differentiated: the closest-point projection in 2D and the derivative of the element Jacobian
-    with respect to the Gauss point coordinate in the nodal scaling factor of Popp, Seitz, Gee &
-    Wall (2013), Eq. (38). Written out from the shape functions of
+    Needed where a first derivative depends on a natural coordinate that is itself differentiated:
+    the derivative of the element Jacobian with respect to the Gauss point coordinate in the nodal
+    scaling factor of Popp, Seitz, Gee & Wall (2013), Eq. (38). Written out from the shape functions of
     :meth:`~edelweissfe.elements.contactelement.element.ContactElement.getShapeFunctions`.
     """
     elType = el.elType.upper()
@@ -348,58 +286,6 @@ def shapeFunctionSecondDerivatives(el, xi) -> np.ndarray:
         xy = np.array([dlx[i] * dly[j] for i, j in order])
         return np.array([[xx, xy], [xy, yy]])
     raise NotImplementedError(f"No second derivatives for element type '{elType}'.")
-
-
-def closestPointDerivative(el, xNodes, dxNodes, xi, xGauss, dxGauss) -> np.ndarray:
-    """Jacobian ``(1, nZ)`` of the closest-point coordinate on a line element in 2D (the 2D
-    back-mapping of :func:`~edelweissfe.utils.mortargeometry.mapPlaneToNatural`).
-
-    The coordinate satisfies ``f = (x(xi) - x_gp) . x,xi(xi) = 0``; differentiating,
-
-        (x,xi . x,xi + r . x,xixi) dxi = -[(sum_k N_k dx_k - dx_gp) . x,xi + r . sum_k N_k,xi dx_k] ,
-
-    with ``r = x(xi) - x_gp``. Popp et al. (2009) project along the normal field instead, their
-    Eqs. (A26)-(A30); this is the same step for the projection used here.
-    """
-    N = el.getShapeFunctions(xi)
-    dN = el.getShapeFunctionDerivatives(xi)[0]
-    d2N = shapeFunctionSecondDerivatives(el, xi)[0, 0]
-    x = N @ xNodes
-    tangent = dN @ xNodes
-    curvature = d2N @ xNodes
-    r = x - xGauss
-    denominator = tangent @ tangent + r @ curvature
-    dx = np.einsum("k,kiz->iz", N, dxNodes) - dxGauss
-    dtangent = np.einsum("k,kiz->iz", dN, dxNodes)
-    return -(tangent @ dx + r @ dtangent)[None, :] / denominator
-
-
-def chordSegment(sc, dsc, mc, dmc):
-    """:func:`~edelweissfe.utils.mortargeometry.clipLineSegments` with its Jacobians.
-
-    Returns ``(start, dstart, end, dend, tangent, dtangent)``, or ``None`` where the overlap
-    vanishes. The branches of the ``min``/``max`` are those the value takes, held fixed.
-    """
-    slaveVector = sc[1] - sc[0]
-    dslaveVector = dsc[1] - dsc[0]
-    slaveLength = np.linalg.norm(slaveVector)
-    if slaveLength < 1e-14:
-        return None
-    tangent, dtangent = unitVector(slaveVector, dslaveVector)
-    dslaveLength = tangent @ dslaveVector
-
-    s0 = np.dot(mc[0] - sc[0], tangent)
-    s1 = np.dot(mc[1] - sc[0], tangent)
-    ds0 = tangent @ (dmc[0] - dsc[0]) + (mc[0] - sc[0]) @ dtangent
-    ds1 = tangent @ (dmc[1] - dsc[0]) + (mc[1] - sc[0]) @ dtangent
-
-    lower, dlower = (s0, ds0) if s0 <= s1 else (s1, ds1)
-    upper, dupper = (s1, ds1) if s0 <= s1 else (s0, ds0)
-    start, dstart = (lower, dlower) if lower > 0.0 else (0.0, np.zeros_like(ds0))
-    end, dend = (upper, dupper) if upper < slaveLength else (slaveLength, dslaveLength)
-    if end - start < 1e-12:
-        return None
-    return start, dstart, end, dend, tangent, dtangent
 
 
 # --------------------------------------------------------------------------------- facet measure
@@ -503,24 +389,3 @@ def subCellParentMap(parentNatural: np.ndarray, subCellNodes, subCellElement):
         return N @ corners, (dN @ corners).T
 
     return toParent
-
-
-def interpolatedNormal(N, dN_dxi, normals, dNormals, dxi) -> tuple[np.ndarray, np.ndarray]:
-    """``n = sum_k N_k n_k / |sum_k N_k n_k|`` and its Jacobian, with the shape functions moving with
-    the natural coordinate ``xi``: the interpolated normal of Popp, Gitterle, Gee & Wall (2010),
-    Eqs. (A11) and (A15), linearised through Eq. (A1).
-
-    Parameters
-    ----------
-    N, dN_dxi
-        Shape functions ``(n,)`` and their natural derivatives ``(nLocalDim, n)`` at ``xi``.
-    normals, dNormals
-        Nodal unit normals ``(n, dim)`` and their Jacobians ``(n, dim, nZ)``.
-    dxi
-        Jacobian ``(nLocalDim, nZ)`` of ``xi``, or ``None`` where ``xi`` is fixed.
-    """
-    raw = N @ normals
-    dRaw = np.tensordot(N, dNormals, axes=1)
-    if dxi is not None:
-        dRaw = dRaw + normals.T @ (dN_dxi.T @ dxi)
-    return unitVector(raw, dRaw)

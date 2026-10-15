@@ -305,49 +305,6 @@ def triangulatePolygon(polygonCoordinates):
     return np.array(triangles)
 
 
-def clipLineSegments(slaveCoordinates: np.ndarray, masterCoordinates: np.ndarray) -> tuple[float, float, np.ndarray]:
-    """Overlap of a 2D master segment projected onto a non-mortar segment's own line.
-
-    The 2D counterpart of the auxiliary-plane clipping above: projecting the master segment onto the
-    non-mortar segment's line is the one-dimensional degeneration of projecting a master facet into
-    a non-mortar sub-cell's plane.
-
-    Parameters
-    ----------
-    slaveCoordinates
-        Shape ``(2, 2)``: the two endpoints of the non-mortar sub-cell.
-    masterCoordinates
-        Shape ``(2, 2)``: the two endpoints of the mortar sub-cell.
-
-    Returns
-    -------
-    tuple[float, float, np.ndarray]
-        ``(start, end, tangent)`` -- the overlap in the arc-length coordinate of the non-mortar
-        sub-cell, and its unit tangent, so that a point of the overlap is
-        ``slaveCoordinates[0] + s * tangent``. Where there is no overlap, ``(0.0, 0.0, tangent)`` is
-        returned; the caller discards the cell on the vanishing interval, so the tangent is then
-        meaningless but harmless.
-    """
-    slaveVector = slaveCoordinates[1] - slaveCoordinates[0]
-    slaveLength = np.linalg.norm(slaveVector)
-    if slaveLength < 1e-14:
-        return 0.0, 0.0, np.zeros(2)
-
-    tangent = slaveVector / slaveLength
-
-    # Project the master endpoints onto the non-mortar line coordinate s in [0, slaveLength].
-    s0 = np.dot(masterCoordinates[0] - slaveCoordinates[0], tangent)
-    s1 = np.dot(masterCoordinates[1] - slaveCoordinates[0], tangent)
-
-    start = max(0.0, min(s0, s1))
-    end = min(slaveLength, max(s0, s1))
-
-    if end - start < 1e-12:
-        return 0.0, 0.0, tangent
-
-    return start, end, tangent
-
-
 def mapPlaneToNatural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
     """Map a 2D local plane coordinate point_2d to the element's natural space.
 

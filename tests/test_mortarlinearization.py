@@ -34,27 +34,22 @@ import numpy as np
 
 from edelweissfe.elements.contactelement.element import ContactElement as Element
 from edelweissfe.utils.mortargeometry import (
-    clipLineSegments,
-    mapPlaneToNatural,
     sutherlandHodgmanClip,
     tangentBasis,
     toPlaneCoordinates,
 )
 from edelweissfe.utils.mortarlinearization import (
-    chordSegment,
-    closestPointDerivative,
     elementNormalAtNode,
     fanTriangleArea,
-    interpolatedNormal,
-    inversePlaneMapDerivative,
     nodeSlots,
     planeCoordinates,
     shapeFunctionSecondDerivatives,
+    skew,
     subCellParentMap,
-    subCellPlane,
     surfaceJacobian,
     surfaceJacobianNaturalDerivative,
     sutherlandHodgmanClipWithDerivatives,
+    unitVector,
 )
 
 STEP = 1e-6
@@ -124,21 +119,15 @@ class TestAuxiliaryPlane(unittest.TestCase):
         base = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0.2, 0.1, 0.05], [1.3, 0.2, -0.1]], float)
         self.z = (base + 0.05 * rng.standard_normal(base.shape)).ravel()
 
-    def test_plane_normal_and_centroid(self):
-        X = self.z.reshape(-1, 3)
-        dX = nodeSlots(len(X), 3, len(self.z))
-        for nSub in (3, 4):
-            normal, dnormal, p0, dp0 = subCellPlane(X[:nSub], dX[:nSub])
-            assertJacobian(self, dnormal, finiteDifference(lambda z: planeFrame(z, nSub)[0], self.z))
-            assertJacobian(self, dp0, finiteDifference(lambda z: planeFrame(z, nSub)[1], self.z))
-
     def test_in_plane_quantities_are_invariant_to_the_dropped_rotation(self):
         """The plane coordinates are differentiated without the rotation of t1, t2 about the normal,
         so they agree with finite differences only up to that rotation; quantities that do not
         depend on it -- distances between projected points, here -- agree exactly."""
         X = self.z.reshape(-1, 3)
         dX = nodeSlots(len(X), 3, len(self.z))
-        normal, dnormal, p0, dp0 = subCellPlane(X[:4], dX[:4])
+        a, b = X[2] - X[0], X[3] - X[1]
+        normal, dnormal = unitVector(np.cross(a, b), -skew(b) @ (dX[2] - dX[0]) + skew(a) @ (dX[3] - dX[1]))
+        p0, dp0 = X[:4].mean(axis=0), dX[:4].mean(axis=0)
         t1, t2 = tangentBasis(normal)
         q, dq = planeCoordinates(X, dX, p0, dp0, normal, dnormal, t1, t2)
 
@@ -173,54 +162,6 @@ class TestClipping(unittest.TestCase):
 
             dA = sum(fanTriangleArea(poly[[0, i, i + 1]], dpoly[[0, i, i + 1]])[1] for i in range(1, len(poly) - 1))
             assertJacobian(self, dA, finiteDifference(area, z))
-
-
-class TestBackMapping(unittest.TestCase):
-    def test_inverse_plane_map(self):
-        rng = np.random.default_rng(5)
-        for elType in ("CONQUAD4", "CONTRI3", "CONQUAD8", "CONQUAD9", "CONTRI6"):
-            el = Element(elType, 1)
-            q = np.array(el.getNodalNaturalCoordinates(), float) + 0.05 * rng.standard_normal((el.nNodes, 2))
-            xg = q.mean(axis=0) + 0.05
-            z = np.concatenate([q.ravel(), xg])
-            nZ = len(z)
-            dq = nodeSlots(el.nNodes, 2, nZ)
-            dxg = nodeSlots(1, 2, nZ, offset=el.nNodes)[0]
-            xi, ok = mapPlaneToNatural(el, q, xg)
-            self.assertTrue(ok)
-            d, _ = inversePlaneMapDerivative(el, q, dq, xi, dxg)
-            num = finiteDifference(lambda zz: mapPlaneToNatural(el, zz[:-2].reshape(-1, 2), zz[-2:])[0], z)
-            assertJacobian(self, d, num)
-
-    def test_closest_point_on_line(self):
-        for elType, X in (
-            ("CONLINE2", np.array([[0.0, 0.0], [1.0, 0.1]])),
-            ("CONLINE3", np.array([[0.0, 0.0], [1.0, 0.1], [0.5, 0.15]])),
-        ):
-            el = Element(elType, 1)
-            xg = np.array([0.3, 0.08])
-            z = np.concatenate([X.ravel(), xg])
-            nZ = len(z)
-            xi, ok = mapPlaneToNatural(el, X, xg)
-            self.assertTrue(ok)
-            d = closestPointDerivative(el, X, nodeSlots(len(X), 2, nZ), xi, xg, nodeSlots(1, 2, nZ, offset=len(X))[0])
-            num = finiteDifference(lambda zz: mapPlaneToNatural(el, zz[:-2].reshape(-1, 2), zz[-2:])[0], z)
-            assertJacobian(self, d, num)
-
-    def test_chord_segment(self):
-        sc = np.array([[0.0, 0.0], [1.0, 0.1]])
-        for mc in (
-            np.array([[0.3, 0.2], [1.4, 0.3]]),
-            np.array([[1.2, 0.2], [-0.2, 0.3]]),
-            np.array([[0.2, 0.1], [0.7, 0.3]]),
-        ):
-            z = np.concatenate([sc.ravel(), mc.ravel()])
-            dZ = nodeSlots(4, 2, 8)
-            start, dstart, end, dend, t, dt = chordSegment(sc, dZ[:2], mc, dZ[2:])
-            num = finiteDifference(
-                lambda zz: np.array(clipLineSegments(zz[:4].reshape(2, 2), zz[4:].reshape(2, 2))[:2]), z
-            )
-            assertJacobian(self, np.array([dstart, dend]), num)
 
 
 class TestSurfaceJacobian(unittest.TestCase):
@@ -278,31 +219,6 @@ class TestElementDerivatives(unittest.TestCase):
                 probe = subNatural.mean(axis=0) + 0.1
                 numeric = finiteDifference(lambda z: toParent(z)[0], probe)
                 assertJacobian(self, toParent(probe)[1], numeric)
-
-    def test_interpolated_normal(self):
-        rng = np.random.default_rng(6)
-        el = Element("CONQUAD8", 1)
-        n = 8
-        z0 = np.concatenate([rng.standard_normal(3 * n) + np.tile([0, 0, 3.0], n), [0.2, -0.1]])
-
-        def normal(z):
-            raw = z[: 3 * n].reshape(n, 3)
-            units = raw / np.linalg.norm(raw, axis=1)[:, None]
-            N = el.getShapeFunctions(z[3 * n :])
-            v = N @ units
-            return v / np.linalg.norm(v)
-
-        raw = z0[: 3 * n].reshape(n, 3)
-        lengths = np.linalg.norm(raw, axis=1)
-        units = raw / lengths[:, None]
-        dUnits = np.zeros((n, 3, len(z0)))
-        for k in range(n):
-            dUnits[k, :, 3 * k : 3 * k + 3] = (np.eye(3) - np.outer(units[k], units[k])) / lengths[k]
-        dxi = np.zeros((2, len(z0)))
-        dxi[:, 3 * n :] = np.eye(2)
-        xi = z0[3 * n :]
-        _, d = interpolatedNormal(el.getShapeFunctions(xi), el.getShapeFunctionDerivatives(xi), units, dUnits, dxi)
-        assertJacobian(self, d, finiteDifference(normal, z0))
 
 
 class _FacetPair:
