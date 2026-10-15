@@ -8,7 +8,7 @@
 ** The SMALLER of the two surfaces is the non-mortar side here, and that is the whole point of the
 ** deck. Every one of its facets is then fully covered, which the measurements confirm: coverage is
 ** exactly 1.000 at all 16 of its nodes, all of them are in contact, and the multipliers run from
-** 9.33 in the interior to 23.01 at the rim -- the pressure concentration a flat punch has there, and
+** 9.34 in the interior to 22.97 at the rim -- the pressure concentration a flat punch has there, and
 ** a genuine feature of the solution rather than an artefact.
 **
 ** With the sides the other way round the large surface becomes the non-mortar one, and its facets
@@ -16,14 +16,14 @@
 ** tilt, and the projection of the punch leaks a sliver onto them: nodes with nothing above them
 ** acquire a coverage of order 1e-05 and are constrained like any other, because coverage sets how
 ** the contact force is distributed and never whether a node is tied. Measured on this same model,
-** that misplaces 7 % of the transmitted force onto nodes outside the punch, and the share GROWS
-** under refinement -- 14 % at twice the resolution, 21 % at eight times. The constraint itself is
-** satisfied exactly throughout; what is wrong is where the force ends up.
+** that misplaces 7.1 % of the transmitted force onto nodes outside the punch, and the share falls
+** only slowly under uniform refinement -- 5.0 % at twice the resolution, 2.2 % at eight times. The
+** constraint itself is satisfied exactly throughout; what is wrong is where the force ends up.
 **
 ** So this deck records the rule by following it, and the theory documentation records what happens
-** when it cannot be followed. Both branches are reached only by the Lagrange formulation: under
-** penalty the pressure is proportional to the penetration, so a sliver carries a sliver's force,
-** and the same model misplaces 3e-09 instead of 7 %.
+** when it cannot be followed. The penalty formulation is no way out: its law is pointwise, so a
+** node on a sliver carries the pressure its penetration gives it, and the same model misplaces
+** 7.08 % with penalty as well.
 **
 ** The lateral constraint fixes the two symmetry planes x = 0 and z = 0 only, so the measured
 ** lateral displacements are a result rather than a boundary condition read back.
