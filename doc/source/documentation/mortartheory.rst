@@ -572,7 +572,7 @@ pressure is not, so a node close to the threshold can switch differently. That i
 the rescaling the quantity entering that comparison at a thinly covered node would be a force
 divided by a vanishing area, set against a genuine pressure on the other side of the test. Measured on a curved indenter, three nodes at the edge of the contact zone move,
 by at most 3.4 % of the peak pressure, while the agreement with the analytical Hertz solution stays
-at 1.0 %.
+at about 1 %.
 
 Measured on a facet covered to :math:`8 \cdot 10^{-6}` of its area, the multiplier falls from
 :math:`2.1 \cdot 10^{5}` to 10.8, against a contact pressure of 10 elsewhere on the same interface.
@@ -1135,15 +1135,16 @@ serendipity corner integral is :math:`-A/12` and the quadratic triangle's is exa
 
 **Against an analytical solution.** The formulation is compared against Hertzian line contact on a
 parabolic indenter, a case with a curved, load-determined contact zone. Quadratic elements reproduce
-the peak pressure to **1.0 %**, and -- the decisive observation -- that figure does not move under
-mesh refinement: 1.01 % on the medium mesh, 1.00 % on a mesh eight times finer. The residual is
+the peak pressure to **1.1 %**, and -- the decisive observation -- that figure does not move under
+mesh refinement: 1.07 % on the medium mesh, 1.06 % on a mesh eight times finer. The residual is
 therefore not a discretisation error but the price of a finite body standing in for the half-space
 Hertz assumes: the block is about nine contact half-widths wide, twelve deep, and rigidly clamped at
 its base, all of which stiffen it, and a stiffer foundation gives a higher peak pressure. Linear
-elements reach 6.6 % on the medium mesh and are still converging at 4.3 % on the fine one.
+elements reach 6.7 % on the medium mesh and are still converging at 4.3 % on the fine one.
 
-These curved cases are not part of the shipped test suite. They take 8 s and 89 s respectively,
-which is out of proportion to a suite that runs in about a minute, and reproducing them needs a
+These curved cases are not part of the shipped test suite. The quadratic ones take 393 s and 902 s
+respectively (single-threaded BLAS), which is out of proportion to a suite that runs in about a
+minute, and reproducing them needs a
 parabolically warped mesh that no model generator provides.
 
 **Under explicit dynamics**, ``NEDMortarContact`` is the shipped deck. Its decisive quantity is
