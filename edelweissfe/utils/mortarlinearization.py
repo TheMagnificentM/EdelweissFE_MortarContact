@@ -64,6 +64,12 @@ vector of length ``nZ`` has shape ``s + (nZ,)``.
 """
 
 
+def cross3(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """``a x b`` of two 3-vectors, written out: ``np.cross`` spends most of its time on argument
+    handling for vectors this small."""
+    return np.array([a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]])
+
+
 def skew(a: np.ndarray) -> np.ndarray:
     """The cross-product matrix: ``skew(a) @ b == np.cross(a, b)``."""
     return np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
@@ -112,7 +118,7 @@ def elementNormalAtNode(dN_node: np.ndarray, coords: np.ndarray, dim: int) -> tu
     n = coords.shape[0]
     t = dN_node @ coords
     if dim == 3:
-        value = np.cross(t[0], t[1])
+        value = cross3(t[0], t[1])
         # d(t0 x t1) = dt0 x t1 + t0 x dt1 = -skew(t1) dt0 + skew(t0) dt1, with dt_i = sum_k N_k,i dx_k.
         A0, A1 = -skew(t[1]), skew(t[0])
         d = np.zeros((3, 3 * n))
@@ -154,7 +160,7 @@ def subCellPlane(scCoords: np.ndarray, dscCoords: np.ndarray):
     else:
         a, b = scCoords[2] - scCoords[0], scCoords[3] - scCoords[1]
         da, db = dscCoords[2] - dscCoords[0], dscCoords[3] - dscCoords[1]
-    c = 0.5 * np.cross(a, b)
+    c = 0.5 * cross3(a, b)
     dc = 0.5 * (-skew(b) @ da + skew(a) @ db)
     if np.linalg.norm(c) < 1e-14:
         return None
@@ -415,11 +421,11 @@ def surfaceJacobian(el, xi, coords) -> tuple[float, np.ndarray]:
         J = float(np.linalg.norm(t[0]))
         u = t[0] / J
         return J, (dN[0][:, None] * u[None, :]).ravel()
-    c = np.cross(t[0], t[1])
+    c = cross3(t[0], t[1])
     J = float(np.linalg.norm(c))
     u = c / J
     # u . (dt0 x t1 + t0 x dt1) = dt0 . (t1 x u) + dt1 . (u x t0)
-    a0, a1 = np.cross(t[1], u), np.cross(u, t[0])
+    a0, a1 = cross3(t[1], u), cross3(u, t[0])
     return J, (dN[0][:, None] * a0[None, :] + dN[1][:, None] * a1[None, :]).ravel()
 
 
@@ -471,9 +477,9 @@ def surfaceJacobianNaturalDerivative(el, xi, coords) -> np.ndarray:
     t = dN @ coords
     if dN.shape[0] == 1:
         return np.array([(t[0] / np.linalg.norm(t[0])) @ (d2N[0, 0] @ coords)])
-    c = np.cross(t[0], t[1])
+    c = cross3(t[0], t[1])
     u = c / np.linalg.norm(c)
-    return np.array([u @ (np.cross(d2N[0, m] @ coords, t[1]) + np.cross(t[0], d2N[1, m] @ coords)) for m in range(2)])
+    return np.array([u @ (cross3(d2N[0, m] @ coords, t[1]) + cross3(t[0], d2N[1, m] @ coords)) for m in range(2)])
 
 
 def subCellParentMap(parentNatural: np.ndarray, subCellNodes, subCellElement):

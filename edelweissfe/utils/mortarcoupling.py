@@ -48,11 +48,10 @@ from edelweissfe.utils.mortargeometry import (
 )
 from edelweissfe.utils.mortarlinearization import (
     fanTriangleArea,
-    interpolatedNormal,
-    inversePlaneMapDerivative,
     nodeSlots,
     planeCoordinates,
     scatterMatrix,
+    shapeFunctionSecondDerivatives,
     subCellParentMap,
     surfaceJacobian,
     surfaceJacobianNaturalDerivative,
@@ -111,6 +110,13 @@ for a fixed layout: which cells exist, how they are triangulated, which facet pa
 whether a slave element falls back to its reference-element dual basis is decided by the values and
 not differentiated. The building blocks are in :mod:`~edelweissfe.utils.mortarlinearization`.
 """
+
+
+def _contract(subscripts: str, *operands):
+    """``np.einsum`` with a contraction order chosen for speed (pairwise, through BLAS) where more than
+    two operands meet; the result is the same sum up to rounding."""
+    return np.einsum(subscripts, *operands, optimize=len(operands) > 2)
+
 
 #: Inverse condition number below which the covered-area biorthogonality system of a slave element
 #: is treated as singular and the reference-element coefficients are used instead. Not from a source:
@@ -328,7 +334,9 @@ class _SlaveContext:
         nZ = nZs + self.dim * len(masterIds)
 
         def pad(d):
-            return np.pad(d, [(0, 0)] * (d.ndim - 1) + [(0, nZ - d.shape[-1])])
+            out = np.zeros(d.shape[:-1] + (nZ,))
+            out[..., : d.shape[-1]] = d
+            return out
 
         dMaster = nodeSlots(len(masterIds), self.dim, nZ, offset=len(self.Z))
         return np.concatenate((self.Z, masterIds)), nZ, pad, dMaster
@@ -386,6 +394,7 @@ def _segment3D(context, candidates, coordinates, constraintIndex, elementClass, 
                     if derivatives:
                         dTri = dPolygon[[0, i_tri + 1, i_tri + 2]]
                         _, dArea = fanTriangleArea(tri, dTri)
+                    points = []
                     for gp, w in zip(triangleGaussPoints, triangleGaussWeights):
                         L1, L2 = gp
                         x_gp = (1.0 - L1 - L2) * v0 + L1 * v1 + L2 * v2
@@ -403,34 +412,101 @@ def _segment3D(context, candidates, coordinates, constraintIndex, elementClass, 
                         xi_s, jac_s = toParent_s(xiSub_s)
                         xi_m, jac_m = toParent_m(xiSub_m)
                         N_s = s_el.getShapeFunctions(xi_s)
-                        dNdxi_s = s_el.getShapeFunctionDerivatives(xi_s)
                         normal_raw = N_s @ context.normals
                         records.N_s.append(N_s)
                         records.master.append(m_el)
                         records.N_m.append(m_el.getShapeFunctions(xi_m))
                         records.dG.append(area * w)
                         records.normal.append(normal_raw / np.linalg.norm(normal_raw))
-                        records.Je.append(s_el.getJacobianAndAreaWeight(xi_s, context.coords))
-                        if not derivatives:
-                            continue
-                        dx_gp = (1.0 - L1 - L2) * dTri[0] + L1 * dTri[1] + L2 * dTri[2]
-                        try:
-                            dxiSub_s, _ = inversePlaneMapDerivative(subEl, q_s, dq_s, xiSub_s, dx_gp)
-                            dxiSub_m, _ = inversePlaneMapDerivative(subEl_m, q_m, dq_m, xiSub_m, dx_gp)
-                        except np.linalg.LinAlgError:
-                            dxiSub_s = dxiSub_m = np.zeros((2, nZ))
-                        dxi_s = jac_s @ dxiSub_s
-                        dxi_m = jac_m @ dxiSub_m
-                        _, dNormal = interpolatedNormal(N_s, dNdxi_s, context.normals, pad(context.dNormals), dxi_s)
-                        _, dJe_coords = surfaceJacobian(s_el, xi_s, context.coords)
-                        dJe = pad(dJe_coords @ context.dCoords.reshape(-1, context.dCoords.shape[-1]))
-                        dJe = dJe + surfaceJacobianNaturalDerivative(s_el, xi_s, context.coords) @ dxi_s
-                        records.Z.append(Z)
-                        records.dN_s.append(dNdxi_s.T @ dxi_s)
-                        records.dN_m.append(m_el.getShapeFunctionDerivatives(xi_m).T @ dxi_m)
-                        records.ddG.append(dArea * w)
-                        records.dNormal.append(dNormal)
-                        records.dJe.append(dJe)
+                        points.append((xiSub_s, xiSub_m, xi_s, xi_m, N_s))
+                    # The element Jacobian |x,xi x x,eta| at the seven points at once (cf.
+                    # ContactElement.getJacobianAndAreaWeight).
+                    tangents = np.einsum(
+                        "gak,ki->gai",
+                        np.array([s_el.getShapeFunctionDerivatives(p[2]) for p in points]),
+                        context.coords,
+                    )
+                    records.Je.extend(np.linalg.norm(np.cross(tangents[:, 0], tangents[:, 1]), axis=1))
+                    if derivatives:
+                        _gaussPointDerivatives3D(
+                            context,
+                            m_el,
+                            (subEl, q_s, dq_s, jac_s),
+                            (subEl_m, q_m, dq_m, jac_m),
+                            dTri,
+                            dArea,
+                            points,
+                            Z,
+                            pad,
+                            records,
+                        )
+
+
+def _gaussPointDerivatives3D(context, m_el, slaveSub, masterSub, dTri, dArea, points, Z, pad, records):
+    """The derivatives of the seven Gauss points of one integration cell, evaluated together: their
+    position in the plane (Eq. (A16)), their natural coordinates on both sub-segments by the inverse
+    plane map (Eqs. (A12)-(A14)) carried to the parents (Eq. (42)), the shape functions there, the
+    interpolated normal (Eq. (A11)), the element Jacobian with its natural derivative (Popp, Seitz,
+    Gee & Wall 2013, Eq. (38)) and the integration weight (Eq. (A7))."""
+    s_el = context.el
+    coords = context.coords
+    bary = np.column_stack((1.0 - triangleGaussPoints.sum(axis=1), triangleGaussPoints))
+    dx = np.einsum("gv,viz->giz", bary, dTri)
+
+    def naturalDerivatives(sub, q, dq, jac, xiSubs):
+        subEl = sub
+        N = np.array([subEl.getShapeFunctions(x) for x in xiSubs])
+        dN = np.array([subEl.getShapeFunctionDerivatives(x) for x in xiSubs])
+        J = np.einsum("gak,ki->gia", dN, q)
+        rhs = dx - np.einsum("gk,kiz->giz", N, dq)
+        try:
+            dxiSub = np.linalg.solve(J, rhs)
+        except np.linalg.LinAlgError:
+            dxiSub = np.zeros_like(rhs)
+        return np.einsum("ab,gbz->gaz", jac, dxiSub)
+
+    subEl, q_s, dq_s, jac_s = slaveSub
+    subEl_m, q_m, dq_m, jac_m = masterSub
+    dxi_s = naturalDerivatives(subEl, q_s, dq_s, jac_s, [p[0] for p in points])
+    dxi_m = naturalDerivatives(subEl_m, q_m, dq_m, jac_m, [p[1] for p in points])
+    N_s = np.array([p[4] for p in points])
+    dNdxi_s = np.array([s_el.getShapeFunctionDerivatives(p[2]) for p in points])
+    dNdxi_m = np.array([m_el.getShapeFunctionDerivatives(p[3]) for p in points])
+    dN_s = np.einsum("gak,gaz->gkz", dNdxi_s, dxi_s)
+    dN_m = np.einsum("gak,gaz->gkz", dNdxi_m, dxi_m)
+
+    # The interpolated normal, Eq. (A11), linearised through Eq. (A1).
+    dNormals = pad(context.dNormals)
+    raw = N_s @ context.normals
+    dRaw = np.einsum("gk,kcz->gcz", N_s, dNormals) + np.einsum("kc,gak,gaz->gcz", context.normals, dNdxi_s, dxi_s)
+    length = np.linalg.norm(raw, axis=1)
+    unit = raw / length[:, None]
+    dNormal = (dRaw - unit[:, :, None] * np.einsum("gc,gcz->gz", unit, dRaw)[:, None, :]) / length[:, None, None]
+
+    # The element Jacobian J_e = |x,xi x x,eta| at the Gauss points and its derivative, through the
+    # nodal coordinates and through the Gauss point coordinate (Popp et al. 2010, Eqs. (A25)-(A26)).
+    t = np.einsum("gak,ki->gai", dNdxi_s, coords)
+    c = np.cross(t[:, 0], t[:, 1])
+    u = c / np.linalg.norm(c, axis=1)[:, None]
+    a0, a1 = np.cross(t[:, 1], u), np.cross(u, t[:, 0])
+    dJcoords = dNdxi_s[:, 0, :, None] * a0[:, None, :] + dNdxi_s[:, 1, :, None] * a1[:, None, :]
+    dCoords = context.dCoords.reshape(-1, context.dCoords.shape[-1])
+    dJe = pad(dJcoords.reshape(len(points), -1) @ dCoords)
+    d2N = np.array([shapeFunctionSecondDerivatives(s_el, p[2]) for p in points])
+    dJdxi = np.empty((len(points), 2))
+    for m in range(2):
+        along0 = np.einsum("gk,ki->gi", d2N[:, 0, m], coords)
+        along1 = np.einsum("gk,ki->gi", d2N[:, 1, m], coords)
+        dJdxi[:, m] = np.einsum("gi,gi->g", u, np.cross(along0, t[:, 1]) + np.cross(t[:, 0], along1))
+    dJe = dJe + np.einsum("ga,gaz->gz", dJdxi, dxi_s)
+
+    for g, w in enumerate(triangleGaussWeights):
+        records.Z.append(Z)
+        records.dN_s.append(dN_s[g])
+        records.dN_m.append(dN_m[g])
+        records.ddG.append(dArea * w)
+        records.dNormal.append(dNormal[g])
+        records.dJe.append(dJe[g])
 
 
 def _projectAlongNormal2D(el, coords, point, direction, xi0=0.0, iterations=20, tol=1e-12):
@@ -593,7 +669,7 @@ def _assembleSlaveElement(context, records, masterIndex, blocks, kappaSum, resul
     N_t = N_s @ T.T
 
     # Biorthogonality on the integrated part of the element, Popp et al. (2013), Eqs. (21)-(25).
-    M_t = np.einsum("ra,rb,r->ab", N_t, N_t, dG)
+    M_t = _contract("ra,rb,r->ab", N_t, N_t, dG)
     D_t = N_t.T @ dG
     regular = np.linalg.cond(M_t) < CONDITION_LIMIT
     if regular:
@@ -615,12 +691,12 @@ def _assembleSlaveElement(context, records, masterIndex, blocks, kappaSum, resul
         target[1].append(cc.ravel())
         target[2].append(values.ravel())
 
-    D_blk = np.einsum("ra,rb,r->ab", Phi, N_s, dG)
+    D_blk = _contract("ra,rb,r->ab", Phi, N_s, dG)
     addBlock(blocks["D"], rows, rows, D_blk)
     for m_num, (m_el, idx) in masters.items():
         cols = np.array([masterIndex[nd] for nd in m_el.nodes])
         N_m = np.array([records.N_m[r] for r in idx])
-        M_blk = np.einsum("ra,rb,r->ab", Phi[idx], N_m, dG[idx])
+        M_blk = _contract("ra,rb,r->ab", Phi[idx], N_m, dG[idx])
         addBlock(blocks["M"], rows, cols, M_blk)
         if dim == 2:
             # The nodal form of the weighted gap, Popp et al. (2009), Eq. (50): M[j,l] n_j.
@@ -633,13 +709,13 @@ def _assembleSlaveElement(context, records, masterIndex, blocks, kappaSum, resul
         # Weighted gap at the Gauss points, Popp et al. (2010), Eq. (41), with the interpolated normal
         # of Eq. (A11): g_j = sum int Phi_j n . (x2 - x1).
         normal = np.array(records.normal)
-        Dn = np.einsum("ra,rb,rc,r->abc", Phi, N_s, normal, dG)
+        Dn = _contract("ra,rb,rc,r->abc", Phi, N_s, normal, dG)
         for c in range(3):
             addBlock(blocks["Dn"][c], rows, rows, Dn[:, :, c])
         for m_num, (m_el, idx) in masters.items():
             cols = np.array([masterIndex[nd] for nd in m_el.nodes])
             N_m = np.array([records.N_m[r] for r in idx])
-            Mn = np.einsum("ra,rb,rc,r->abc", Phi[idx], N_m, normal[idx], dG[idx])
+            Mn = _contract("ra,rb,rc,r->abc", Phi[idx], N_m, normal[idx], dG[idx])
             for c in range(3):
                 addBlock(blocks["Mn"][c], rows, cols, Mn[:, :, c])
 
@@ -669,21 +745,30 @@ def _assembleDerivatives(
     P = dim * len(support)
     R = len(records)
 
+    columnCache = {}
+
     def onSupport(Z, d):
-        return d @ scatterMatrix(Z, support, dim)
+        # The nodes of one Gauss point's coordinate vector are distinct (slave side and one master
+        # element), so moving its Jacobian onto the support is a plain assignment of columns.
+        key = Z.tobytes()
+        if key not in columnCache:
+            columnCache[key] = (dim * np.searchsorted(support, Z)[:, None] + np.arange(dim)).ravel()
+        out = np.zeros(d.shape[:-1] + (P,))
+        out[..., columnCache[key]] = d
+        return out
 
     dN_s = np.array([onSupport(Z, d) for Z, d in zip(records.Z, records.dN_s)])
     ddG = np.array([onSupport(Z, d) for Z, d in zip(records.Z, records.ddG)])
     dJe = np.array([onSupport(Z, d) for Z, d in zip(records.Z, records.dJe)])
-    dN_t = np.einsum("ab,rbz->raz", T, dN_s)
+    dN_t = _contract("ab,rbz->raz", T, dN_s)
 
     # Eq. (26) of Popp et al. (2013) for A_e = diag(D_t) M_t^-1 T, with Eqs. (27)-(28).
-    dM_t = np.einsum("raz,rb,r->abz", dN_t, N_t, dG)
-    dM_t = dM_t + dM_t.transpose(1, 0, 2) + np.einsum("ra,rb,rz->abz", N_t, N_t, ddG)
-    dD_t = np.einsum("raz,r->az", dN_t, dG) + N_t.T @ ddG
+    dM_t = _contract("raz,rb,r->abz", dN_t, N_t, dG)
+    dM_t = dM_t + dM_t.transpose(1, 0, 2) + _contract("ra,rb,rz->abz", N_t, N_t, ddG)
+    dD_t = _contract("raz,r->az", dN_t, dG) + N_t.T @ ddG
     if regular:
         M_inv = np.linalg.inv(M_t)
-        dB = -np.einsum("ab,bcz,cd->adz", M_inv, dM_t, B)
+        dB = -_contract("ab,bcz,cd->adz", M_inv, dM_t, B)
         dA = dD_t[:, None, :] * B[:, :, None] + D_t[:, None, None] * dB
     else:
         # The reference-element coefficients diag(D_e) M_e^-1 T integrated over the whole element; only
@@ -704,17 +789,17 @@ def _assembleDerivatives(
             dD_e += np.outer(Nt, dJ) * w
         M_inv = np.linalg.pinv(M_e)
         B_e = M_inv @ T
-        dB_e = -np.einsum("ab,bcz,cd->adz", M_inv, dM_e, B_e)
+        dB_e = -_contract("ab,bcz,cd->adz", M_inv, dM_e, B_e)
         dA = dD_e[:, None, :] * B_e[:, :, None] + D_e[:, None, None] * dB_e
 
     Phi = N_s @ A_e.T
-    dPhi = np.einsum("abz,rb->raz", dA, N_s) + np.einsum("ab,rbz->raz", A_e, dN_s)
+    dPhi = _contract("abz,rb->raz", dA, N_s) + _contract("ab,rbz->raz", A_e, dN_s)
 
     def product(dPhiR, PhiR, otherN, dOtherN, dGR, ddGR):
         return (
-            np.einsum("raz,rb,r->abz", dPhiR, otherN, dGR)
-            + np.einsum("ra,rbz,r->abz", PhiR, dOtherN, dGR)
-            + np.einsum("ra,rb,rz->abz", PhiR, otherN, ddGR)
+            _contract("raz,rb,r->abz", dPhiR, otherN, dGR)
+            + _contract("ra,rbz,r->abz", PhiR, dOtherN, dGR)
+            + _contract("ra,rb,rz->abz", PhiR, otherN, ddGR)
         )
 
     dD = product(dPhi, Phi, N_s, dN_s, dG, ddG)
@@ -732,10 +817,10 @@ def _assembleDerivatives(
         def gapProduct(idx, otherN, dOtherN):
             PhiR, dPhiR, nR, dnR, dGR, ddGR = Phi[idx], dPhi[idx], normal[idx], dNormal[idx], dG[idx], ddG[idx]
             return (
-                np.einsum("raz,rb,rc,r->abcz", dPhiR, otherN, nR, dGR)
-                + np.einsum("ra,rbz,rc,r->abcz", PhiR, dOtherN, nR, dGR)
-                + np.einsum("ra,rb,rcz,r->abcz", PhiR, otherN, dnR, dGR)
-                + np.einsum("ra,rb,rc,rz->abcz", PhiR, otherN, nR, ddGR)
+                _contract("raz,rb,rc,r->abcz", dPhiR, otherN, nR, dGR)
+                + _contract("ra,rbz,rc,r->abcz", PhiR, dOtherN, nR, dGR)
+                + _contract("ra,rb,rcz,r->abcz", PhiR, otherN, dnR, dGR)
+                + _contract("ra,rb,rc,rz->abcz", PhiR, otherN, nR, ddGR)
             )
 
         contributions.append(("Dn", rows, gapProduct(np.arange(R), N_s, dN_s)))
@@ -745,21 +830,21 @@ def _assembleDerivatives(
         contributions.append(("M", cols, dMblock))
     if dim == 2:
         # d(D[j,k] n_j) = dD[j,k] n_j + D[j,k] dn_j, and likewise for M, Popp et al. (2009), Eq. (A36).
-        D_blk = np.einsum("ra,rb,r->ab", Phi, N_s, dG)
+        D_blk = _contract("ra,rb,r->ab", Phi, N_s, dG)
         n, dn = context.normals, context.dNormals @ scatterMatrix(context.Z, support, dim)
         contributions.append(
             ("Dn", rows, dD[:, :, None, :] * n[:, None, :, None] + D_blk[:, :, None, None] * dn[:, None, :, :])
         )
         for cols, idx, N_m, dN_m, dMblock in masterBlocks:
-            M_blk = np.einsum("ra,rb,r->ab", Phi[idx], N_m, dG[idx])
+            M_blk = _contract("ra,rb,r->ab", Phi[idx], N_m, dG[idx])
             contributions.append(
                 ("Mn", cols, dMblock[:, :, None, :] * n[:, None, :, None] + M_blk[:, :, None, None] * dn[:, None, :, :])
             )
     # Eq. (38): the scaling factor through N~_j (via the Gauss point), J_c and J_e.
     dKappa = (
-        np.einsum("raz,r->az", dN_t, dG / Je)
-        + np.einsum("ra,rz->az", N_t, ddG / Je[:, None])
-        - np.einsum("ra,r,rz->az", N_t, dG / Je**2, dJe)
+        _contract("raz,r->az", dN_t, dG / Je)
+        + _contract("ra,rz->az", N_t, ddG / Je[:, None])
+        - _contract("ra,r,rz->az", N_t, dG / Je**2, dJe)
     ) / alpha[:, None]
 
     for a, I in enumerate(rows):  # noqa: E741 - slave node index
