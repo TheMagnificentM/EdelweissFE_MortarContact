@@ -14,8 +14,8 @@
 **   sigma_yy = -E * 0.01 = -10    contact pressure = 10, constant over the interface
 **
 ** Measured against that solution, in metres here (the linear deck works in millimetres):
-**   max|u_x|, max|u_z|        ~ 3e-15
-**   max|u_y - u_y(y)|         ~ 7e-15  of a prescribed 0.02
+**   max|u_x|, max|u_z|        ~ 2e-15
+**   max|u_y - u_y(y)|         ~ 1e-14  of a prescribed 0.02
 **   contact pressure           10.000000000 at every non-mortar node
 **
 ** The reference solution covers both: the nodal displacements, and -- because the contact

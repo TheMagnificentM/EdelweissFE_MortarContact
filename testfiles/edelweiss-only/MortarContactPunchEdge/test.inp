@@ -16,14 +16,14 @@
 ** tilt, and the projection of the punch leaks a sliver onto them: nodes with nothing above them
 ** acquire a coverage of order 1e-05 and are constrained like any other, because coverage sets how
 ** the contact force is distributed and never whether a node is tied. Measured on this same model,
-** that misplaces 7.1 % of the transmitted force onto nodes outside the punch, and the share falls
-** only slowly under uniform refinement -- 5.0 % at twice the resolution, 2.2 % at eight times. The
+** that misplaces 7.3 % of the transmitted force onto nodes outside the punch, and the share falls
+** only slowly under uniform refinement -- 5.2 % at twice the resolution, 2.3 % at eight times. The
 ** constraint itself is satisfied exactly throughout; what is wrong is where the force ends up.
 **
 ** So this deck records the rule by following it, and the theory documentation records what happens
-** when it cannot be followed. The penalty formulation is no way out: its law is pointwise, so a
-** node on a sliver carries the pressure its penetration gives it, and the same model misplaces
-** 7.08 % with penalty as well.
+** when it cannot be followed. Under formulation=penalty a node on a sliver carries its pressure
+** times its integrated weight, so the share grows with the stiffness towards the constrained value:
+** 0.18 % at penaltyStiffness=1e6 on the same model.
 **
 ** The lateral constraint fixes the two symmetry planes x = 0 and z = 0 only, so the measured
 ** lateral displacements are a result rather than a boundary condition read back.

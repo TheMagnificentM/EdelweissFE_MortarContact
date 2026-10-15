@@ -6,21 +6,24 @@
 ** than at its edge, which splits the non-mortar nodes into three populations the formulation has to
 ** keep apart: covered and closed, partially covered, and not covered at all.
 **
-** Measured at the end of step 2, by position across the interface:
+** Measured at the end of step 2, by position across the interface. kappa is the nodal scaling
+** factor of Popp, Seitz, Gee & Wall (2013), Eq. (36), reported as the coverage; D_II the nodal
+** weight, integrated over the covered part only; lambda the scaled multiplier the system solves
+** for, Eq. (29); lambda/kappa the traction recovered from it, Eq. (39); and the nodal force
+** lambda D_II / kappa.
 **
-**     x     coverage   nodal weight   multiplier   their product
-**   0.00      1.000       0.0624         9.781         0.610
-**   0.25      1.000       0.1247        10.153         1.266
-**   0.50      0.879       0.1248         9.438         1.178
-**   0.75      0.259       0.0624         8.797         0.549
-**   1.00      0.000       0.0000         0.000         0.000
+**     x     kappa    D_II    D_II/kappa   lambda   lambda/kappa   force
+**   0.00    1.000   0.0624     0.0624      9.802       9.802      0.611
+**   0.25    1.000   0.1247     0.1247     10.164      10.164      1.268
+**   0.50    0.879   0.1097     0.1248      9.383      10.672      1.171
+**   0.75    0.129   0.0162     0.1248      4.445      34.357      0.555
+**   1.00    0.000   0.0000     0.0000      0.000       0.000      0.000
 **
-** Two things are worth reading off that table. The multipliers stay ordinary pressures -- 8.8 to
-** 10.2 -- across full, partial and vanishing coverage, which is what the weighting of the boundary
-** rows buys: without it the partially covered node reads 34.4, and the more thinly a node is
-** covered the further its multiplier departs from the pressure it is supposed to represent. And the
-** nodal weight is NOT the covered area; it is the area of the node's facets, covered or not. What
-** is covered is reported separately, as the coverage column.
+** Two things are worth reading off that table. The scaled weights D_II/kappa stay the facet
+** integrals across full, partial and vanishing coverage, which is what the nodal scaling buys: the
+** entries of the system keep one order of magnitude. And the recovered traction lambda/kappa at the
+** thinly covered node is the coefficient of a dual shape function over a small support, 34.4,
+** larger than the pressure around it; the force it transmits, 0.555, is what is physical there.
 **
 ** The node at x = 1.00 has no material opposite it at any point of its facets. Its weight and its
 ** multiplier are exactly zero, not merely small.

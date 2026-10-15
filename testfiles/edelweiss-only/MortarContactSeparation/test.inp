@@ -22,14 +22,14 @@
 ** The exact solution of the separated state (step 2) is two independent blocks: the lower one
 ** unloaded and therefore exactly at rest, the upper one translating rigidly with its prescribed
 ** top face and carrying no stress at all, since nothing holds its underside. Measured there:
-** every multiplier exactly 0, and max|u_y| in the lower block 3.1e-18. The exact solution of the
+** every multiplier exactly 0, and max|u_y| in the lower block 1.9e-18. The exact solution of the
 ** closed states is the uniaxial one of the patch decks, u_y(y) = -0.01 * y with a constant contact
 ** pressure of 10.
 **
 ** Only the final state enters the reference solution, so what step 2 leaves behind is checked
 ** through its effect on step 3 rather than directly. Measured at the end of step 3:
-**   max|u_x|, max|u_z|        ~ 7e-17
-**   max|u_y - u_y(y)|         ~ 4e-16  of a prescribed 0.02
+**   max|u_x|, max|u_z|        ~ 2e-16
+**   max|u_y - u_y(y)|         ~ 6e-16  of a prescribed 0.02
 **   contact pressure           10.000000000 at every non-mortar node
 **
 ** The reference solution covers both: the nodal displacements, and -- because the contact

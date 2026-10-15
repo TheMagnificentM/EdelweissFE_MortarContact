@@ -12,9 +12,9 @@
 **   sigma_yy = -E * 0.01 = -10    contact pressure = 10, constant over the interface
 **
 ** Measured against that solution:
-**   max|u_x|                  ~ 8e-17
-**   max|u_y - u_y(y)|         ~ 2e-16  of a prescribed 0.02
-**   contact pressure           10.000000000 at every non-mortar node
+**   max|u_x|                  ~ 4e-14
+**   max|u_y - u_y(y)|         ~ 4e-13  of a prescribed 0.02
+**   contact pressure           10.000000000 to 10.000000001 at the non-mortar nodes
 **
 ** The reference solution covers both: the nodal displacements, and -- because the contact
 ** multipliers of formulation=lagrange are scalar variables of the global system -- the nodal
