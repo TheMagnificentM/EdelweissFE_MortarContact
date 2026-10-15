@@ -199,49 +199,57 @@ iterate, at the iterate itself, and the tangent carries its full linearisation, 
 Gitterle, Gee and Wall (2010), Section 4.3 and Appendix A, and in two dimensions Popp, Gee and Wall
 (2009), Appendix A. Every quantity D, C and the weighted gap are built from is differentiated with
 respect to the nodal coordinates, and the derivatives are chained down
-(:mod:`~edelweissfe.utils.mortarlinearization`):
+(:mod:`~edelweissfe.utils.mortarcoupling`, building blocks in
+:mod:`~edelweissfe.utils.mortarlinearization`):
 
 * the element normal at each node and their unweighted average, Eqs. (A1)--(A3) of Popp et al.
   (2010);
-* the auxiliary plane and the orthogonal projection of the nodes into it, Eq. (A17);
+* the auxiliary plane, its centre and its normal interpolated from the nodal normals, Eqs. (A18)
+  and (A15), and the orthogonal projection of the nodes into it, Eq. (A17);
 * the vertices of the clipped polygon, each either a surviving subject vertex or the intersection of
   a subject edge with the line of a clip edge, Eq. (A19);
 * the fan triangles, their Jacobian, Eq. (A7), and the Gauss points in them, Eq. (A16);
-* the natural coordinates of every Gauss point on both sides, Eqs. (A12)--(A14);
-* the dual coefficients, Eq. (A23), with the basis transformation constant -- it is "defined once
-  at t = 0" and stays "unaltered during the entire finite deformation process" (Popp, Wohlmuth, Gee
-  and Wall 2012, p. B432) -- and the whole-facet integrals through the surface Jacobian, Eqs.
-  (A24)--(A26);
-* D and C, Eqs. (A4)--(A5), the weighted gap, Eqs. (A8)--(A11), and the derivative of the contact
-  forces, the matrix of their Eq. (51).
+* the natural coordinates of every Gauss point on both sides along the auxiliary normal, Eqs.
+  (A12)--(A14), carried from a sub-segment to its parent by the affine map of their Eq. (42);
+* the dual coefficients on the integrated part of the slave element, Popp, Seitz, Gee and Wall
+  (2013), Eqs. (26)--(28), with the basis transformation constant -- it is "defined once at t = 0"
+  and stays "unaltered during the entire finite deformation process" (Popp, Wohlmuth, Gee and Wall
+  2012, p. B432) -- and, on the reference-element fallback, the whole-element integrals through the
+  surface Jacobian, Popp et al. (2010), Eqs. (A24)--(A26);
+* D and C, Eqs. (A4)--(A5), the weighted gap at the Gauss points with the interpolated normal,
+  Eqs. (A8)--(A11), the nodal scaling factor, Popp et al. (2013), Eq. (38), and the derivative of the
+  contact forces, the matrix of Popp et al. (2010), Eq. (51);
+* in two dimensions, the segment ends projected along the normal field and their derivatives, Popp,
+  Gee and Wall (2009), Eqs. (A25)--(A31), and the nodal weighted gap, their Eq. (A36).
 
-Three steps of the geometry built here differ from the reference, and their derivatives follow from
-the chain rule rather than from the paper: the auxiliary plane belongs to a slave sub-cell and takes
-that sub-cell's own normal instead of the interpolated nodal normal of Eq. (A15); a Gauss point is
-mapped back by inverting the in-plane isoparametric map (three dimensions) or by a closest-point
-projection (two dimensions) instead of along the auxiliary normal, Eq. (A12); and the dual
-coefficients carry the row weighting of Cichosz and Bischoff. The in-plane basis of the auxiliary
-plane is varied without rotation about its normal, which no quantity leaving the plane depends on.
-As in the reference, a derivative holds for a fixed layout: which vertices the polygon has, how it
-is triangulated, which facet a Gauss point is attributed to and whether a facet takes the
-reference-element fallback is decided at each iterate and not differentiated. An entry of D or C
-below the noise floor keeps its column and its derivative with the value exactly zero: a coupling
-that vanishes because the two meshes coincide along one direction does not vanish in the
-neighbouring configuration, and its derivative is not zero.
+Where the geometry built here goes beyond the cases the sources treat, its derivatives follow from
+the chain rule. The auxiliary plane belongs to a linear sub-segment of a quadratic facet, to which
+Popp et al. (2010), Section 4.2, apply their algorithm "nearly unchanged"; the basis transformation
+of quadratic slave elements is composed with the integrated-part biorthogonality and the nodal
+scaling of Popp et al. (2013), who treat first-order elements; and the in-plane basis of the
+auxiliary plane is varied without rotation about its normal, which no quantity leaving the plane
+depends on. As in the reference, a derivative holds for a fixed layout: which vertices the polygon
+has, how it is triangulated, which facets overlap and whether a slave element takes the
+reference-element fallback is decided at each iterate and not differentiated. An entry of D, C or
+the gap matrices below the noise floor keeps its column and its derivative with the value exactly
+zero: a coupling that vanishes because the two meshes coincide along one direction does not vanish
+in the neighbouring configuration, and its derivative is not zero.
 
 The residual is the same as under ``frozen``: the contact forces are :math:`-\lambda_I D_{IK} n_I`
-and :math:`+\lambda_I C_{IJ} n_I`, and the variation of D and C in the virtual work is neglected, as
-in Popp et al. (2010), Section 7. The tangent is the exact derivative of this residual, and it is
-non-symmetric, under ``penalty`` as well.
+and :math:`+\lambda_I C_{IJ} n_I` with the nodal normal (Popp et al. 2010, Eq. (30)), the weighted
+gap carries the normal at the Gauss points, and the variation of D and C in the virtual work is
+neglected, as in Popp et al. (2010), Section 7. The tangent is the exact derivative of this residual;
+in three dimensions it is non-symmetric, under ``penalty`` as well.
 
 Measured against central differences of the residual with the geometry rebuilt at every
 perturbation, on a tilted, curved, laterally shifted pair of surfaces, for all seven contact element
-types, both formulations and friction in stick and in slip: :math:`\max |K - K_{FD}| / \max |K|`
-between :math:`10^{-10}` and :math:`1.1 \cdot 10^{-7}`. Without the geometric terms the same
-comparison gives :math:`5.3 \cdot 10^{-2}` under ``penalty`` and 1.1 under ``lagrange`` (CONQUAD4).
-Once the active set has settled the Newton iteration converges quadratically; on
-``MortarContactTilted`` the residual of the first increment runs 1.4, :math:`6.3 \cdot 10^{-3}`,
-:math:`2.1 \cdot 10^{-7}`, :math:`1.3 \cdot 10^{-15}`.
+types and both formulations: :math:`\max |K - K_{FD}| / \max |K|` between :math:`1.4 \cdot 10^{-10}`
+and :math:`8.8 \cdot 10^{-8}`; friction in stick and in slip, with and without ``slipTolerance``,
+passes the same check to the :math:`10^{-6}` of the test. Without the geometric terms the same
+comparison gives :math:`5.5 \cdot 10^{-2}` under ``penalty`` (CONQUAD4). Once the active set has
+settled the Newton iteration converges quadratically; on ``MortarContactTilted`` the residual of the
+first increment runs 1.4, :math:`6.3 \cdot 10^{-3}`, :math:`2.1 \cdot 10^{-7}`,
+:math:`1.1 \cdot 10^{-15}`.
 
 **frozen**. The geometry is built once per increment from the last converged configuration and held
 fixed for that increment's Newton iterations. The tangent omits the derivatives of D, C and the
@@ -255,10 +263,10 @@ final state from the consistent one at the smallest increment, relative to its l
 ====================================  ===========  ===========  ===========  ===========  ===========
 maxInc                                0.5          0.25         0.125        0.0625       0.03125
 ====================================  ===========  ===========  ===========  ===========  ===========
-``MortarContactTilted``, frozen       1.4e-2       5.7e-3       2.5e-3       1.2e-3       5.7e-4
-``MortarContactPartialOverlap``,      1.6e-2       9.2e-3       4.3e-3       2.1e-3       1.0e-3
+``MortarContactTilted``, frozen       1.4e-2       5.6e-3       2.5e-3       1.2e-3       5.6e-4
+``MortarContactPartialOverlap``,      7.6e-3       4.5e-3       2.1e-3       1.0e-3       5.1e-4
 frozen
-both decks, consistent                < 4e-13      < 4e-13      < 4e-13      < 4e-13      0
+both decks, consistent                < 4e-12      < 4e-12      < 4e-12      < 4e-12      0
 ====================================  ===========  ===========  ===========  ===========  ===========
 
 ``frozen`` is not the *incomplete linearisation* Popp et al. (2010) measure in their Table I -- a
@@ -376,30 +384,45 @@ Segmentation of the overlap
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The integral above is evaluated over the overlap of the two surfaces, which has to be constructed.
-For each face of the non-mortar surface:
+In three dimensions this is the algorithm of Popp, Gitterle, Gee and Wall (2010), Section 4.1, for
+every face of the non-mortar surface:
 
 #. candidate faces of the mortar surface are found through a bounding-volume hierarchy, with a
    search margin that is the larger of a fraction of the local extent and an absolute length;
-#. each candidate is projected into the tangent plane of the non-mortar face, which is the auxiliary
-   plane the clipping happens in;
-#. the two projected polygons are clipped against each other by the Sutherland--Hodgman algorithm;
-#. the resulting polygon is fan-triangulated, and each triangle is integrated with a rule exact for
-   the product of the two faces' shape functions.
+#. an auxiliary plane is set up through the centre of the non-mortar face, with the nodal normals
+   interpolated there as its normal, their Eqs. (A18) and (A15);
+#. both faces are projected into it along that normal, Eq. (A17), and the projected polygons are
+   clipped against each other by the Sutherland--Hodgman algorithm;
+#. the resulting polygon is fan-triangulated into integration cells, and each cell is integrated
+   with a seven-point rule (Puso and Laursen 2004, Section 3.1);
+#. each Gauss point is projected back onto both faces along the auxiliary normal, Eq. (A12).
+
+Quadratic faces are split into linear sub-segments first, and the algorithm runs on those "nearly
+unchanged" (Popp et al. 2010, Section 4.2), with the decompositions of Puso, Laursen and Solberg
+(2008), Fig. 3. A Gauss point is located on its sub-segment and carried into the parent face by the
+affine map between the two parameterisations -- Popp et al. (2010), Eq. (42), and Puso et al.
+(2008), Eqs. (31)--(32) -- where the quadratic shape functions are evaluated. The integration domain
+then follows the chords of the sub-segments rather than the curved faces, which is the
+approximation Popp et al. (2010) name: it "only affects the integration domain itself, which no
+longer reflects the underlying quadratic surfaces correctly". Where an edge between two faces is
+curved within the surface, the mortar-side consistency of a uniform pressure is therefore lost in
+proportion to the curvature of that edge (see *Known limitations*).
+
+In two dimensions the segments come from projecting nodes along the continuous normal field, Popp,
+Gee and Wall (2009), Section 4: the end nodes of a non-mortar element onto the mortar element along
+their nodal normals, their Eq. (44), the end nodes of a mortar element onto the non-mortar element
+along the interpolated normal, Eq. (45). Both sides are then parameterised linearly over the
+segment, Eq. (46), with the segment Jacobian of Eq. (48).
 
 Sutherland--Hodgman clips against the infinite half-plane of each clip edge in turn, which is exact
 for a convex clip window and loses area for a non-convex one. The restriction is on the WINDOW
 alone; the subject polygon may be anything, since the algorithm as published is "applicable to any
 polygon, convex or concave, planar or not". (The word *reentrant* in that paper's title describes
 the reentrant CODE -- one clipping stage called repeatedly, once per clip edge -- and not a reentrant
-polygon, which is the opposite of what the title suggests on first reading.) Quadratic faces are
-therefore split into convex sub-cells BEFORE clipping rather than clipped whole. Their Appendix B
-offers the other way out, decomposing a concave polygon into convex pieces; that is deliberately not
+polygon, which is the opposite of what the title suggests on first reading.) Their Appendix B
+offers a way to decompose a concave polygon into convex pieces; that is deliberately not
 implemented here, because a contact facet that comes out concave in the auxiliary plane is a mesh
-problem worth reporting rather than a case worth accommodating. Where a sub-cell degenerates -- a
-sliver overlap along a shared edge, for instance -- the local mass matrix used for the dual basis
-becomes ill-conditioned, and the implementation falls back to the reference-element dual
-coefficients, reporting that it has done so. Biorthogonality then holds over the full face only, and
-the nodal weight of such a node can take any sign.
+problem worth reporting rather than a case worth accommodating.
 
 
 The dual basis
@@ -416,8 +439,15 @@ basis :math:`\tilde N`:
 This is what makes the coupling matrix of the non-mortar side diagonal, so that a nodal multiplier
 belongs to exactly one node and the constraint stays local. Without it the multipliers of
 neighbouring nodes are coupled and cannot be eliminated node by node. The dual coefficients are
-computed per face from the element's own quadrature rather than taken from a reference table,
-because they depend on the geometry of the face.
+computed per face from the integration cells rather than taken from a reference table, because they
+depend on the geometry of the face, and over the part of the face that is actually integrated -- the
+consistent biorthogonality of Popp, Seitz, Gee and Wall (2013), Section 4.1, Eqs. (21)--(25), which
+in two dimensions is that of Cichosz and Bischoff (2011), Eq. (41). Integrating the biorthogonality
+over the whole face while D is integrated over a part of it would not give a diagonal D (Popp et al.
+2013, pp. 70--71). Where the system of a quadratic face becomes singular on a sliver of overlap -- its
+transformed shape functions are not strictly positive, which first-order ones are (their p. 71) --
+the implementation falls back to the reference-element coefficients and reports it; that fallback
+is not from a source.
 
 Biorthogonality alone is not enough: the weights :math:`D_{II}` must also be positive, and for the
 serendipity and quadratic-triangle types they are not. The corner functions of an eight-node
@@ -531,57 +561,38 @@ Boundary rows
 ~~~~~~~~~~~~~
 
 A non-mortar facet that the other surface covers only in part integrates its basis functions over
-the covered piece alone. Its nodal weight then decreases with the SQUARE of the covered area, since
-both the domain of integration and the integrand shrink with it, while the force that has to cross
-there decreases only linearly -- the master's force is distributed to the nodes of the boundary facet
-by a lever arm which shortens at the same rate. The multiplier, being the ratio of the two, grows as
-the reciprocal of the covered area. Those values are assembled into the stiffness matrix, whose
-condition number degrades with them, and with it the convergence of the Newton iteration; in the
-worst case it does not converge at all.
+the covered piece alone, so the entries of its rows in D and C shrink with the covered area. Those
+small values are assembled into the system, whose condition number degrades with them (Cichosz and
+Bischoff 2011; Popp, Seitz, Gee and Wall 2013, Section 4.2).
 
-The remedy is due to Cichosz and Bischoff, whose own diagnosis this is. It has two parts, their
-Eqs. (41) and (43) to (45), and both are implemented here:
+The remedy used here is the nodal scaling of Popp et al. (2013), Section 4.2. Each row of the
+multiplier formulation -- the constraint and the forces it applies -- is divided by one factor per
+node,
 
-#. the dual basis of such a facet is built by imposing biorthogonality over the COVERED area rather
-   than over the whole facet -- "the underlying integrals now have to be evaluated on the contact
-   area instead of the entire slave element" -- which is what restores the row-sum identity between
-   the two coupling matrices at the boundary; without it the two are integrated over different
-   domains and the identity, hence the invariance of the weighted gap under a rigid translation, is
-   lost;
-#. each row is then weighted by the reciprocal of its own covered integral, so that the weighted
-   nodal weight is the whole-facet integral again.
+.. math::
 
-Both coupling matrices carry the same factor, so the row-sum identity survives and with it the
-normalised gap :math:`g_I / D_{II}`, whose numerator and denominator are scaled alike. The
-multiplier is rescaled inversely and becomes a pressure of ordinary magnitude. No case distinction
-is needed either, since on a fully covered facet the covered and the whole integral coincide and the
-factor is exactly one -- which is their point as well: once the weighting is in place, "there is no
-difference between slave mortar integrals in inner and boundary elements", and the separate
-treatment of a boundary element that the second part would otherwise need "can be skipped".
+    \kappa_I = \frac{1}{n_I^e} \sum_{e} \frac{1}{\alpha_e} \int_{e_{\text{int}}}
+    \frac{\tilde N_I}{J_e} \, \mathrm{d}e_{\text{int}} , \qquad
+    \alpha_e = \int_e \frac{\tilde N_I}{J_e} \, \mathrm{d}e ,
 
-EdelweissFE generalises the weighting in one respect. Cichosz and Bischoff define the weighting factor
-parametrically, as the reciprocal of :math:`\int N_k \,\mathrm{d}\xi` over the covered interval,
-which for their straight two-node elements returns the row to the whole-element value. The ratio of
-the two PHYSICAL integrals used here lands on the same value for those elements and extends to a
-curved facet, whose Jacobian does not cancel out of a parametric expression.
+their Eq. (36), the mean over the :math:`n_I^e` facets around the node of the integrated fraction of
+each, measured with the node's shape function in the parameter space; it is one where every facet is
+integrated entirely. The scaled multiplier is :math:`\bar\lambda_I = \kappa_I \lambda_I`, their
+Eq. (29), the scaled matrices and gap :math:`D/\kappa_I`, :math:`C/\kappa_I`, :math:`g_I/\kappa_I`,
+their Eqs. (30)--(35), and the physical traction is recovered as :math:`\bar\lambda_I/\kappa_I`,
+their Eq. (39). Because one factor scales the whole row, the constraint is unchanged -- which is the
+point Popp et al. make against the earlier, element-wise factor of Cichosz and Bischoff, under which
+"contributions from different elements are scaled with different factors and the resulting
+discretization is then no longer consistent". The factor is deformation dependent and linearised,
+their Eq. (38). Popp et al. (2013) treat first-order elements; for quadratic ones the transformed
+shape functions :math:`\tilde N` of Popp et al. (2012) are integrated, with their own reference
+integrals as :math:`\alpha_e`, which is this implementation's extension.
 
-For a fixed active set the weighting is a rescaling of the constraint and the displacement solution
-is identical. Across the active-set decision it is not. The activation test compares the pressure
-against :math:`c_n` times the normalised gap; the gap is invariant under the rescaling and the
-pressure is not, so a node close to the threshold can switch differently. That is intended: without
-the rescaling the quantity entering that comparison at a thinly covered node would be a force
-divided by a vanishing area, set against a genuine pressure on the other side of the test. Measured on a curved indenter, three nodes at the edge of the contact zone move,
-by at most 3.4 % of the peak pressure, while the agreement with the analytical Hertz solution stays
-at about 1 %.
+The penalty form uses the unscaled matrices: its pressure is a pointwise law of the penetration
+:math:`g_I/D_{II}`, which no row scaling changes, and the force a node carries is that pressure times
+its integrated weight :math:`D_{II}` -- a node with a sliver of overlap carries a sliver's force.
 
-Measured on a facet covered to :math:`8 \cdot 10^{-6}` of its area, the multiplier falls from
-:math:`2.1 \cdot 10^{5}` to 10.8, against a contact pressure of 10 elsewhere on the same interface.
-
-The weighting is applied only where the covered integral is positive. A quadratic facet covered in
-the region where its transformed corner function is negative does not provide a measure to divide
-by, and the factor would there flip the sign of the row -- an equivalent constraint, but one that
-silently redefines what the sign of the multiplier means, which the active-set indicator reads.
-Those rows are left unweighted and keep the sign handling they were written for.
+The coverage reported per node (``currentCoverage``) is :math:`\kappa_I`.
 
 
 The choice of sides
@@ -591,8 +602,9 @@ Which of the two surfaces is made the non-mortar one is not a matter of taste wh
 differ in extent. Putting the SMALLER one there makes every one of its facets fully covered, and no
 boundary row arises at all. The same model with the sides exchanged produces them in numbers.
 
-This is not one of the two remedies below but something better: it is the case in which they are
-not needed at all, and it is the one to reach for whenever the geometry allows it. Cichosz and
+This is not a remedy but something better: it is the case in which neither the integrated-part
+biorthogonality nor the nodal scaling of the previous sections is needed at all, and it is the one to
+reach for whenever the geometry allows it. Cichosz and
 Bischoff establish it by example rather than by derivation -- their Section 6.1 punches a small
 block onto a larger one, runs the same model twice with the sides exchanged, and compares the
 contact pressure and the condition number of the stiffness matrix. The two decks
@@ -626,26 +638,36 @@ row sum,
 
     D_{II}^{\text{row}} = \sum_K D_{IK} = \int_\Gamma \Phi_I \, \mathrm{d}\Gamma ,
 
-which is the nodal weight referred to throughout. The weighted gap of node :math:`I` follows from
-the current positions :math:`x` as
+which is the nodal weight referred to throughout. The weighted gap of node :math:`I` is the integral
+of the gap against its dual basis function, Popp et al. (2010), Eq. (41), with the normal
+:math:`n` interpolated from the nodal normals at each Gauss point, their Eq. (A11):
 
 .. math::
 
-    g_I = -\sum_K D_{IK} \, (x_K \cdot n_I) + \sum_J C_{IJ} \, (x_J \cdot n_I) .
+    g_I = \int_\Gamma \Phi_I \, n \cdot (x^{(2)} - x^{(1)}) \, \mathrm{d}\Gamma
+        = -\sum_K \tilde D_{IK} \cdot x_K + \sum_J \tilde C_{IJ} \cdot x_J ,
+    \qquad
+    \tilde D_{IK} = \int_\Gamma \Phi_I N_K \, n \, \mathrm{d}\Gamma ,
+    \quad \tilde C_{IJ} = \int_\Gamma \Phi_I N_J \, n \, \mathrm{d}\Gamma ,
 
-Its translational invariance rests on a single identity, :math:`\sum_K D_{IK} = \sum_J C_{IJ}`,
-which holds because both are integrated over the SAME domain -- the overlap, not the respective
-facets. Translating both bodies by the same vector leaves :math:`g_I` unchanged only because of it,
-and it is checked directly in the unit tests.
+with vector-valued gap matrices :math:`\tilde D, \tilde C`. In two dimensions the gap takes the
+nodal form of Popp, Gee and Wall (2009), Eq. (50), :math:`\tilde D_{IK} = D_{IK} n_I` and
+:math:`\tilde C_{IJ} = C_{IJ} n_I`. Its translational invariance rests on the identity
+:math:`\sum_K \tilde D_{IK} = \sum_J \tilde C_{IJ}`, which holds because both are integrated over
+the SAME domain -- the overlap, not the respective facets -- and it is checked in the unit tests in
+its scalar form :math:`\sum_K D_{IK} = \sum_J C_{IJ}`.
 
 Collecting the weights of one node as :math:`w_a = +D_{IK}` on the non-mortar nodes and
-:math:`w_a = -C_{IJ}` on the mortar ones, and writing :math:`v_a = w_a n_I`, the whole nodal
-contribution is rank one:
+:math:`w_a = -C_{IJ}` on the mortar ones, writing :math:`v_a = w_a n_I` for the force direction and
+:math:`\tilde v_a = +\tilde D_{IK}` or :math:`-\tilde C_{IJ}` for the gap gradient, the nodal
+contribution is
 
 .. math::
 
-    g_I = -\sum_a v_a \cdot x_a , \qquad
-    f_a = -\lambda_I \, v_a .
+    g_I = -\sum_a \tilde v_a \cdot x_a , \qquad
+    f_a = -\lambda_I \, v_a ,
+
+and :math:`\tilde v = v` in two dimensions.
 
 **Saddle-point form.** With ``formulation=lagrange`` the multipliers :math:`\lambda_I` are unknowns
 of the global system, one scalar variable per non-mortar node. An active node contributes the
@@ -659,8 +681,11 @@ constraint row :math:`g_I = 0` and its transpose, an inactive one the trivial ro
     = \begin{bmatrix} r_u \\ -g \end{bmatrix} ,
     \qquad B_{Ia} = v_a ,
 
-for the active rows. The off-diagonal blocks are each other's transpose, which is what makes the
-assembled system symmetric; it is indefinite, so the linear solver has to cope with a saddle point.
+for the active rows, :math:`B_{Ia} = \tilde v_a` in the constraint row and :math:`v_a` in the
+forces, each divided by the nodal scaling factor :math:`\kappa_I` of the section on boundary rows.
+In two dimensions the off-diagonal blocks are each other's transpose; in three they are not, because
+the gap carries the normal at the Gauss points and the forces the nodal one. The system is indefinite,
+so the linear solver has to cope with a saddle point.
 
 Because the multipliers are ordinary scalar variables of the model, they appear in the state vector
 the regression runner compares against its reference solution. The reference of a
@@ -676,9 +701,10 @@ the current state,
     \qquad g^{\text{pen}}_I = -g_I \operatorname{sgn} D_{II} ,
     \qquad \kappa_I = \frac{\varepsilon_N}{|D_{II}|} ,
 
-with :math:`z_I` the augmentation estimate, zero for pure penalty. The tangent is then the rank-one
-:math:`K_{ab} \mathrel{+}= \kappa_I \, v_a v_b`, symmetric and positive semi-definite, and the system
-keeps the size and the definiteness it had without contact.
+with :math:`z_I` the augmentation estimate, zero for pure penalty, on the unscaled matrices. With the
+geometry held fixed the tangent is :math:`K_{ab} \mathrel{+}= \kappa_I \, v_a \tilde v_b`, rank one,
+symmetric and positive semi-definite in two dimensions, and the system keeps the size it had without
+contact.
 
 **The law is a pointwise one.** Since :math:`g^{\text{pen}}_I = |D_{II}| \, \delta_I` with
 :math:`\delta_I` the pointwise penetration, the law above is exactly
@@ -829,10 +855,10 @@ two coincide exactly and nothing about the implicit behaviour changes.
 What the frozen geometry costs is the subject of the section on the tangent above. What it buys is
 that the contact contribution of one increment is a smooth function of the displacements, with no
 re-segmentation happening underneath the iteration, and an assembly that is cheaper by the
-segmentation. Measured per assembly, on ``MortarContactPatchHexa20`` 37 ms frozen against 218 ms
-consistent, on ``MortarContactPenaltyHexa20`` 12 ms against 214 ms, on ``MortarContactFrictionSlide``
-2.2 ms against 19 ms; the consistent geometry spends that on rebuilding the segmentation with its
-derivatives at every iterate.
+segmentation. Measured per assembly (single-threaded BLAS), on ``MortarContactPatchHexa20`` 42 ms
+frozen against 284 ms consistent, on ``MortarContactPenaltyHexa20`` 14 ms against 275 ms, on
+``MortarContactFrictionSlide`` 2.8 ms against 26 ms; the consistent geometry spends that on
+rebuilding the segmentation with its derivatives at every iterate.
 
 **The active set is re-decided in every Newton iteration.** This is the semi-smooth Newton method,
 and it is what gives the active set superlinear convergence rather than a fixed-point character.
@@ -1079,10 +1105,10 @@ multipliers are scalar variables of the system:
 =================================  ====================  ====================  ==================
 Deck                               max lateral           max axial deviation   contact pressure
 =================================  ====================  ====================  ==================
-``MortarContactPatch`` (2D)        8e-17                 2e-16 of 0.02         10.000000000
-``MortarContactPatchQuadratic``    7e-16                 2e-15 of 0.02         10.000000000
-``MortarContactPatchHexa8``        1e-14                 5e-14 of 2            10.000000000
-``MortarContactPatchHexa20``       3e-15                 7e-15 of 0.02         10.000000000
+``MortarContactPatch`` (2D)        4e-14                 4e-13 of 0.02         10.000000001
+``MortarContactPatchQuadratic``    8e-15                 2e-14 of 0.02         10.000000000
+``MortarContactPatchHexa8``        3e-14                 9e-14 of 2            10.000000000
+``MortarContactPatchHexa20``       2e-15                 1e-14 of 0.02         10.000000000
 =================================  ====================  ====================  ==================
 
 The lateral constraints of those decks fix the symmetry planes only, never the whole model, so the
@@ -1092,8 +1118,8 @@ notices a tolerance inside the constraint that compares a length against an abso
 
 **The unilateral condition** is covered by two further decks. ``MortarContactSeparation`` walks one
 model through closing, separating and closing again in three steps: in the separated state every
-multiplier is exactly 0 and the non-mortar block is left behind at rest to 3.1e-18, and the
-re-closed state is exact again to 4e-16 -- so the active set can empty and refill.
+multiplier is exactly 0 and the non-mortar block is left behind at rest to 1.9e-18, and the
+re-closed state is exact again to 6e-16 -- so the active set can empty and refill.
 ``MortarContactPartialOverlap`` leaves part of the non-mortar surface uncovered and tabulates
 weight, coverage, multiplier and force across the interface; ``MortarContactPunchEdge`` is the same
 configuration with the favourable choice of sides, where the coverage is exactly 1.000 at every node
@@ -1142,7 +1168,7 @@ Hertz assumes: the block is about nine contact half-widths wide, twelve deep, an
 its base, all of which stiffen it, and a stiffer foundation gives a higher peak pressure. Linear
 elements reach 6.7 % on the medium mesh and are still converging at 4.3 % on the fine one.
 
-These curved cases are not part of the shipped test suite. The quadratic ones take 393 s and 902 s
+These curved cases are not part of the shipped test suite. The quadratic ones take 392 s and 893 s
 respectively (single-threaded BLAS), which is out of proportion to a suite that runs in about a
 minute, and reproducing them needs a
 parabolically warped mesh that no model generator provides.
@@ -1178,41 +1204,52 @@ Force reaching nodes outside a contact surface that ends under pressure
     the contact force is distributed, never whether a node is tied.
 
     Measured on a half-width punch (the geometry of ``MortarContactPunchEdge`` with the sides
-    exchanged, hexa8): 7.1 % of the transmitted force lands on nodes outside the punch, and the share
-    falls under uniform refinement -- 5.0 % at twice the resolution, 3.3 % at four times, 2.2 % at
-    eight. It falls, but slowly, roughly with the square root of the element size. The total force
-    is unaffected, being fixed by equilibrium; what is wrong is where it ends up. The constraint
-    itself is satisfied throughout, the normalised gap at such a node measuring
-    :math:`9 \cdot 10^{-13}`, the level of the Newton tolerance, as at every other node.
+    exchanged, hexa8), with ``formulation=lagrange``: 7.3 % of the transmitted force lands on nodes
+    outside the punch, and the share falls under uniform refinement -- 5.2 % at twice the resolution,
+    3.4 % at four times, 2.3 % at eight. It falls, but slowly, roughly with the square root of the
+    element size. The total force is unaffected, being fixed by equilibrium; what is wrong is where it
+    ends up. The constraint itself is satisfied throughout, the normalised gap at such a node
+    measuring :math:`5 \cdot 10^{-13}`, the level of the Newton tolerance, as at every other node.
 
-    It is NOT confined to ``formulation=lagrange``. Since the penalty law is pointwise, a node on a
-    sliver carries the pressure its penetration gives it, not a sliver's share of it, and the same
-    model misplaces 7.08 % with ``penalty`` and with ``augmentedLagrange`` alike, and the share
-    hardly depends on :math:`\varepsilon_N` (7.1 % at :math:`10^5`, 7.08 % at :math:`10^6`; only a
-    very soft :math:`10^4` gives 7.7 %). A stiffness of :math:`10^9` does not converge on this model
-    at all, see the next entry.
+    With ``formulation=penalty`` the force a sliver node carries is its pressure times its integrated
+    weight, so the share grows with the stiffness towards the constrained value: 0.18 % at
+    :math:`\varepsilon_N = 10^6` under the consistent geometry, and under the frozen one 0.05 % at
+    :math:`10^6` and 6.3 % at :math:`10^9`. A stiffness of :math:`10^9` does not converge on this
+    model under the consistent geometry, see the next entry.
 
     Two things bound the problem. It requires the pressure to be at full value where the surface
-    ends, so a contact that tapers off between curved bodies is unaffected -- a cylindrical
-    indenter measured 0 at every refinement. And it does not arise at all when the smaller surface
-    is the non-mortar one, which is the remedy named above.
+    ends, so a contact that tapers off between curved bodies is not affected in this way. And it does
+    not arise at all when the smaller surface is the non-mortar one, which is the remedy named above.
 
-    No treatment of it is implemented. The weighting of the boundary rows does not address it and
+    No treatment of it is implemented. The nodal scaling of the boundary rows does not address it and
     cannot: a rescaling of the constraint leaves the solution invariant, and it is the solution that
     is at issue here, not the conditioning.
 
 A non-smooth geometry at slivers, under ``geometryUpdate=consistent``
     The geometry is a smooth function of the displacements only for a fixed layout, and at a sliver
-    the layout changes under displacements of the order of the rounding. On the model of the
-    previous entry, a Gauss point of the sliver lies on the edge shared by two non-mortar facets;
-    a perturbation of :math:`10^{-7}` moves 11 such points into the neighbouring facet (see
-    :meth:`~edelweissfe.constraints.mortarcontact.Constraint._containingFacet`) and changes the
-    residual there by 3 %. No tangent describes such a jump. The frozen geometry meets it only from
-    one increment to the next; the consistent one meets it within the Newton iteration. Measured on
-    that model: ``lagrange`` converges at every refinement, and ``penalty`` up to
-    :math:`\varepsilon_N = 10^6`, i.e. :math:`10^3 E`; at :math:`10^9` the iteration diverges at
-    every increment size, while ``geometryUpdate=frozen`` converges. With the smaller surface on the
-    non-mortar side there is no sliver, and the same stiffness, and :math:`10^{12}`, converge.
+    the layout of the clipped polygons changes under displacements of the order of the rounding. On
+    the model of the previous entry the residual is not differentiable there: at one entry of the
+    penalty tangent, which is 4.3 for the fixed layout, central differences give :math:`-48` and
+    :math:`-488` for steps of :math:`10^{-7}` and :math:`10^{-8}`. No tangent describes such a change. The
+    frozen geometry meets it only from one increment to the next; the consistent one meets it within
+    the Newton iteration. Measured on that model: ``lagrange`` converges at every refinement, and
+    ``penalty`` up to :math:`\varepsilon_N = 10^6`, i.e. :math:`10^3 E`; at :math:`10^9` the iteration
+    does not converge, while ``geometryUpdate=frozen`` does. With the smaller surface on the
+    non-mortar side there is no sliver. The same holds, more mildly, wherever edges of the two
+    meshes coincide exactly: the overlap then has a kink in the displacement, which central
+    differences of the penalty residual see as half the one-sided derivative.
+
+Curved edges of quadratic facets
+    The integration runs on the linear sub-segments of a quadratic facet (see *Segmentation of the
+    overlap*). Where an edge between two facets is curved within the surface, the integration domain
+    follows its chord, and a uniform multiplier no longer reproduces the consistent nodal loads of a
+    uniform pressure exactly. Measured on two CONQUAD8 mortar facets tiling a flat CONQUAD8
+    non-mortar facet along an edge whose mid-side node is moved off the chord by a fraction
+    :math:`b` of the facet size: :math:`\max |C^T 1 - \int N_m| / \max |\int N_m|` is
+    :math:`5.8 \cdot 10^{-3}`, :math:`1.2 \cdot 10^{-2}` and :math:`4.4 \cdot 10^{-2}` for
+    :math:`b = 0.02`, :math:`0.04` and :math:`0.15`, proportional to the curvature, and zero for a
+    straight edge. This is the approximation Popp, Gitterle, Gee and Wall (2010), Section 4.2, name
+    for the sub-segment approach.
 
 Reproducibility under threaded BLAS, ``geometryUpdate=consistent``
     The linearisation is assembled by matrix products that numpy hands to BLAS. With more than one
@@ -1265,12 +1302,18 @@ that a reader checking a single line does not have to reconstruct which work it 
   once at t = 0", p. B432, so it carries no derivative.
 * T. Cichosz, M. Bischoff: *Consistent treatment of boundaries with mortar contact formulations
   using dual Lagrange multipliers*, Computer Methods in Applied Mechanics and Engineering 200
-  (2011), 1317--1332. -- The partially covered facet at the boundary of the contact area: the
-  quadratic decay of its nodal weight, the reciprocal growth of its multiplier and the resulting
-  loss of conditioning, and both remedies used here -- biorthogonality over the covered area, and
-  the weighting of the boundary rows. Their Section 4 and Eqs. (41) to (45). The choice of sides is not one of
-  those but their Section 6.1, which shows by example what exchanging the two surfaces does to
-  the contact pressure and to the condition number.
+  (2011), 1317--1332. -- The partially covered facet at the boundary of the contact area and the
+  resulting loss of conditioning; the biorthogonality over the covered area in two dimensions, their
+  Eq. (41). Their element-wise weighting of the boundary rows, Eqs. (43)--(45), is NOT used: it makes
+  the discretisation inconsistent (Popp et al. 2013, below), whose nodal scaling replaces it. The
+  choice of sides is their Section 6.1, which shows by example what exchanging the two surfaces does
+  to the contact pressure and to the condition number.
+* A. Popp, A. Seitz, M. W. Gee, W. A. Wall: *Improved robustness and consistency of 3D contact
+  algorithms based on a dual mortar approach*, Computer Methods in Applied Mechanics and Engineering
+  264 (2013), 67--80. -- The biorthogonality on the integrated part of a slave element in three
+  dimensions with its linearisation, Section 4.1, Eqs. (21)--(28); the nodal scaling factor of the
+  multiplier rows, its linearisation and the traction recovered from it, Section 4.2, Eqs.
+  (29)--(39), and the argument against an element-wise factor.
 
 *Segment-to-segment contact*
 
@@ -1284,9 +1327,10 @@ that a reader checking a single line does not have to reconstruct which work it 
   elements and large deformations*, Computer Methods in Applied Mechanics and Engineering 197
   (2008), 555--566. -- The augmented outer loop, their Eq. (18), advanced only once equilibrium has
   converged; and the three-dimensional friction trial state with the re-projected history, Eqs.
-  (16)--(21). Their Fig. 3 is also the decomposition of a quadratic facet into linear sub-cells used
+  (16)--(21). Their Fig. 3 is also the decomposition of a quadratic facet into linear sub-segments used
   here: four quadrilaterals for the nine-node patch, four triangles for the six-node patch, and four
-  triangles plus one quadrilateral for the serendipity eight-node patch.
+  triangles plus one quadrilateral for the serendipity eight-node patch; and their Eqs. (31)--(32)
+  the affine map that carries a Gauss point from a sub-segment to its parent.
 * B. Yang, T. A. Laursen, X. Meng: *Two dimensional mortar contact methods for large deformation
   frictional sliding*, International Journal for Numerical Methods in Engineering 62 (2005),
   1183--1225. -- The penalty-regularised Coulomb law of the friction option, its trial state and
@@ -1312,12 +1356,17 @@ that a reader checking a single line does not have to reconstruct which work it 
   slip measure approximates; its linearisation, Appendix A, Eq. (A3).
 * A. Popp, M. W. Gee, W. A. Wall: *A finite deformation mortar contact formulation using a
   primal-dual active set strategy*, International Journal for Numerical Methods in Engineering 79
-  (2009), 1354--1391. -- The consistent linearisation in two dimensions, Appendix A.
+  (2009), 1354--1391. -- The two-dimensional segmentation along the continuous normal field, Eqs.
+  (44)--(48), the nodal weighted gap, Eq. (50), and the consistent linearisation in two dimensions,
+  Appendix A.
 * A. Popp, M. Gitterle, M. W. Gee, W. A. Wall: *A dual mortar approach for 3D finite deformation
   contact with consistent linearization*, International Journal for Numerical Methods in Engineering
-  83 (2010), 1428--1465. -- The averaged nodal normal; the consistent linearisation of the
-  geometry, Section 4.3 and Appendix A, Eqs. (A1)--(A26); the neglected variation of the coupling
-  matrices, Section 7; the cost of an incomplete linearisation, Table I.
+  83 (2010), 1428--1465. -- The averaged nodal normal, Eq. (37); the three-dimensional segmentation
+  of Section 4.1 with the auxiliary plane of Eqs. (A15) and (A18), the integration of D, M and the
+  weighted gap, Eqs. (39)--(41), and the sub-segments of quadratic facets with the map of Eq. (42);
+  the consistent linearisation of the geometry, Section 4.3 and Appendix A, Eqs. (A1)--(A26); the
+  neglected variation of the coupling matrices, Section 7; the cost of an incomplete linearisation,
+  Table I.
 * P. Farah: *Mortar Methods for Computational Contact Mechanics Including Wear and General Volume
   Coupled Problems*, Dissertation, TU München, 2018. -- The averaged nodal normal written out as
   Eq. (4.41), over the *unit* normals of the adjacent elements; the weighted relative tangential
