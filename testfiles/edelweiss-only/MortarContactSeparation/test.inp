@@ -22,7 +22,7 @@
 ** The exact solution of the separated state (step 2) is two independent blocks: the lower one
 ** unloaded and therefore exactly at rest, the upper one translating rigidly with its prescribed
 ** top face and carrying no stress at all, since nothing holds its underside. Measured there:
-** every multiplier exactly 0, and max|u_y| in the lower block 1.9e-18. The exact solution of the
+** every multiplier exactly 0, and max|u_y| in the lower block 1.3e-18. The exact solution of the
 ** closed states is the uniaxial one of the patch decks, u_y(y) = -0.01 * y with a constant contact
 ** pressure of 10.
 **

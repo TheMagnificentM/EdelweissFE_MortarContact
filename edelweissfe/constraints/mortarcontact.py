@@ -145,11 +145,11 @@ for the frozen one with its correction at each geometry rebuild, and
 :meth:`~edelweissfe.utils.contactfriction.CoulombFriction.freezeIfChattering` for the anti-chattering
 rule of the implicit iteration.
 
-THE GEOMETRY -- segmentation, coupling matrices, nodal normals -- follows the Newton iterate with
-its full linearisation (``geometryUpdate=consistent``, the default; Popp, Gitterle, Gee & Wall 2010,
-Appendix A; the derivatives are in :mod:`~edelweissfe.utils.mortarlinearization`), or is frozen at
-the last converged configuration for an increment (``geometryUpdate=frozen``, and always under
-explicit dynamics). See :meth:`Constraint._buildGeometry`.
+THE GEOMETRY -- segmentation, coupling matrices, nodal normals -- is frozen at the last converged
+configuration for an increment (``geometryUpdate=frozen``, the default, and always under explicit
+dynamics), or, on request, follows the Newton iterate with its full linearisation
+(``geometryUpdate=consistent``; Popp, Gitterle, Gee & Wall 2010, Appendix A; the derivatives are in
+:mod:`~edelweissfe.utils.mortarlinearization`). See :meth:`Constraint._buildGeometry`.
 
 RESULTS PER NON-MORTAR NODE are published for output. The constraint registers the node set
 ``<name>_nonMortarNodes`` (in the order of the contact system), so that the accessors
@@ -256,16 +256,16 @@ class MortarContactSchema:
     geometryUpdate: str = schemaField(
         description=(
             "How the mortar geometry -- segmentation, coupling matrices D and C, nodal normals -- follows the "
-            "deformation in an implicit analysis. 'consistent', the default, rebuilds it at every Newton "
-            "iterate and carries its full linearisation in the tangent (Popp, Gitterle, Gee & Wall 2010), so "
-            "the converged state of an increment satisfies the contact conditions in its own configuration. "
-            "'frozen' builds it once per increment from the last converged configuration and holds it fixed, "
-            "which is cheaper per iteration but staggered: the result carries an error of first order in the "
-            "increment size. Explicit dynamics always uses the frozen geometry, rebuilt every "
-            "contact-update-frequency increments, since it assembles no tangent."
+            "deformation in an implicit analysis. 'frozen', the default, builds it once per increment from "
+            "the last converged configuration and holds it fixed, which is cheaper per iteration but "
+            "staggered: the result carries an error of first order in the increment size. 'consistent' "
+            "rebuilds it at every Newton iterate and carries its full linearisation in the tangent (Popp, "
+            "Gitterle, Gee & Wall 2010), so the converged state of an increment satisfies the contact "
+            "conditions in its own configuration. Explicit dynamics always uses the frozen geometry, rebuilt "
+            "every contact-update-frequency increments, since it assembles no tangent."
         ),
         dtype=str,
-        default="consistent",
+        default="frozen",
     )
 
     penaltyStiffness: float = schemaField(
@@ -508,7 +508,7 @@ class Constraint(ConstraintBase, MeshDependent):
         if self.geometryUpdate not in ("consistent", "frozen"):
             raise ValueError(
                 f"MortarContact '{name}': unknown geometryUpdate '{kwargs['geometryUpdate']}'. "
-                f"Valid choices are 'consistent' (default) and 'frozen'."
+                f"Valid choices are 'frozen' (default) and 'consistent'."
             )
 
         self._updateFootprint()

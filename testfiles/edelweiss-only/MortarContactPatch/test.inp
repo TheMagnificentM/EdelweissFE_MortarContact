@@ -59,6 +59,7 @@ nonMortarSurface=nonMortarSurf_facets
 mortarSurface=mortarSurf_facets
 field=displacement
 cn=1000.0
+geometryUpdate=consistent
 
 *job, name=MortarContactPatchJob, domain=2d
 *solver, name=theSolver, solver=NIST

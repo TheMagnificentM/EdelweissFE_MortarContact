@@ -194,7 +194,7 @@ The tangent
 How the geometry -- the segmentation, the coupling matrices and the nodal normals -- enters the
 residual and the tangent is set by ``geometryUpdate``.
 
-**consistent**, the default under the implicit solvers. The geometry is rebuilt at every Newton
+**consistent**, on request under the implicit solvers. The geometry is rebuilt at every Newton
 iterate, at the iterate itself, and the tangent carries its full linearisation, as in Popp,
 Gitterle, Gee and Wall (2010), Section 4.3 and Appendix A, and in two dimensions Popp, Gee and Wall
 (2009), Appendix A. Every quantity D, C and the weighted gap are built from is differentiated with
@@ -253,8 +253,9 @@ settled the Newton iteration converges quadratically; on ``MortarContactTilted``
 first increment runs 1.4, :math:`6.3 \cdot 10^{-3}`, :math:`2.1 \cdot 10^{-7}`,
 :math:`1.1 \cdot 10^{-15}`.
 
-**frozen**. The geometry is built once per increment from the last converged configuration and held
-fixed for that increment's Newton iterations. The tangent omits the derivatives of D, C and the
+**frozen**, the default, and always under explicit dynamics. The geometry is built once per
+increment from the last converged configuration and held fixed for that increment's Newton
+iterations. The tangent omits the derivatives of D, C and the
 normals and is exact for the residual with the geometry frozen: against central differences with
 the geometry frozen, :math:`\max |K - K_{FD}| / \max |K| = 5.3 \cdot 10^{-10}`. The residual,
 however, belongs to the configuration at the start of the increment, which makes the scheme
@@ -1126,7 +1127,10 @@ override it, so their penalty stiffness is not covered by the solver's time step
 What is verified, and how
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Every number below is measured on the cases named, not estimated.
+Every number below is measured on the cases named, not estimated. ``MortarContactPatch``,
+``MortarContactPatchQuadratic``, ``MortarContactPartialOverlap``, ``MortarContactPunchEdge``,
+``MortarContactTilted`` and ``MortarContactFrictionSlide`` set ``geometryUpdate=consistent``; the
+other mortar decks run on the default frozen geometry.
 
 **The patch test** establishes the property the whole method exists for: a constant pressure
 crossing an interface whose two sides share no nodes. Four decks cover it, in two and three
