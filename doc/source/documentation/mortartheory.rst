@@ -899,9 +899,7 @@ Three safeguards surround it:
 * the set is frozen for the remainder of an increment once it has settled -- unchanged over two
   iterations -- so that the iteration can converge on a fixed set rather than chase a moving one;
 * it is also frozen when a discrete state already visited in this increment recurs, because a cycle
-  would otherwise repeat indefinitely without either converging or failing. This rule applies to the
-  penalty branch as well, whose set otherwise follows the pressure; a node held active there carries
-  the linear penalty pressure, which is what its stiffness differentiates;
+  would otherwise repeat indefinitely without either converging or failing;
 * and a hard cap of 20 iterations remains as a last resort. Reaching it is reported, because the
   increment then converges onto a set that was never confirmed and its solution is not guaranteed
   to satisfy the conditions above.
