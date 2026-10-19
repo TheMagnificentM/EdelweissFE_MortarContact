@@ -199,3 +199,313 @@ def facetQuadratureRule(nFacetNodes: int, nPoints: int) -> tuple[np.ndarray, np.
             f"Available: {sorted(rules.keys())}."
         )
     return rules[nPoints]
+
+
+#: The local dimension of each parent face type: 2 for a surface face (3D), 1 for an edge face (2D).
+PARENT_FACE_LOCAL_DIMENSION = {"quad8": 2, "quad4": 2, "line3": 1, "line2": 1}
+
+
+def parentFaceShapeFunctionsAt(faceType: str, parametricCoords: np.ndarray) -> np.ndarray:
+    """The parent face's shape functions at many parametric points at once.
+
+    The same functions as :func:`parentFaceShapeFunctions`, evaluated in bulk.
+
+    Parameters
+    ----------
+    faceType
+        One of the keys of :data:`PARENT_FACE_PARAMETRIC_COORDS`.
+    parametricCoords
+        The evaluation points, shape ``(nPoints, nLocalDim)``.
+
+    Returns
+    -------
+    numpy.ndarray
+        The shape function values, shape ``(nPoints, nNodes)``.
+    """
+
+    xi = np.asarray(parametricCoords, dtype=float)
+    nodes = PARENT_FACE_PARAMETRIC_COORDS[faceType]
+
+    if faceType == "quad8":
+        x, y = xi[:, 0:1], xi[:, 1:2]
+        a, b = nodes[:, 0], nodes[:, 1]
+        corner = 0.25 * (1.0 + x * a[:4]) * (1.0 + y * b[:4]) * (x * a[:4] + y * b[:4] - 1.0)
+        midside = np.where(
+            a[4:] == 0.0,
+            0.5 * (1.0 - x**2) * (1.0 + y * b[4:]),
+            0.5 * (1.0 + x * a[4:]) * (1.0 - y**2),
+        )
+        return np.hstack([corner, midside])
+
+    if faceType == "quad4":
+        x, y = xi[:, 0:1], xi[:, 1:2]
+        return 0.25 * (1.0 + x * nodes[:, 0]) * (1.0 + y * nodes[:, 1])
+
+    if faceType == "line3":
+        x = xi[:, 0]
+        return np.column_stack([0.5 * x * (x - 1.0), 0.5 * x * (x + 1.0), 1.0 - x**2])
+
+    if faceType == "line2":
+        x = xi[:, 0]
+        return np.column_stack([0.5 * (1.0 - x), 0.5 * (1.0 + x)])
+
+    raise ValueError(f"parentFaceShapeFunctionsAt: unsupported parent face type '{faceType}'.")
+
+
+def parentFaceShapeFunctionDerivatives(faceType: str, parametricCoords: np.ndarray) -> np.ndarray:
+    """The first parametric derivatives :math:`N_{a,\\alpha}` of the parent face's shape functions.
+
+    Parameters
+    ----------
+    faceType
+        One of the keys of :data:`PARENT_FACE_PARAMETRIC_COORDS`.
+    parametricCoords
+        The evaluation points, shape ``(nPoints, nLocalDim)``.
+
+    Returns
+    -------
+    numpy.ndarray
+        The derivatives, shape ``(nPoints, nLocalDim, nNodes)``.
+    """
+
+    xi = np.asarray(parametricCoords, dtype=float)
+    nodes = PARENT_FACE_PARAMETRIC_COORDS[faceType]
+
+    if faceType == "quad8":
+        x, y = xi[:, 0:1], xi[:, 1:2]
+        a, b = nodes[:4, 0], nodes[:4, 1]
+        cornerX = 0.25 * a * (1.0 + y * b) * (2.0 * x * a + y * b)
+        cornerY = 0.25 * b * (1.0 + x * a) * (x * a + 2.0 * y * b)
+        a, b = nodes[4:, 0], nodes[4:, 1]
+        midX = np.where(a == 0.0, -x * (1.0 + y * b), 0.5 * a * (1.0 - y**2))
+        midY = np.where(a == 0.0, 0.5 * b * (1.0 - x**2), -y * (1.0 + x * a))
+        return np.stack([np.hstack([cornerX, midX]), np.hstack([cornerY, midY])], axis=1)
+
+    if faceType == "quad4":
+        x, y = xi[:, 0:1], xi[:, 1:2]
+        a, b = nodes[:, 0], nodes[:, 1]
+        return np.stack([0.25 * a * (1.0 + y * b), 0.25 * b * (1.0 + x * a)], axis=1)
+
+    if faceType == "line3":
+        x = xi[:, 0]
+        return np.column_stack([x - 0.5, x + 0.5, -2.0 * x])[:, None, :]
+
+    if faceType == "line2":
+        return np.tile(np.array([[[-0.5, 0.5]]]), (len(xi), 1, 1))
+
+    raise ValueError(f"parentFaceShapeFunctionDerivatives: unsupported parent face type '{faceType}'.")
+
+
+def parentFaceShapeFunctionSecondDerivatives(faceType: str, parametricCoords: np.ndarray) -> np.ndarray:
+    """The second parametric derivatives :math:`N_{a,\\alpha\\beta}` of the parent face's shape
+    functions, needed by the Newton iteration of :func:`parentFaceClosestPoints`.
+
+    Parameters
+    ----------
+    faceType
+        One of the keys of :data:`PARENT_FACE_PARAMETRIC_COORDS`.
+    parametricCoords
+        The evaluation points, shape ``(nPoints, nLocalDim)``.
+
+    Returns
+    -------
+    numpy.ndarray
+        The derivatives, shape ``(nPoints, nLocalDim, nLocalDim, nNodes)``.
+    """
+
+    xi = np.asarray(parametricCoords, dtype=float)
+    nodes = PARENT_FACE_PARAMETRIC_COORDS[faceType]
+    nPoints = len(xi)
+
+    if faceType == "quad8":
+        x, y = xi[:, 0:1], xi[:, 1:2]
+        a, b = nodes[:4, 0], nodes[:4, 1]
+        cornerXX = 0.5 * (1.0 + y * b)
+        cornerXY = 0.25 * a * b * (2.0 * x * a + 2.0 * y * b + 1.0)
+        cornerYY = 0.5 * (1.0 + x * a)
+        a, b = nodes[4:, 0], nodes[4:, 1]
+        midXX = np.where(a == 0.0, -(1.0 + y * b), 0.0 * x)
+        midXY = np.where(a == 0.0, -x * b, -y * a)
+        midYY = np.where(a == 0.0, 0.0 * y, -(1.0 + x * a))
+        XX, XY, YY = np.hstack([cornerXX, midXX]), np.hstack([cornerXY, midXY]), np.hstack([cornerYY, midYY])
+        return np.stack([np.stack([XX, XY], axis=1), np.stack([XY, YY], axis=1)], axis=1)
+
+    if faceType == "quad4":
+        XY = np.tile(0.25 * nodes[:, 0] * nodes[:, 1], (nPoints, 1))
+        zero = np.zeros_like(XY)
+        return np.stack([np.stack([zero, XY], axis=1), np.stack([XY, zero], axis=1)], axis=1)
+
+    if faceType == "line3":
+        return np.tile(np.array([[[[1.0, 1.0, -2.0]]]]), (nPoints, 1, 1, 1))
+
+    if faceType == "line2":
+        return np.zeros((nPoints, 1, 1, 2))
+
+    raise ValueError(f"parentFaceShapeFunctionSecondDerivatives: unsupported parent face type '{faceType}'.")
+
+
+def parentFaceGaussRule(faceType: str, nPerDirection: int) -> tuple[np.ndarray, np.ndarray]:
+    """The native Gauss-Legendre rule on a parent face: ``nPerDirection`` points on a line face, the
+    tensor product of ``nPerDirection`` points per direction on a quadrilateral face. Exact to degree
+    ``2 nPerDirection - 1`` per direction.
+
+    Parameters
+    ----------
+    faceType
+        One of the keys of :data:`PARENT_FACE_PARAMETRIC_COORDS`.
+    nPerDirection
+        The number of points per parametric direction.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray]
+        The parametric points, shape ``(nPoints, nLocalDim)``, and the weights on the parent domain
+        :math:`[-1, 1]^d` (summing to :math:`2^d`).
+    """
+
+    if faceType not in PARENT_FACE_LOCAL_DIMENSION:
+        raise ValueError(
+            f"parentFaceGaussRule: no native rule for parent face type '{faceType}'. Available: "
+            f"{sorted(PARENT_FACE_LOCAL_DIMENSION)}."
+        )
+    positions, weights = np.polynomial.legendre.leggauss(nPerDirection)
+    if PARENT_FACE_LOCAL_DIMENSION[faceType] == 1:
+        return positions[:, None], weights
+    xi, eta = np.meshgrid(positions, positions, indexing="ij")
+    return np.column_stack([xi.ravel(), eta.ravel()]), np.outer(weights, weights).ravel()
+
+
+def parentFaceTangents(faceType: str, parametricCoords: np.ndarray, nodeCoords: np.ndarray) -> np.ndarray:
+    """The tangent vectors :math:`a_\\alpha = x_{,\\alpha} = N_{a,\\alpha} x_a` of a parent face.
+
+    Parameters
+    ----------
+    faceType
+        One of the keys of :data:`PARENT_FACE_PARAMETRIC_COORDS`.
+    parametricCoords
+        The evaluation points, shape ``(nPoints, nLocalDim)``.
+    nodeCoords
+        The coordinates of the face's nodes in canonical order, shape ``(nNodes, nDim)``, or one set
+        per point, shape ``(nPoints, nNodes, nDim)``.
+
+    Returns
+    -------
+    numpy.ndarray
+        The tangents, shape ``(nPoints, nLocalDim, nDim)``.
+    """
+
+    dN = parentFaceShapeFunctionDerivatives(faceType, parametricCoords)
+    if nodeCoords.ndim == 2:
+        return dN @ nodeCoords
+    return np.einsum("pak,pkj->paj", dN, nodeCoords)
+
+
+def parentFaceAreaElement(tangents: np.ndarray) -> np.ndarray:
+    """The area (3D) or length (2D) element :math:`|a_1 \\times a_2|` or :math:`|a_1|` from the tangents
+    of :func:`parentFaceTangents`, shape ``(nPoints,)``."""
+
+    if tangents.shape[1] == 2:
+        return np.linalg.norm(np.cross(tangents[:, 0], tangents[:, 1]), axis=1)
+    return np.linalg.norm(tangents[:, 0], axis=1)
+
+
+def parentFaceUnitNormals(tangents: np.ndarray) -> np.ndarray:
+    """The unit normals of a parent face from the tangents of :func:`parentFaceTangents`:
+    :math:`a_1 \\times a_2 / |a_1 \\times a_2|` (Wriggers 2006, Eq. 4.4) for a surface face, the
+    tangent rotated by -90 degrees for an edge face (the convention of
+    :func:`~edelweissfe.utils.facetcontactgeometry.facetNormalAndMeasure`). Their orientation follows
+    the canonical node order; callers align it with the outward facet normal."""
+
+    if tangents.shape[1] == 2:
+        n = np.cross(tangents[:, 0], tangents[:, 1])
+    else:
+        t = tangents[:, 0]
+        n = np.column_stack([t[:, 1], -t[:, 0]])
+    return n / np.linalg.norm(n, axis=1)[:, None]
+
+
+def parentFaceClosestPoints(
+    faceType: str,
+    nodeCoords: np.ndarray,
+    points: np.ndarray,
+    initialParametricCoords: np.ndarray,
+    tolerance: float,
+    maxIterations: int = 20,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The closest point of each query point on a curved parent face, as the solution of the minimum
+    distance problem (Wriggers 2006, Eqs. 4.2-4.3) restricted to the face's parametric domain.
+
+    The stationarity condition :math:`(x - x(\\xi)) \\cdot x_{,\\alpha} = 0` is solved by Newton's
+    method, starting from the closest point on a flat facet of the face, with the linearization of
+    Wriggers 2006, Eqs. 9.81-9.82 (p. 243):
+    :math:`(a_\\alpha \\cdot a_\\beta - x_{,\\alpha\\beta} \\cdot (x - x(\\xi))) \\Delta\\xi^\\beta =
+    (x - x(\\xi)) \\cdot a_\\alpha`. The domain :math:`[-1, 1]^d` is enforced by a projected Newton
+    method: a coordinate held at a bound by a gradient pointing outward is fixed for the step, the
+    others are updated, and the result is clipped to the domain. Where the full matrix is not positive
+    definite -- far from a strongly curved face -- its first term alone is used (the Gauss-Newton
+    step), which is always a descent direction.
+
+    Parameters
+    ----------
+    faceType
+        One of the keys of :data:`PARENT_FACE_PARAMETRIC_COORDS`.
+    nodeCoords
+        The coordinates of each point's face nodes in canonical order, shape ``(nPoints, nNodes, nDim)``.
+    points
+        The query points, shape ``(nPoints, nDim)``.
+    initialParametricCoords
+        The starting points, shape ``(nPoints, nLocalDim)``, inside the domain.
+    tolerance
+        The convergence tolerance on the parametric update, and (scaled by the tangent length) on the
+        projected gradient; a length in parametric space.
+    maxIterations
+        The iteration limit.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray]
+        The parametric coordinates of the closest points, shape ``(nPoints, nLocalDim)``; their
+        physical positions, shape ``(nPoints, nDim)``; and whether each one converged.
+    """
+
+    xi = np.clip(np.array(initialParametricCoords, dtype=float), -1.0, 1.0)
+    nPoints, d = xi.shape
+    converged = np.zeros(nPoints, dtype=bool)
+    identity = np.eye(d)
+
+    for _ in range(maxIterations + 1):
+        N = parentFaceShapeFunctionsAt(faceType, xi)
+        x = np.einsum("pk,pkj->pj", N, nodeCoords)
+        a = parentFaceTangents(faceType, xi, nodeCoords)
+        r = points - x
+        gradient = -np.einsum("pj,paj->pa", r, a)
+
+        # Coordinates held at a bound by an outward-pointing descent direction are fixed.
+        free = ~(((xi >= 1.0) & (gradient < 0.0)) | ((xi <= -1.0) & (gradient > 0.0)))
+        projectedGradient = np.where(free, gradient, 0.0)
+        scale = np.linalg.norm(a, axis=2).max(axis=1)
+        stationary = np.linalg.norm(projectedGradient, axis=1) <= tolerance * scale**2
+        converged |= stationary
+        if converged.all():
+            break
+
+        metric = np.einsum("paj,pbj->pab", a, a)
+        curvature = np.einsum("pabk,pkj,pj->pab", parentFaceShapeFunctionSecondDerivatives(faceType, xi), nodeCoords, r)
+        hessian = metric - curvature
+        if d == 2:
+            positive = (hessian[:, 0, 0] > 0.0) & (np.linalg.det(hessian) > 0.0)
+        else:
+            positive = hessian[:, 0, 0] > 0.0
+        hessian = np.where(positive[:, None, None], hessian, metric)
+
+        mask = free[:, :, None] & free[:, None, :]
+        reduced = np.where(mask, hessian, identity[None])
+        step = -np.linalg.solve(reduced, projectedGradient[:, :, None])[:, :, 0]
+        step[converged] = 0.0
+        xiNew = np.clip(xi + step, -1.0, 1.0)
+        small = np.linalg.norm(xiNew - xi, axis=1) <= tolerance
+        xi = xiNew
+        converged |= small & ~converged & (np.linalg.norm(step, axis=1) <= tolerance)
+
+    N = parentFaceShapeFunctionsAt(faceType, xi)
+    return xi, np.einsum("pk,pkj->pj", N, nodeCoords), converged
