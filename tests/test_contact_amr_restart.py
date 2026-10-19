@@ -50,7 +50,11 @@ import pytest
 from edelweissfe.drivers.inputfiledrivensimulation import finiteElementSimulation
 from edelweissfe.utils.contactfriction import CoulombFriction
 from edelweissfe.utils.inputfileparser import parseInputFile
-from edelweissfe.utils.parentfacegeometry import facetQuadratureRule
+from edelweissfe.utils.parentfacegeometry import (
+    facetQuadratureRule,
+    parentFaceGaussRule,
+    parentFaceShapeFunctions,
+)
 
 pytest.importorskip("edelweissfe.elements.marmotelement.element", reason="the AMR decks use Marmot elements")
 
@@ -139,6 +143,14 @@ _FORMULATIONS = {
         constraintOptions=(
             "slaveSurface=slaveSurf_facets, masterSurface=masterSurf_facets, penalty=1e6, type=quadratic, "
             f"searchDistance=2.0, mu={MU}, tangentPenalty=1e6"
+        ),
+    ),
+    "integratedParentFace": dict(
+        facetOption=_TRIANGLES,
+        constraintType="surfaceToDeformableSurfacePenalty",
+        constraintOptions=(
+            "slaveSurface=slaveSurf_facets, masterSurface=masterSurf_facets, penalty=1e6, type=quadratic, "
+            f"searchDistance=2.0, mu={MU}, tangentPenalty=1e6, quadrature=parentFace, masterProjection=parentFace"
         ),
     ),
     "mortarPenalty": dict(
@@ -258,16 +270,22 @@ def _linearTraction(X: np.ndarray) -> np.ndarray:
 
 def _pointCoordinates(key) -> np.ndarray:
     """The reference position of a contact point from its key: a slave node, or a slave facet's nodes
-    and the index of a quadrature point of the default rule."""
+    and the index of a quadrature point of the default rule, or a slave parent face's nodes and the
+    index of a point of the default 3 x 3 Gauss rule."""
 
     if isinstance(key, tuple):
         nodes, q = key
+        coordinates = np.array([node.coordinates for node in nodes])
+        if len(nodes) in (4, 8):
+            faceType = "quad8" if len(nodes) == 8 else "quad4"
+            points, _ = parentFaceGaussRule(faceType, 3)
+            return parentFaceShapeFunctions(faceType, points[q]) @ coordinates
         barycentric, _ = facetQuadratureRule(len(nodes), 3)
-        return barycentric[q] @ np.array([node.coordinates for node in nodes])
+        return barycentric[q] @ coordinates
     return np.asarray(key.coordinates)
 
 
-@pytest.mark.parametrize("formulation", ["nodeToSurface", "integrated", "mortarPenalty"])
+@pytest.mark.parametrize("formulation", ["nodeToSurface", "integrated", "integratedParentFace", "mortarPenalty"])
 def test_refinement_transfers_a_linear_traction_field_exactly(formulation, tmp_path, monkeypatch):
     """A refinement keeps the history of the points it retains and interpolates it for those it
     creates (Wriggers 2006, Eq. 14.86). The patch test of that transfer: a traction field linear in

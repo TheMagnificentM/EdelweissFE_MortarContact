@@ -819,3 +819,48 @@ def facetQuadraturePointPatches(facets: list, nQuadraturePoints: int, pointKey) 
 
         patches.append((coordinates.mean(axis=0), locate))
     return patches
+
+
+def parentFaceQuadraturePointPatches(slavePoints, pointKey) -> list:
+    """The old slave parent faces of the integrated contact, integrated with
+    ``quadrature='parentFace'``, as patches for
+    :func:`~edelweissfe.utils.contactfriction.historyInterpolation`. The counterpart of
+    :func:`facetQuadraturePointPatches` with the parent face as the patch: a linear field in the
+    face's parametric coordinates is fitted to the values at its Gauss points by least squares
+    (Wriggers 2006, Eqs. 14.32-14.33; a constant one for a single point), and evaluated where the new
+    point lies on the face, found by the closest-point projection onto the curved reference face.
+
+    Parameters
+    ----------
+    slavePoints
+        The old :class:`~edelweissfe.constraints.base.contactpointsonslavesurface.ContactPointsOnSlaveSurface`.
+    pointKey
+        ``pointKey(c, q)`` gives the key of quadrature point ``q`` of old cell ``c``.
+    """
+
+    from edelweissfe.utils.parentfacegeometry import parentFaceClosestPoints
+
+    patches = []
+    for c in range(slavePoints.nCells):
+        faceType = slavePoints.cellFaceTypes[c]
+        coordinates = slavePoints.parentReferenceCoordinates[c]
+        parametric = slavePoints.parametricCoordinates[c]
+        localDimension = parametric.shape[1]
+        nTerms = 1 + localDimension if len(parametric) > localDimension else 1
+        fit = np.linalg.pinv(np.hstack([np.ones((len(parametric), 1)), parametric[:, : nTerms - 1]]))
+        keys = [pointKey(c, q) for q in range(len(parametric))]
+
+        def locate(
+            point, faceType=faceType, coordinates=coordinates, fit=fit, keys=keys, nTerms=nTerms, d=localDimension
+        ):
+            # Started from the face centre; the reference faces of a slave surface are mildly curved
+            # at most, and the projection is clamped to the face, so the distance tells a point beside
+            # the face from one on it.
+            xi, closest, _ = parentFaceClosestPoints(
+                faceType, coordinates[None], np.asarray(point, dtype=float)[None], np.zeros((1, d)), 1e-12
+            )
+            distance = float(np.linalg.norm(np.asarray(point) - closest[0]))
+            return distance, keys, np.concatenate([[1.0], xi[0, : nTerms - 1]]) @ fit
+
+        patches.append((coordinates.mean(axis=0), locate))
+    return patches

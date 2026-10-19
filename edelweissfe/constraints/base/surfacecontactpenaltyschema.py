@@ -67,11 +67,31 @@ class SurfaceContactPenaltySchema:
         default="linear",
         optionName="type",
     )
+    quadrature: str = schemaField(
+        description="How the slave surface is integrated: 'facet' (an nQuadraturePoints-point rule on "
+        "every flat facet, weighted with the facet's reference area) or 'parentFace' (the native "
+        "Gauss rule of gaussPointsPerDirection points per direction on every parent element face, "
+        "weighted with the face's own surface Jacobian; exact on curved and distorted faces up to "
+        "the order of the rule, and independent of the triangulation).",
+        dtype=str,
+        default="facet",
+    )
     nQuadraturePoints: int = schemaField(
-        description="The number of quadrature points per slave facet: 1, 3 or 6 for a Tria3 facet "
-        "(3D), 1, 2 or 3 for a Line2 facet (2D). The default of 3 integrates the parent face's "
-        "shape functions exactly over a facet, which is what makes the consistent nodal loads -- "
-        "including the negative corner loads of a serendipity face -- come out exactly.",
+        description="For quadrature='facet', the number of quadrature points per slave facet: 1, 3 or "
+        "6 for a Tria3 facet (3D), 1, 2 or 3 for a Line2 facet (2D). The 3-point rule is exact to "
+        "degree 2 only: on a single facet of a serendipity face it does not integrate the cubic "
+        "terms of the shape functions exactly, and over a whole flat, undistorted face the errors "
+        "cancel, which is why the consistent nodal loads -- including the negative corner loads -- "
+        "still come out exactly there. With the facet's constant reference area as the weight, a "
+        "facet rule is exact only where the parent face's map is affine on each facet.",
+        dtype=int,
+        default=3,
+    )
+    gaussPointsPerDirection: int = schemaField(
+        description="For quadrature='parentFace', the number of Gauss points per parametric direction "
+        "of a parent face (1 to 4): n x n on a quadrilateral face, n on an edge face. 2 integrates "
+        "the consistent nodal loads of a constant pressure exactly on a flat parallelogram face; 3, "
+        "the default, also covers distorted and curved faces to higher order.",
         dtype=int,
         default=3,
     )

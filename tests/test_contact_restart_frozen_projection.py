@@ -81,6 +81,13 @@ def _writeRidgeStl(path: Path):
 
 
 def _deck(directory: Path, constraintType: str, maxNumInc: int, extra: str = "", amr: bool = False) -> str:
+    # "<type>:parentFace" integrates on the parent faces and, against a deformable master, projects
+    # onto its curved parent faces.
+    constraintType, _, variant = constraintType.partition(":")
+    options = ""
+    if variant == "parentFace":
+        options = ", quadrature=parentFace"
+        options += ", masterProjection=parentFace" if constraintType == "surfaceToDeformableSurfacePenalty" else ""
     # Live refinement needs Marmot's C3D20R, whose refined surface also needs a smaller time increment.
     elProvider = "" if amr else "elProvider=edelweiss"
     upper = _box("upper", (0.3, 1.1, 1.05), (0.6, 0.6, 1), elProvider, "C3D20R" if amr else "C3D8")
@@ -126,7 +133,7 @@ contact-update-frequency=7
 {"topology-check-frequency=100" if amr else ""}
 {model}
 *constraint, name=contact, type={constraintType}
-slaveSurface=slaveSurf_facets, {master}, penalty=5e4, type=linear, searchDistance=2.0
+slaveSurface=slaveSurf_facets, {master}, penalty=5e4, type=linear, searchDistance=2.0{options}
 {extra}
 *step, type=adaptiveForExplicitSimulations, solver=theSolver
 maxInc=1, minInc=1e-12, maxNumInc={maxNumInc}, maxIter=25, stepLength=0.5
@@ -165,13 +172,19 @@ def _truncateAndResume(directory: Path, constraintType: str, nFull: int, nTrunca
 
 @pytest.fixture(
     scope="module",
-    params=["nodeToDeformableSurfacePenalty", "surfaceToDeformableSurfacePenalty", "surfaceToDiscreteRigidBodyPenalty"],
+    params=[
+        "nodeToDeformableSurfacePenalty",
+        "surfaceToDeformableSurfacePenalty",
+        "surfaceToDiscreteRigidBodyPenalty",
+        "surfaceToDeformableSurfacePenalty:parentFace",
+        "surfaceToDiscreteRigidBodyPenalty:parentFace",
+    ],
 )
 def resumedContact(request, tmp_path_factory):
     """(uninterrupted fields, resumed fields, resumed model, checkpoint) of a 300-increment run
     resumed from increment 250."""
 
-    directory = tmp_path_factory.mktemp(request.param)
+    directory = tmp_path_factory.mktemp(request.param.replace(":", "_"))
     reference = _fields(_run(directory, "full", request.param, 300))
     resumed, checkpoint = _truncateAndResume(directory, request.param, 300, 250)
     return reference, _fields(resumed), resumed, checkpoint

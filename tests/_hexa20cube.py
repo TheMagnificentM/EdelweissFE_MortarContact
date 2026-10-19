@@ -80,10 +80,12 @@ def _hexa20Coordinates(yOffset: float) -> list:
     return corners + [0.5 * (corners[a] + corners[b]) for a, b in _HEXA20_EDGES]
 
 
-def twoBlockModel(journal: Journal, penetration: float, nodalWeights: str = "facetConsistent") -> tuple:
+def twoBlockModel(journal: Journal, penetration: float, nodalWeights: str = "facetConsistent", mapping=None) -> tuple:
     """Two hexa20 cubes meeting at y = 0, the lower one overlapping the upper by ``penetration``,
     with the lower block's Ymax face as slave and the upper block's Ymin face as master, both as
-    contact facet sets. Shared by the tests of the facet-based contact formulations.
+    contact facet sets. Shared by the tests of the facet-based contact formulations. ``mapping``, if
+    given, maps every node coordinate after the blocks are placed -- to curve or distort the
+    interface.
 
     Returns
     -------
@@ -98,7 +100,7 @@ def twoBlockModel(journal: Journal, penetration: float, nodalWeights: str = "fac
         for key, yOffset in (("upper", 0.0), ("lower", -_SIDE + penetration)):
             nodes = []
             for x in _hexa20Coordinates(yOffset):
-                node = Node(label, x)
+                node = Node(label, x if mapping is None else mapping(x))
                 model.nodes[label] = node
                 nodes.append(node)
                 label += 1

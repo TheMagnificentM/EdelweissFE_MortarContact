@@ -239,6 +239,10 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
             )
         self.nQuadraturePoints = configuration.nQuadraturePoints
         self.searchDistance = configuration.searchDistance
+        self.quadrature = configuration.quadrature
+        self.gaussPointsPerDirection = configuration.gaussPointsPerDirection
+        if not 1 <= self.gaussPointsPerDirection <= 4:
+            raise ValueError(f"gaussPointsPerDirection must be 1 to 4, got {self.gaussPointsPerDirection}.")
 
         # Validates the rigid surface (closed, triangles only, no zero-area triangles) right away,
         # rather than at the first contact search.
@@ -247,8 +251,8 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         self._buildFromSlaveSurface(slaveSurface)
 
         self.journal.message(
-            f"contact '{self.name}': {self.nPoints} points ({len(self.slave.facets)} slave facets x "
-            f"{self.nQuadraturePoints} quadrature points) against rigid body '{rigidBody.name}' "
+            f"contact '{self.name}': {self.nPoints} points ({self.slave.nCells} slave {self.quadrature} cells x "
+            f"{self.slave.pointsPerCell} quadrature points) against rigid body '{rigidBody.name}' "
             f"({len(self._rigidTriangles)} triangles), type={self.type}",
             self.identification,
         )
@@ -277,7 +281,9 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
             The element set of slave contact facets.
         """
 
-        self.slave = ContactPointsOnSlaveSurface(slaveSurface, self.nQuadraturePoints, self.name)
+        self.slave = ContactPointsOnSlaveSurface(
+            slaveSurface, self.nQuadraturePoints, self.name, self.quadrature, self.gaussPointsPerDirection
+        )
 
         parentNodeCounts = {len(nodes) for nodes in self.slave.parentNodes}
         if len(parentNodeCounts) > 1:
@@ -287,8 +293,9 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
             )
         self.nParentNodes = parentNodeCounts.pop() if parentNodeCounts else 0
 
-        # Degrees of freedom: all parent-face nodes of each slave facet, facet by facet, then the RP.
-        nFacets = len(self.slave.facets)
+        # Degrees of freedom: all parent-face nodes of each slave integration cell, cell by cell, then
+        # the RP.
+        nFacets = self.slave.nCells
         self._nodes = [node for nodes in self.slave.parentNodes for node in nodes] + [self.rpNode]
         self._fieldsOnNodes = [["displacement"]] * (len(self._nodes) - 1) + [["displacement", "rotation"]]
         self.nSlaveDof = nFacets * self.nParentNodes * self.nDim
@@ -431,7 +438,12 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
             "slaveFacets": np.array([facet.elNumber for facet in self.slave.facets], dtype=np.int64),
             "nQuadraturePoints": np.array([self.nQuadraturePoints], dtype=np.int64),
             "nRigidTriangles": np.array([len(self._rigidTriangles)], dtype=np.int64),
-        }
+        } | (
+            # Only where it differs from the default, so that a checkpoint written without it still fits.
+            {"gaussPointsPerDirection": np.array([self.gaussPointsPerDirection], dtype=np.int64)}
+            if self.quadrature != "facet"
+            else {}
+        )
 
     def _frozenProjection(self) -> dict[str, np.ndarray]:
         return {"bodyNormals": self._frozenBodyNormals, "planeOffsets": self._frozenPlaneOffsets}
@@ -464,9 +476,9 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         fillRigidBodyContactIndices(idcs[self.nSlaveDof :], slaveBlockGlobalIndices, I_, J_, offset)
 
     def _slaveBlockOffsets(self) -> list[tuple[int, int]]:
-        """The first local index and the size of each slave facet's block."""
+        """The first local index and the size of each slave integration cell's block."""
         m = self.nParentNodes * self.nDim
-        return [(f * m, m) for f in range(len(self.slave.facets))]
+        return [(f * m, m) for f in range(self.slave.nCells)]
 
     def applyConstraint(
         self,
@@ -483,12 +495,12 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         if self.nPoints == 0:
             return
 
-        nFacets, nQuadraturePoints, nDim = len(self.slave.facets), self.nQuadraturePoints, self.nDim
+        nFacets, nQuadraturePoints, nDim = self.slave.nCells, self.slave.pointsPerCell, self.nDim
 
         # Current positions of the contact points on the curved slave parent faces.
         slaveDisplacements = U_np[: self.nSlaveDof].reshape((nFacets, self.nParentNodes, nDim))
         parentCoordinates = self._parentReferenceCoordinates + slaveDisplacements
-        pointCoordinates = np.einsum("pa,paj->pj", self._shapeFunctions, parentCoordinates[self.slave.pointFacet])
+        pointCoordinates = np.einsum("pa,paj->pj", self._shapeFunctions, parentCoordinates[self.slave.pointCell])
 
         # The rigid body pose, from this constraint's own trial solution (not the converged NodeFields).
         rpDisplacement = U_np[self.nSlaveDof : self.nSlaveDof + nDim]
@@ -548,7 +560,7 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
 
         nDim = self.nDim
         for i, p in enumerate(closedPoints):
-            f = self.slave.pointFacet[p]
+            f = self.slave.pointCell[p]
             shapeFunctions = self._shapeFunctions[p]
             n = normals[p]
 
