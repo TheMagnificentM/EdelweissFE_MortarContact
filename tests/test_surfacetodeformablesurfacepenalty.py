@@ -667,11 +667,14 @@ class TestIntegratedSurfaceFriction(unittest.TestCase):
     def setUp(self):
         self.journal = Journal()
 
-    def _constraint(self, penetration=0.05, **options) -> IntegratedContact:
-        model, slaveSurface, masterSurface = twoBlockModel(self.journal, penetration)
-        configuration = SurfaceToDeformableSurfacePenaltySchema(
+    def _configuration(self, **options) -> SurfaceToDeformableSurfacePenaltySchema:
+        return SurfaceToDeformableSurfacePenaltySchema(
             penalty=1.0e4, searchDistance=1.0, contactType="quadratic", **options
         )
+
+    def _constraint(self, penetration=0.05, **options) -> IntegratedContact:
+        model, slaveSurface, masterSurface = twoBlockModel(self.journal, penetration)
+        configuration = self._configuration(**options)
         constraint = IntegratedContact(
             "theContact", model, slaveSurface, masterSurface, self.journal, configuration=configuration
         )
@@ -824,9 +827,7 @@ class TestIntegratedSurfaceFriction(unittest.TestCase):
             slaveSurface,
             masterSurface,
             self.journal,
-            configuration=SurfaceToDeformableSurfacePenaltySchema(
-                penalty=1.0e4, searchDistance=1.0, contactType="quadratic", mu=10.0
-            ),
+            configuration=self._configuration(mu=10.0),
         )
         restored.setRestartData(checkpoint)
 
@@ -840,6 +841,16 @@ class TestIntegratedSurfaceFriction(unittest.TestCase):
         U = np.zeros(constraint.nDof)
         with self.assertRaises(NotImplementedError):
             constraint.applyConstraintExplicit(U, U, np.zeros(constraint.nDof), None)
+
+
+class TestIntegratedSurfaceFrictionOnParentFaces(TestIntegratedSurfaceFriction):
+    """Every friction test above again, integrated on the parent faces and projected onto the curved
+    master faces (issue #216)."""
+
+    def _configuration(self, **options) -> SurfaceToDeformableSurfacePenaltySchema:
+        options.setdefault("quadrature", "parentFace")
+        options.setdefault("masterProjection", "parentFace")
+        return super()._configuration(**options)
 
 
 if __name__ == "__main__":
