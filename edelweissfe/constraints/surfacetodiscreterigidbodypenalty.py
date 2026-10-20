@@ -441,8 +441,8 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         } | (
             # Only where it differs from the default, so that a checkpoint written without it still fits.
             {"gaussPointsPerDirection": np.array([self.gaussPointsPerDirection], dtype=np.int64)}
-            if self.quadrature != "facet"
-            else {}
+            if self.quadrature == "parentFace"
+            else {"quadratureSubcells": np.array([1], dtype=np.int64)} if self.quadrature == "subcells" else {}
         )
 
     def _frozenProjection(self) -> dict[str, np.ndarray]:

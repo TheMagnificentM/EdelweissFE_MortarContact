@@ -606,6 +606,38 @@ class TestIntegratedSurfaceContactOnParentFaces(TestIntegratedSurfaceContact):
         self.assertGreater(errors["facet"], 1e-4)
 
 
+class TestIntegratedSurfaceContactOnSubcells(TestIntegratedSurfaceContact):
+    """Every test of the base class again, the facets taken as sub-cells of the parent face and
+    weighted with its surface Jacobian, projected onto the curved master faces."""
+
+    def _constraint(self, model, slaveSurface, masterSurface, **options) -> IntegratedContact:
+        options.setdefault("quadrature", "subcells")
+        options.setdefault("masterProjection", "parentFace")
+        return super()._constraint(model, slaveSurface, masterSurface, **options)
+
+    def test_resultant_is_independent_of_the_quadrature_rule(self):
+        """On the flat, undistorted test faces the sub-cell weights equal the facet weights, so this
+        holds exactly as for the facet rule."""
+
+        super().test_resultant_is_independent_of_the_quadrature_rule()
+
+    def test_reprojection_within_one_parent_face_leaves_the_gap_unchanged(self):
+        TestIntegratedSurfaceContactOnParentFaces.test_reprojection_within_one_parent_face_leaves_the_gap_unchanged(
+            self
+        )
+
+    def test_subcell_weights_equal_the_facet_weights_on_an_affine_face(self):
+        model, slaveSurface, masterSurface = self._twoBlockModel(penetration=0.05)
+        subcells = self._constraint(model, slaveSurface, masterSurface)
+        model, slaveSurface, masterSurface = self._twoBlockModel(penetration=0.05)
+        facets = super()._constraint(model, slaveSurface, masterSurface)
+        np.testing.assert_allclose(
+            np.concatenate(subcells.slave.integrationWeights),
+            np.concatenate(facets.slave.integrationWeights),
+            rtol=1e-13,
+        )
+
+
 class TestSlaveSurfaceQuadrature(unittest.TestCase):
     """The consistent nodal loads of a uniform pressure on a curved or distorted slave face, through
     the surface element generator's parent-face stamping, against an independent high-order
@@ -619,9 +651,9 @@ class TestSlaveSurfaceQuadrature(unittest.TestCase):
         )
 
         errors = {}
-        for quadrature in ("facet", "parentFace"):
+        for quadrature, nPoints in (("facet", 3), ("parentFace", 3), ("subcells", 3), ("subcells6", 6)):
             _, slaveSurface, _ = twoBlockModel(Journal(), 0.0, mapping=mapping)
-            slave = ContactPointsOnSlaveSurface(slaveSurface, 3, "c", quadrature, 3)
+            slave = ContactPointsOnSlaveSurface(slaveSurface, nPoints, "c", quadrature.rstrip("6"), 3)
             p = 1.0
             loads = dict(
                 zip(slave.surfaceNodes, slave.nodalNormalForces(-p * np.concatenate(slave.integrationWeights)))
@@ -638,6 +670,8 @@ class TestSlaveSurfaceQuadrature(unittest.TestCase):
         errors = self._loadErrors(lambda x: np.array([x[0], x[1] + 0.3 * (x[0] - 1.0) ** 2, x[2]]))
         self.assertLess(errors["parentFace"], 1e-2)
         self.assertLess(errors["parentFace"], 0.5 * errors["facet"])
+        self.assertLess(errors["subcells"], 0.5 * errors["facet"])
+        self.assertLess(errors["subcells6"], errors["subcells"])
 
     def test_distorted_flat_face(self):
         def distorted(x):
@@ -646,6 +680,8 @@ class TestSlaveSurfaceQuadrature(unittest.TestCase):
         errors = self._loadErrors(distorted)
         self.assertLess(errors["parentFace"], 1e-3)
         self.assertLess(errors["parentFace"], 0.1 * errors["facet"])
+        self.assertLess(errors["subcells"], 0.1 * errors["facet"])
+        self.assertLess(errors["subcells6"], 1e-3)
 
     def test_incomplete_parent_face_is_rejected(self):
         from edelweissfe.constraints.base.contactpointsonslavesurface import (
@@ -841,6 +877,15 @@ class TestIntegratedSurfaceFriction(unittest.TestCase):
         U = np.zeros(constraint.nDof)
         with self.assertRaises(NotImplementedError):
             constraint.applyConstraintExplicit(U, U, np.zeros(constraint.nDof), None)
+
+
+class TestIntegratedSurfaceFrictionOnSubcells(TestIntegratedSurfaceFriction):
+    """Every friction test again with quadrature=subcells and masterProjection=parentFace."""
+
+    def _configuration(self, **options) -> SurfaceToDeformableSurfacePenaltySchema:
+        options.setdefault("quadrature", "subcells")
+        options.setdefault("masterProjection", "parentFace")
+        return super()._configuration(**options)
 
 
 class TestIntegratedSurfaceFrictionOnParentFaces(TestIntegratedSurfaceFriction):

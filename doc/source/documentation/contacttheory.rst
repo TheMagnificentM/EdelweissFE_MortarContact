@@ -793,6 +793,17 @@ integration, against 7.2 % with the facet rule), and converge on a curved face (
 cylinder :math:`y = 0.3 (x-1)^2`: 4.7e-4 against 1.2e-2 with the facet rule, relative to the largest
 nodal load).
 
+With ``quadrature=subcells`` the facets stay the integration cells and carry the same
+``nQuadraturePoints``-point rule as with ``quadrature=facet``, but each facet is taken as a sub-cell of its
+parent face's parametric domain: a point carries the weight :math:`J_q = A_\Xi \, w_q \,
+|\boldsymbol{X}_{,\xi} \times \boldsymbol{X}_{,\eta}|(\xi_q)`, with :math:`A_\Xi` the facet's area in the
+parametric space. This is a composite rule over the parent face with the face's own surface Jacobian:
+on an affine face the weights are the facet weights, on a curved or distorted face they follow the true
+geometry (measured on the trapezoidal face above: 1.3e-3 with 3 points per facet, 1.3e-11 with 6; on the
+parabolic cylinder 4.0e-3 and 3.7e-5). Being composite, it keeps the facet rule's tolerance of a kink in
+the integrand inside a slave face -- the kink of the master shape functions at a master element boundary
+on a non-matching interface -- which a single Gauss rule on the parent face integrates less accurately.
+
 ``masterProjection`` decides where the gap is measured to. With ``masterProjection=facet`` (the
 default) the closest point is the one on the flat master facet, mapped into its parent face, and
 the frozen normal :math:`\bar{\boldsymbol{n}}` is the *facet's* normal. The direction the gap is
@@ -941,8 +952,8 @@ is shared with the rigid-body variant (:ref:`integrated-contact-rigid-body`).
 
 **Once, at construction** (and again after an AMR retiling, through ``refresh``):
 
-#. The slave surface is divided into **integration cells**: its facets (``quadrature=facet``), or
-   its parent faces, the facets grouped by the parent face they were cut from
+#. The slave surface is divided into **integration cells**: its facets (``quadrature=facet`` and
+   ``quadrature=subcells``), or its parent faces, the facets grouped by the parent face they were cut from
    (``quadrature=parentFace``; a parent face that the surface's facets cover only in part is
    rejected, checked in the face's parametric domain).
 #. Each cell is given its quadrature rule: ``nQuadraturePoints`` points in the facet's own
@@ -953,8 +964,10 @@ is shared with the rigid-body variant (:ref:`integrated-contact-rigid-body`).
    the flattened ``(cell, quadrature point)`` pairs -- not one per node. The parent-face shape
    functions :math:`N^s` are evaluated at each point. This is frozen for the whole analysis: a
    contact point does not move on its own slave parent face, whatever the body does.
-#. The point's integration weight is :math:`J_q`: the facet's measure times the rule's weight, or
-   the parent face's surface Jacobian at the point times the Gauss weight -- in the **reference**
+#. The point's integration weight is :math:`J_q`: the facet's measure times the rule's weight
+   (``facet``), the facet's parametric measure times the rule's weight times the parent face's surface
+   Jacobian at the point (``subcells``), or the parent face's surface Jacobian at the point times the
+   Gauss weight (``parentFace``) -- in the **reference**
    configuration either way, computed once and never updated. That is the same small-deformation
    choice the node-based constraint's tributary areas make, and it is why the weights need no
    per-increment refresh.

@@ -85,8 +85,8 @@ def _deck(directory: Path, constraintType: str, maxNumInc: int, extra: str = "",
     # onto its curved parent faces.
     constraintType, _, variant = constraintType.partition(":")
     options = ""
-    if variant == "parentFace":
-        options = ", quadrature=parentFace"
+    if variant in ("parentFace", "subcells"):
+        options = f", quadrature={variant}"
         options += ", masterProjection=parentFace" if constraintType == "surfaceToDeformableSurfacePenalty" else ""
     # Live refinement needs Marmot's C3D20R, whose refined surface also needs a smaller time increment.
     elProvider = "" if amr else "elProvider=edelweiss"
@@ -178,6 +178,8 @@ def _truncateAndResume(directory: Path, constraintType: str, nFull: int, nTrunca
         "surfaceToDiscreteRigidBodyPenalty",
         "surfaceToDeformableSurfacePenalty:parentFace",
         "surfaceToDiscreteRigidBodyPenalty:parentFace",
+        "surfaceToDeformableSurfacePenalty:subcells",
+        "surfaceToDiscreteRigidBodyPenalty:subcells",
     ],
 )
 def resumedContact(request, tmp_path_factory):

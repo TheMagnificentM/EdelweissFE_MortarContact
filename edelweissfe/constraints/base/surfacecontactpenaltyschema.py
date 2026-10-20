@@ -69,7 +69,10 @@ class SurfaceContactPenaltySchema:
     )
     quadrature: str = schemaField(
         description="How the slave surface is integrated: 'facet' (an nQuadraturePoints-point rule on "
-        "every flat facet, weighted with the facet's reference area) or 'parentFace' (the native "
+        "every flat facet, weighted with the facet's reference area), 'subcells' (the same points, the "
+        "facets taken as sub-cells of the parent face and weighted with the parent face's own surface "
+        "Jacobian; a composite rule, exact for curved and distorted faces up to the order of the facet "
+        "rule) or 'parentFace' (the native "
         "Gauss rule of gaussPointsPerDirection points per direction on every parent element face, "
         "weighted with the face's own surface Jacobian; exact on curved and distorted faces up to "
         "the order of the rule, and independent of the triangulation).",
@@ -77,7 +80,8 @@ class SurfaceContactPenaltySchema:
         default="facet",
     )
     nQuadraturePoints: int = schemaField(
-        description="For quadrature='facet', the number of quadrature points per slave facet: 1, 3 or "
+        description="For quadrature='facet' and 'subcells', the number of quadrature points per slave "
+        "facet: 1, 3 or "
         "6 for a Tria3 facet (3D), 1, 2 or 3 for a Line2 facet (2D). The 3-point rule is exact to "
         "degree 2 only: on a single facet of a serendipity face it does not integrate the cubic "
         "terms of the shape functions exactly, and over a whole flat, undistorted face the errors "

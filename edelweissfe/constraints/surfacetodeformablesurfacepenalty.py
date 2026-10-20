@@ -406,7 +406,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
             # Section 14.7.2).
             interpolation = None
             if self._friction.enabled:
-                if oldSlave.quadrature == "facet":
+                if oldSlave.quadrature != "parentFace":
                     oldPatches = facetQuadraturePointPatches(
                         oldSlave.facets, self.nQuadraturePoints, lambda facet, q: (tuple(facet.nodes), q)
                     )
@@ -825,8 +825,10 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         }
         # The point layout and the meaning of the frozen projection depend on these as well; entered
         # only where they differ from the defaults, so that a checkpoint written without them still fits.
-        if self.quadrature != "facet":
+        if self.quadrature == "parentFace":
             layout["gaussPointsPerDirection"] = np.array([self.gaussPointsPerDirection], dtype=np.int64)
+        if self.quadrature == "subcells":
+            layout["quadratureSubcells"] = np.array([1], dtype=np.int64)
         if self.masterProjection != "facet":
             layout["masterProjectionParentFace"] = np.array([1], dtype=np.int64)
         return layout

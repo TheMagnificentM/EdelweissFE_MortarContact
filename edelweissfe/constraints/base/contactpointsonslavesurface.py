@@ -154,7 +154,7 @@ def checkFacetsTileParentFace(faceFacets: list, setName: str, constraintName: st
 
 
 #: The ways of integrating over the slave surface, see :class:`ContactPointsOnSlaveSurface`.
-SLAVE_QUADRATURES = ("facet", "parentFace")
+SLAVE_QUADRATURES = ("facet", "subcells", "parentFace")
 
 
 class ContactPointsOnSlaveSurface:
@@ -168,6 +168,12 @@ class ContactPointsOnSlaveSurface:
       in the parent face, stamped by the surface element generator), and carries the constant weight
       :math:`J_q = A_{\\text{facet}}^{\\text{ref}} w_q`. This is exact where the parent face's map is
       affine on each facet.
+    * ``'subcells'``: the same points, but the facets are sub-cells of the parent face's parametric
+      domain, and a point carries the weight :math:`J_q = A_{\\Xi} \\, w_q \\, |X_{,\\xi} \\times
+      X_{,\\eta}|(\\xi_q)` (3D) or :math:`L_{\\Xi} \\, w_q \\, |X_{,\\xi}|(\\xi_q)` (2D), with :math:`A_{\\Xi}`
+      (:math:`L_{\\Xi}`) the facet's area (length) in the parametric space and the parent face's own
+      surface Jacobian -- a composite rule over the parent face, exact for the parent face's geometry
+      however it is curved or distorted, up to the order of the facet rule.
     * ``'parentFace'``: each parent element face is a cell and carries the native Gauss-Legendre rule
       of ``gaussPointsPerDirection`` points per direction, with the weight
       :math:`J_q = w_q \\, |X_{,\\xi} \\times X_{,\\eta}|(\\xi_q)` (3D) or :math:`w_q |X_{,\\xi}|(\\xi_q)`
@@ -183,7 +189,7 @@ class ContactPointsOnSlaveSurface:
     slaveSurface
         The element set of contact facet elements forming the slave surface.
     nQuadraturePoints
-        The number of quadrature points per slave facet, for ``quadrature='facet'``.
+        The number of quadrature points per slave facet, for ``quadrature='facet'`` and ``'subcells'``.
     constraintName
         The name of the owning constraint, for error messages.
     quadrature
@@ -267,17 +273,21 @@ class ContactPointsOnSlaveSurface:
         self.shapeFunctions = []
         self.integrationWeights = []
 
-        if quadrature == "facet":
+        if quadrature in ("facet", "subcells"):
             self.pointsPerCell = nQuadraturePoints
             for facet, measure in zip(self.facets, facetMeasures):
                 barycentric, weights = facetQuadratureRule(facet.nNodes, nQuadraturePoints)
                 parametric = barycentric @ facet.vertexParametricCoords
+                if quadrature == "subcells":
+                    weights = self._subcellWeights(facet, parametric, weights, constraintName)
+                else:
+                    weights = measure * weights
                 self._addCell(
                     tuple(facet.nodes),
                     facet,
                     parametric,
                     np.array([parentFaceShapeFunctions(facet.parentFaceType, xi) for xi in parametric]),
-                    measure * weights,
+                    weights,
                 )
         else:
             self.pointsPerCell = None
@@ -309,6 +319,27 @@ class ContactPointsOnSlaveSurface:
         self.nPoints = len(self.pointCell)
 
         self.surfaceNodes = list(dict.fromkeys(node for facet in self.facets for node in facet.nodes))
+
+    @staticmethod
+    def _subcellWeights(facet, parametric: np.ndarray, weights: np.ndarray, constraintName: str) -> np.ndarray:
+        """The weights of a facet's points as a sub-cell of its parent face: the rule's weights times the
+        facet's measure in the parent face's parametric space times the parent face's surface Jacobian
+        at each point, in the reference configuration."""
+
+        if facet.parentFaceType not in PARENT_FACE_LOCAL_DIMENSION:
+            raise ValueError(
+                f"Constraint '{constraintName}': quadrature='subcells' needs the surface Jacobian of parent "
+                f"face type '{facet.parentFaceType}' (slave facet {facet.elNumber}), which is not available."
+            )
+        Xi = np.asarray(facet.vertexParametricCoords, dtype=float)
+        if Xi.shape[1] == 2:
+            e1, e2 = Xi[1] - Xi[0], Xi[2] - Xi[0]
+            parametricMeasure = 0.5 * abs(e1[0] * e2[1] - e1[1] * e2[0])
+        else:
+            parametricMeasure = abs(Xi[1, 0] - Xi[0, 0])
+        referenceCoordinates = np.array([n.coordinates for n in facet.parentFaceNodes])
+        tangents = parentFaceTangents(facet.parentFaceType, parametric, referenceCoordinates)
+        return parametricMeasure * weights * parentFaceAreaElement(tangents)
 
     def _addCell(self, key: tuple, facet, parametric: np.ndarray, shapeFunctions: np.ndarray, weights: np.ndarray):
         """Append one integration cell, whose parent face is that of ``facet``."""
