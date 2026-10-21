@@ -80,12 +80,19 @@ def _hexa20Coordinates(yOffset: float) -> list:
     return corners + [0.5 * (corners[a] + corners[b]) for a, b in _HEXA20_EDGES]
 
 
-def twoBlockModel(journal: Journal, penetration: float, nodalWeights: str = "facetConsistent", mapping=None) -> tuple:
+def twoBlockModel(
+    journal: Journal,
+    penetration: float,
+    nodalWeights: str = "facetConsistent",
+    mapping=None,
+    facets: str = "triangulated",
+) -> tuple:
     """Two hexa20 cubes meeting at y = 0, the lower one overlapping the upper by ``penetration``,
     with the lower block's Ymax face as slave and the upper block's Ymin face as master, both as
     contact facet sets. Shared by the tests of the facet-based contact formulations. ``mapping``, if
     given, maps every node coordinate after the blocks are placed -- to curve or distort the
-    interface.
+    interface. ``facets`` is the surface element generator's discretization of both surfaces:
+    'triangulated' (midside triangulation) or 'wholeFace'.
 
     Returns
     -------
@@ -113,7 +120,13 @@ def twoBlockModel(journal: Journal, penetration: float, nodalWeights: str = "fac
         model.surfaces["masterFace"] = {_YMIN: ElementSet("m", [elements["upper"]])}
         model.surfaces["slaveFace"] = {_YMAX: ElementSet("s", [elements["lower"]])}
 
-        masterSetName, _ = buildContactFacets(model, "masterFace", "mst", "midside", nodalWeights, journal)
-        slaveSetName, _ = buildContactFacets(model, "slaveFace", "slv", "midside", nodalWeights, journal)
+        # A face kept whole is not triangulated, so the triangulation is only given for facets.
+        triangulation = "midside" if facets == "triangulated" else "corner"
+        masterSetName, _ = buildContactFacets(
+            model, "masterFace", "mst", triangulation, nodalWeights, journal, facets=facets
+        )
+        slaveSetName, _ = buildContactFacets(
+            model, "slaveFace", "slv", triangulation, nodalWeights, journal, facets=facets
+        )
 
     return model, model.elementSets[slaveSetName], model.elementSets[masterSetName]

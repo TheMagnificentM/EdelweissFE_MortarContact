@@ -239,7 +239,6 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
             )
         self.nQuadraturePoints = configuration.nQuadraturePoints
         self.searchDistance = configuration.searchDistance
-        self.quadrature = configuration.quadrature
         self.gaussPointsPerDirection = configuration.gaussPointsPerDirection
         if not 1 <= self.gaussPointsPerDirection <= 4:
             raise ValueError(f"gaussPointsPerDirection must be 1 to 4, got {self.gaussPointsPerDirection}.")
@@ -251,7 +250,7 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         self._buildFromSlaveSurface(slaveSurface)
 
         self.journal.message(
-            f"contact '{self.name}': {self.nPoints} points ({self.slave.nCells} slave {self.quadrature} cells x "
+            f"contact '{self.name}': {self.nPoints} points ({self.slave.nCells} {self.slave.kind} slave cells x "
             f"{self.slave.pointsPerCell} quadrature points) against rigid body '{rigidBody.name}' "
             f"({len(self._rigidTriangles)} triangles), type={self.type}",
             self.identification,
@@ -282,7 +281,7 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         """
 
         self.slave = ContactPointsOnSlaveSurface(
-            slaveSurface, self.nQuadraturePoints, self.name, self.quadrature, self.gaussPointsPerDirection
+            slaveSurface, self.nQuadraturePoints, self.name, self.gaussPointsPerDirection
         )
 
         parentNodeCounts = {len(nodes) for nodes in self.slave.parentNodes}
@@ -438,11 +437,13 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
             "slaveFacets": np.array([facet.elNumber for facet in self.slave.facets], dtype=np.int64),
             "nQuadraturePoints": np.array([self.nQuadraturePoints], dtype=np.int64),
             "nRigidTriangles": np.array([len(self._rigidTriangles)], dtype=np.int64),
+            # The points of a triangulated slave surface are weighted with the parent face's surface
+            # Jacobian, which a checkpoint written before does not reflect.
+            "subcellWeights": np.array([1], dtype=np.int64),
         } | (
-            # Only where it differs from the default, so that a checkpoint written without it still fits.
             {"gaussPointsPerDirection": np.array([self.gaussPointsPerDirection], dtype=np.int64)}
-            if self.quadrature == "parentFace"
-            else {"quadratureSubcells": np.array([1], dtype=np.int64)} if self.quadrature == "subcells" else {}
+            if self.slave.kind == "wholeFace"
+            else {}
         )
 
     def _frozenProjection(self) -> dict[str, np.ndarray]:

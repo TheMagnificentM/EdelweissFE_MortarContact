@@ -44,6 +44,7 @@ from _hexa20cube import (  # noqa: E402  (tests/ is on sys.path)
 )
 
 import edelweissfe.utils.inputfileparser  # noqa: F401 bootstrap input language
+from edelweissfe.constraints.base.contactpointsonslavesurface import surfaceFaceNodes
 from edelweissfe.constraints.surfacetodeformablesurfacepenalty import (
     Constraint as IntegratedContact,
 )
@@ -66,13 +67,20 @@ from edelweissfe.utils.meshtools import currentNodeCoordinates
 
 
 class TestIntegratedSurfaceContact(unittest.TestCase):
+    """The integrated contact on surfaces discretized with flat facets (``facets=triangulated``, the
+    default); :class:`TestIntegratedSurfaceContactOnWholeFaces` runs every test again on whole element
+    faces (``facets=wholeFace``)."""
+
+    #: The surface element generator's discretization of both surfaces.
+    FACETS = "triangulated"
+
     def setUp(self):
         self.journal = Journal()
 
     def _twoBlockModel(self, penetration: float, nodalWeights: str = "facetConsistent") -> tuple:
         """See :func:`twoBlockModel`."""
 
-        return twoBlockModel(self.journal, penetration, nodalWeights)
+        return twoBlockModel(self.journal, penetration, nodalWeights, facets=self.FACETS)
 
     def _constraint(self, model, slaveSurface, masterSurface, **options) -> IntegratedContact:
         configuration = SurfaceToDeformableSurfacePenaltySchema(
@@ -291,10 +299,13 @@ class TestIntegratedSurfaceContact(unittest.TestCase):
             model.surfaces["masterFace"] = {_YMIN: ElementSet("m", [elements["masterLeft"], elements["masterRight"]])}
             model.surfaces["slaveFace"] = {_YMAX: ElementSet("s", [elements["slave"]])}
 
+            triangulation = "midside" if self.FACETS == "triangulated" else "corner"
             masterSetName, _ = buildContactFacets(
-                model, "masterFace", "mst", "midside", "facetConsistent", self.journal
+                model, "masterFace", "mst", triangulation, "facetConsistent", self.journal, facets=self.FACETS
             )
-            slaveSetName, _ = buildContactFacets(model, "slaveFace", "slv", "midside", "facetConsistent", self.journal)
+            slaveSetName, _ = buildContactFacets(
+                model, "slaveFace", "slv", triangulation, "facetConsistent", self.journal, facets=self.FACETS
+            )
 
         return model, model.elementSets[slaveSetName], model.elementSets[masterSetName]
 
@@ -325,7 +336,7 @@ class TestIntegratedSurfaceContact(unittest.TestCase):
             if facetIdx is None:
                 continue
             masterCoords = currentNodeCoordinates(
-                constraint.facetElements[facetIdx].parentFaceNodes,
+                surfaceFaceNodes(constraint.facetElements[facetIdx]),
                 model,
                 constraint._masterParentRefCoords[facetIdx],
             )
@@ -360,37 +371,56 @@ class TestIntegratedSurfaceContact(unittest.TestCase):
         )
 
     def test_reprojection_within_one_parent_face_leaves_the_gap_unchanged(self):
-        """Sliding the slave tangentially reassigns points among the facets tiling one parent face,
-        and the gap field is unchanged to the last bit.
-
-        This is the benign half of the reassignment behaviour, and it is worth pinning because the
-        mapping it exercises -- clamped facet barycentrics through ``vertexParametricCoords`` into
-        the parent face's own parametric space -- is the one place a facet swap could silently move
-        the evaluation point. A single hexa20 face is tiled by six Tria3 facets, so this happens
-        without any second element being involved.
-        """
+        """Sliding the slave tangentially moves every point's closest point within the one master
+        parent face; the face, not a facet, is what is assigned, and the gap is unchanged."""
 
         model, slaveSurface, masterSurface = self._twoBlockModel(penetration=0.01)
         field = self._addDisplacementField(model)
         constraint = self._constraint(model, slaveSurface, masterSurface, searchDistance=1.0)
         slaveNodes = [node for node in slaveSurface.extractNodeSet()]
+        shapeFunctionsBefore = [N.copy() for N in constraint._frozenMasterShapeFunctions]
 
         before, after, gapsBefore, gapsAfter = self._slideAndReproject(
             constraint, model, field, slaveNodes, np.array([0.31, 0.0, 0.17])
         )
 
-        reassigned = [p for p in range(constraint.nPoints) if before[p] != after[p]]
-        self.assertTrue(reassigned, "the slide must actually reassign facets or the test is vacuous")
-        for p in reassigned:
-            self.assertEqual(
-                constraint.facetElements[before[p]].parentFaceNodes,
-                constraint.facetElements[after[p]].parentFaceNodes,
-                "a single-element master offers only one parent face to reassign within",
-            )
+        self.assertEqual(before, after)
+        moved = [
+            p
+            for p in range(constraint.nPoints)
+            if not np.allclose(shapeFunctionsBefore[p], constraint._frozenMasterShapeFunctions[p])
+        ]
+        self.assertTrue(moved, "the slide must actually move the closest points or the test is vacuous")
+        np.testing.assert_allclose(gapsAfter, gapsBefore, rtol=0.0, atol=1e-15)
 
-        np.testing.assert_array_equal(
-            gapsAfter, gapsBefore, err_msg="re-projecting within one parent face must not move the gap"
+    def test_curved_master_gap_is_the_signed_distance(self):
+        """On a curved master face, the frozen gap of each point is its signed distance from the
+        curved surface, here the parabolic cylinder y = c (x - 1)^2 which the quad8 map represents
+        exactly."""
+
+        c, penetration = 0.3, 0.02
+
+        def curved(x):
+            return np.array([x[0], x[1] + c * (x[0] - 1.0) ** 2, x[2]])
+
+        def signedDistance(point):
+            x = point[0]
+            for _ in range(50):
+                s = x - 1.0
+                f = (x - point[0]) + (c * s * s - point[1]) * 2.0 * c * s
+                df = 1.0 + 2.0 * c * (c * s * s - point[1]) + (2.0 * c * s) ** 2
+                x -= f / df
+            closest = np.array([x, c * (x - 1.0) ** 2, point[2]])
+            # Penetration (negative) where the point lies above the master's lower face.
+            return -np.linalg.norm(point - closest) if point[1] > closest[1] else np.linalg.norm(point - closest)
+
+        model, slaveSurface, masterSurface = twoBlockModel(
+            self.journal, penetration, mapping=curved, facets=self.FACETS
         )
+        constraint = self._constraint(model, slaveSurface, masterSurface)
+        self._forces(constraint, np.zeros(constraint.nDof))
+        exact = np.array([signedDistance(x) for x in constraint.slave.currentPointCoordinates(model)])
+        np.testing.assert_allclose(constraint.getGaps(), exact, rtol=0.0, atol=1e-12)
 
     def test_reprojection_across_parent_faces_leaves_the_gap_unchanged(self):
         """A point sliding from one master element's parent face onto the next one's reproduces the
@@ -417,8 +447,8 @@ class TestIntegratedSurfaceContact(unittest.TestCase):
             p
             for p in range(constraint.nPoints)
             if before[p] != after[p]
-            and constraint.facetElements[before[p]].parentFaceNodes
-            != constraint.facetElements[after[p]].parentFaceNodes
+            and surfaceFaceNodes(constraint.facetElements[before[p]])
+            != surfaceFaceNodes(constraint.facetElements[after[p]])
         ]
         self.assertTrue(crossings, "the slide must carry points across the seam or the test is vacuous")
 
@@ -524,20 +554,17 @@ class TestIntegratedSurfaceContact(unittest.TestCase):
         self.assertFalse(constraint.refresh(model, ModelChange(kind=ModelChangeType.REFINEMENT)))
 
 
-class TestIntegratedSurfaceContactOnParentFaces(TestIntegratedSurfaceContact):
-    """Every test above again, integrated on the parent faces and projected onto the curved master
-    faces (issue #216)."""
+class TestIntegratedSurfaceContactOnWholeFaces(TestIntegratedSurfaceContact):
+    """Every test of the base class again on whole element faces (``facets=wholeFace``): native Gauss
+    rule on each slave face, the master faces searched and projected onto as they are."""
 
-    def _constraint(self, model, slaveSurface, masterSurface, **options) -> IntegratedContact:
-        options.setdefault("quadrature", "parentFace")
-        options.setdefault("masterProjection", "parentFace")
-        return super()._constraint(model, slaveSurface, masterSurface, **options)
+    FACETS = "wholeFace"
 
     def test_quadrature_point_count_is_honoured(self):
         for n in (1, 2, 3, 4):
             model, slaveSurface, masterSurface = self._twoBlockModel(penetration=0.05)
             constraint = self._constraint(model, slaveSurface, masterSurface, gaussPointsPerDirection=n)
-            # One hexa20 face, however many facets tile it.
+            # One hexa20 face.
             self.assertEqual(constraint.nPoints, n * n)
             self.assertEqual(len(constraint.getNormalPressures()), constraint.nPoints)
 
@@ -550,92 +577,18 @@ class TestIntegratedSurfaceContactOnParentFaces(TestIntegratedSurfaceContact):
             resultants.append(constraint.totalNormalForce)
         np.testing.assert_allclose(resultants, resultants[0], rtol=1e-12)
 
-    def test_reprojection_within_one_parent_face_leaves_the_gap_unchanged(self):
-        """Sliding the slave tangentially moves every point's closest point within the one master
-        parent face; the parent face, not a facet, is what is assigned, and the gap is unchanged."""
+    def test_unstamped_facets_are_rejected(self):
+        self.skipTest("a whole-face surface has no facets")
 
-        model, slaveSurface, masterSurface = self._twoBlockModel(penetration=0.01)
-        field = self._addDisplacementField(model)
-        constraint = self._constraint(model, slaveSurface, masterSurface, searchDistance=1.0)
-        slaveNodes = [node for node in slaveSurface.extractNodeSet()]
-        shapeFunctionsBefore = [N.copy() for N in constraint._frozenMasterShapeFunctions]
+    def test_serendipity_weighted_surfaces_are_rejected(self):
+        self.skipTest("a whole-face surface carries no nodal weights")
 
-        before, after, gapsBefore, gapsAfter = self._slideAndReproject(
-            constraint, model, field, slaveNodes, np.array([0.31, 0.0, 0.17])
-        )
-
-        self.assertEqual(before, after)
-        moved = [
-            p
-            for p in range(constraint.nPoints)
-            if not np.allclose(shapeFunctionsBefore[p], constraint._frozenMasterShapeFunctions[p])
-        ]
-        self.assertTrue(moved, "the slide must actually move the closest points or the test is vacuous")
-        np.testing.assert_allclose(gapsAfter, gapsBefore, rtol=0.0, atol=1e-15)
-
-    def test_curved_master_gap_is_the_signed_distance(self):
-        """On a curved master face, the frozen gap of each point is its signed distance from the
-        curved surface, here the parabolic cylinder y = c (x - 1)^2 which the quad8 map represents
-        exactly; the flat-facet projection misses it by the chord error."""
-
-        c, penetration = 0.3, 0.02
-
-        def curved(x):
-            return np.array([x[0], x[1] + c * (x[0] - 1.0) ** 2, x[2]])
-
-        def signedDistance(point):
-            x = point[0]
-            for _ in range(50):
-                s = x - 1.0
-                f = (x - point[0]) + (c * s * s - point[1]) * 2.0 * c * s
-                df = 1.0 + 2.0 * c * (c * s * s - point[1]) + (2.0 * c * s) ** 2
-                x -= f / df
-            closest = np.array([x, c * (x - 1.0) ** 2, point[2]])
-            # Penetration (negative) where the point lies above the master's lower face.
-            return -np.linalg.norm(point - closest) if point[1] > closest[1] else np.linalg.norm(point - closest)
-
-        errors = {}
-        for projection in ("facet", "parentFace"):
-            model, slaveSurface, masterSurface = twoBlockModel(self.journal, penetration, mapping=curved)
-            constraint = self._constraint(model, slaveSurface, masterSurface, masterProjection=projection)
-            self._forces(constraint, np.zeros(constraint.nDof))
-            exact = np.array([signedDistance(x) for x in constraint.slave.currentPointCoordinates(model)])
-            errors[projection] = np.abs(constraint.getGaps() - exact).max()
-
-        self.assertLess(errors["parentFace"], 1e-12)
-        self.assertGreater(errors["facet"], 1e-4)
-
-
-class TestIntegratedSurfaceContactOnSubcells(TestIntegratedSurfaceContact):
-    """Every test of the base class again, the facets taken as sub-cells of the parent face and
-    weighted with its surface Jacobian, projected onto the curved master faces."""
-
-    def _constraint(self, model, slaveSurface, masterSurface, **options) -> IntegratedContact:
-        options.setdefault("quadrature", "subcells")
-        options.setdefault("masterProjection", "parentFace")
-        return super()._constraint(model, slaveSurface, masterSurface, **options)
-
-    def test_resultant_is_independent_of_the_quadrature_rule(self):
-        """On the flat, undistorted test faces the sub-cell weights equal the facet weights, so this
-        holds exactly as for the facet rule."""
-
-        super().test_resultant_is_independent_of_the_quadrature_rule()
-
-    def test_reprojection_within_one_parent_face_leaves_the_gap_unchanged(self):
-        TestIntegratedSurfaceContactOnParentFaces.test_reprojection_within_one_parent_face_leaves_the_gap_unchanged(
-            self
-        )
-
-    def test_subcell_weights_equal_the_facet_weights_on_an_affine_face(self):
+    def test_mixed_surfaces_are_rejected(self):
         model, slaveSurface, masterSurface = self._twoBlockModel(penetration=0.05)
-        subcells = self._constraint(model, slaveSurface, masterSurface)
-        model, slaveSurface, masterSurface = self._twoBlockModel(penetration=0.05)
-        facets = super()._constraint(model, slaveSurface, masterSurface)
-        np.testing.assert_allclose(
-            np.concatenate(subcells.slave.integrationWeights),
-            np.concatenate(facets.slave.integrationWeights),
-            rtol=1e-13,
-        )
+        _, facetSlave, _ = twoBlockModel(self.journal, 0.05)
+        mixed = ElementSet("mixed", list(slaveSurface) + list(facetSlave))
+        with self.assertRaisesRegex(ValueError, "mixes whole element faces and facets"):
+            self._constraint(model, mixed, masterSurface)
 
 
 class TestSlaveSurfaceQuadrature(unittest.TestCase):
@@ -651,54 +604,61 @@ class TestSlaveSurfaceQuadrature(unittest.TestCase):
         )
 
         errors = {}
-        for quadrature, nPoints in (("facet", 3), ("parentFace", 3), ("subcells", 3), ("subcells6", 6)):
-            _, slaveSurface, _ = twoBlockModel(Journal(), 0.0, mapping=mapping)
-            slave = ContactPointsOnSlaveSurface(slaveSurface, nPoints, "c", quadrature.rstrip("6"), 3)
+        for name, facets, nPoints in (
+            ("triangulated 3", "triangulated", 3),
+            ("triangulated 6", "triangulated", 6),
+            ("wholeFace", "wholeFace", 3),
+        ):
+            _, slaveSurface, _ = twoBlockModel(Journal(), 0.0, mapping=mapping, facets=facets)
+            slave = ContactPointsOnSlaveSurface(slaveSurface, nPoints, "c", 3)
             p = 1.0
             loads = dict(
                 zip(slave.surfaceNodes, slave.nodalNormalForces(-p * np.concatenate(slave.integrationWeights)))
             )
-            face = slaveSurface[0]
-            nodes = list(face.parentFaceNodes)
+            nodes = slave.parentNodes[0]
             reference = _referenceIntegrals("quad8", np.array([n.coordinates for n in nodes]))
-            errors[quadrature] = (
-                np.abs(np.array([loads[n] for n in nodes]) - p * reference).max() / np.abs(reference).max()
-            )
+            errors[name] = np.abs(np.array([loads[n] for n in nodes]) - p * reference).max() / np.abs(reference).max()
         return errors
 
     def test_curved_face(self):
+        """Measured: 4.0e-3, 3.7e-5 and 4.7e-4."""
+
         errors = self._loadErrors(lambda x: np.array([x[0], x[1] + 0.3 * (x[0] - 1.0) ** 2, x[2]]))
-        self.assertLess(errors["parentFace"], 1e-2)
-        self.assertLess(errors["parentFace"], 0.5 * errors["facet"])
-        self.assertLess(errors["subcells"], 0.5 * errors["facet"])
-        self.assertLess(errors["subcells6"], errors["subcells"])
+        self.assertLess(errors["triangulated 3"], 5e-3)
+        self.assertLess(errors["triangulated 6"], 1e-4)
+        self.assertLess(errors["wholeFace"], 1e-3)
 
     def test_distorted_flat_face(self):
+        """A trapezoid with off-centre midside nodes: exact for the 6-point facet rule and the 3 x 3
+        Gauss rule, 1.3e-3 for the 3-point facet rule (exact to degree 2 only); weighting the facets
+        with their flat areas instead would give 7.2e-2."""
+
         def distorted(x):
             return np.array([x[0] + 0.2 * x[0] * (2.0 - x[0]), x[1], x[2] * (1.0 + 0.1 * x[0])])
 
         errors = self._loadErrors(distorted)
-        self.assertLess(errors["parentFace"], 1e-3)
-        self.assertLess(errors["parentFace"], 0.1 * errors["facet"])
-        self.assertLess(errors["subcells"], 0.1 * errors["facet"])
-        self.assertLess(errors["subcells6"], 1e-3)
+        self.assertLess(errors["triangulated 3"], 2e-3)
+        self.assertLess(errors["triangulated 6"], 1e-9)
+        self.assertLess(errors["wholeFace"], 1e-9)
 
-    def test_incomplete_parent_face_is_rejected(self):
+    def test_subcell_weights_equal_the_flat_facet_areas_on_an_affine_face(self):
         from edelweissfe.constraints.base.contactpointsonslavesurface import (
             ContactPointsOnSlaveSurface,
         )
+        from edelweissfe.utils.facetcontactgeometry import facetNormalAndMeasure
 
         _, slaveSurface, _ = twoBlockModel(Journal(), 0.0)
-        partial = ElementSet("partial", list(slaveSurface)[:5])
-        with self.assertRaisesRegex(ValueError, "cover only"):
-            ContactPointsOnSlaveSurface(partial, 3, "c", "parentFace", 3)
-        # The facet rule needs no complete faces.
-        ContactPointsOnSlaveSurface(partial, 3, "c", "facet", 3)
+        slave = ContactPointsOnSlaveSurface(slaveSurface, 3, "c")
+        for facet, weights in zip(slave.facets, slave.integrationWeights):
+            _, area = facetNormalAndMeasure(np.array([n.coordinates for n in facet.nodes]))
+            np.testing.assert_allclose(weights, area / 3.0, rtol=1e-13)
 
 
 class TestIntegratedSurfaceFriction(unittest.TestCase):
     """Coulomb friction of the integrated constraint: the shared law of
     :mod:`edelweissfe.utils.contactfriction`, evaluated at every quadrature point."""
+
+    FACETS = "triangulated"
 
     def setUp(self):
         self.journal = Journal()
@@ -709,7 +669,7 @@ class TestIntegratedSurfaceFriction(unittest.TestCase):
         )
 
     def _constraint(self, penetration=0.05, **options) -> IntegratedContact:
-        model, slaveSurface, masterSurface = twoBlockModel(self.journal, penetration)
+        model, slaveSurface, masterSurface = twoBlockModel(self.journal, penetration, facets=self.FACETS)
         configuration = self._configuration(**options)
         constraint = IntegratedContact(
             "theContact", model, slaveSurface, masterSurface, self.journal, configuration=configuration
@@ -766,12 +726,16 @@ class TestIntegratedSurfaceFriction(unittest.TestCase):
         scale = np.abs(K).max()
         np.testing.assert_allclose(K / scale, numeric / scale, atol=1e-6)
 
+    #: A slide beyond the regularized stick range of ``slipTolerance=0.05``, which is relative to the
+    #: characteristic size of the slave surface elements.
+    REGULARIZED_SLIDE = 5e-2
+
     def test_the_stick_and_slip_tangents_differentiate_the_residual(self):
         for batched in (True, False):
             for slide, state, options in (
                 (1e-5, STICK, {"mu": 10.0}),
                 (5e-2, SLIP, {"mu": 0.3}),
-                (5e-2, SLIP, {"mu": 0.3, "slipTolerance": 0.05}),
+                (self.REGULARIZED_SLIDE, SLIP, {"mu": 0.3, "slipTolerance": 0.05}),
             ):
                 constraint = self._constraint(**options)
                 if not batched:
@@ -856,7 +820,7 @@ class TestIntegratedSurfaceFriction(unittest.TestCase):
         checkpoint = {k: v.copy() for k, v in constraint.getRestartData().items()}
         uninterruptedModel = self.model
 
-        model, slaveSurface, masterSurface = twoBlockModel(self.journal, penetration=0.05)
+        model, slaveSurface, masterSurface = twoBlockModel(self.journal, penetration=0.05, facets=self.FACETS)
         restored = IntegratedContact(
             "theContact",
             model,
@@ -879,23 +843,12 @@ class TestIntegratedSurfaceFriction(unittest.TestCase):
             constraint.applyConstraintExplicit(U, U, np.zeros(constraint.nDof), None)
 
 
-class TestIntegratedSurfaceFrictionOnSubcells(TestIntegratedSurfaceFriction):
-    """Every friction test again with quadrature=subcells and masterProjection=parentFace."""
+class TestIntegratedSurfaceFrictionOnWholeFaces(TestIntegratedSurfaceFriction):
+    """Every friction test again on whole element faces (``facets=wholeFace``)."""
 
-    def _configuration(self, **options) -> SurfaceToDeformableSurfacePenaltySchema:
-        options.setdefault("quadrature", "subcells")
-        options.setdefault("masterProjection", "parentFace")
-        return super()._configuration(**options)
-
-
-class TestIntegratedSurfaceFrictionOnParentFaces(TestIntegratedSurfaceFriction):
-    """Every friction test above again, integrated on the parent faces and projected onto the curved
-    master faces (issue #216)."""
-
-    def _configuration(self, **options) -> SurfaceToDeformableSurfacePenaltySchema:
-        options.setdefault("quadrature", "parentFace")
-        options.setdefault("masterProjection", "parentFace")
-        return super()._configuration(**options)
+    FACETS = "wholeFace"
+    # A whole face is larger than a facet, so its stick range is too.
+    REGULARIZED_SLIDE = 2e-1
 
 
 if __name__ == "__main__":

@@ -81,17 +81,16 @@ def _writeRidgeStl(path: Path):
 
 
 def _deck(directory: Path, constraintType: str, maxNumInc: int, extra: str = "", amr: bool = False) -> str:
-    # "<type>:parentFace" integrates on the parent faces and, against a deformable master, projects
-    # onto its curved parent faces.
+    # "<type>:wholeFace" generates the contact surfaces as whole element faces instead of facets.
     constraintType, _, variant = constraintType.partition(":")
-    options = ""
-    if variant in ("parentFace", "subcells"):
-        options = f", quadrature={variant}"
-        options += ", masterProjection=parentFace" if constraintType == "surfaceToDeformableSurfacePenalty" else ""
+    facetsOption = "facets=wholeFace\n" if variant == "wholeFace" else ""
     # Live refinement needs Marmot's C3D20R, whose refined surface also needs a smaller time increment.
     elProvider = "" if amr else "elProvider=edelweiss"
     upper = _box("upper", (0.3, 1.1, 1.05), (0.6, 0.6, 1), elProvider, "C3D20R" if amr else "C3D8")
-    upper += "*modelGenerator, generator=surfaceElementGenerator, name=gen1\nsurface=upper_back\nname=slaveSurf\n"
+    upper += (
+        "*modelGenerator, generator=surfaceElementGenerator, name=gen1\nsurface=upper_back\nname=slaveSurf\n"
+        + facetsOption
+    )
     fixLower = ">>dirichlet, name=fixLower, nSet=lower_back, field=displacement, 1=0, 2=0, 3=0"
 
     if constraintType == "surfaceToDiscreteRigidBodyPenalty":
@@ -116,7 +115,10 @@ upper_all
         )
     else:
         model = upper + _box("lower", (0, 0, 0), (2, 2, 1), elProvider, "C3D8")
-        model += "*modelGenerator, generator=surfaceElementGenerator, name=gen2\nsurface=lower_front\nname=masterSurf\n"
+        model += (
+            "*modelGenerator, generator=surfaceElementGenerator, name=gen2\nsurface=lower_front\nname=masterSurf\n"
+            + facetsOption
+        )
         model += "*section, name=section1, material=linearelastic, type=solid\nlower_all\nupper_all\n"
         master = "masterSurface=masterSurf_facets"
         master += ", sliding=small" if constraintType == "nodeToDeformableSurfacePenalty" else ""
@@ -133,7 +135,7 @@ contact-update-frequency=7
 {"topology-check-frequency=100" if amr else ""}
 {model}
 *constraint, name=contact, type={constraintType}
-slaveSurface=slaveSurf_facets, {master}, penalty=5e4, type=linear, searchDistance=2.0{options}
+slaveSurface=slaveSurf_facets, {master}, penalty=5e4, type=linear, searchDistance=2.0
 {extra}
 *step, type=adaptiveForExplicitSimulations, solver=theSolver
 maxInc=1, minInc=1e-12, maxNumInc={maxNumInc}, maxIter=25, stepLength=0.5
@@ -176,10 +178,8 @@ def _truncateAndResume(directory: Path, constraintType: str, nFull: int, nTrunca
         "nodeToDeformableSurfacePenalty",
         "surfaceToDeformableSurfacePenalty",
         "surfaceToDiscreteRigidBodyPenalty",
-        "surfaceToDeformableSurfacePenalty:parentFace",
-        "surfaceToDiscreteRigidBodyPenalty:parentFace",
-        "surfaceToDeformableSurfacePenalty:subcells",
-        "surfaceToDiscreteRigidBodyPenalty:subcells",
+        "surfaceToDeformableSurfacePenalty:wholeFace",
+        "surfaceToDiscreteRigidBodyPenalty:wholeFace",
     ],
 )
 def resumedContact(request, tmp_path_factory):

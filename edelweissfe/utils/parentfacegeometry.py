@@ -204,6 +204,10 @@ def facetQuadratureRule(nFacetNodes: int, nPoints: int) -> tuple[np.ndarray, np.
 #: The local dimension of each parent face type: 2 for a surface face (3D), 1 for an edge face (2D).
 PARENT_FACE_LOCAL_DIMENSION = {"quad8": 2, "quad4": 2, "line3": 1, "line2": 1}
 
+#: The parent face a whole-face contact element (``facets=wholeFace`` of the surface element generator)
+#: is: its node order is the canonical one of that face, so the element *is* its parent face.
+PARENT_FACE_OF_CONTACT_ELEMENT = {"CONQUAD8": "quad8", "CONQUAD4": "quad4", "CONLINE3": "line3", "CONLINE2": "line2"}
+
 
 def parentFaceShapeFunctionsAt(faceType: str, parametricCoords: np.ndarray) -> np.ndarray:
     """The parent face's shape functions at many parametric points at once.

@@ -145,20 +145,12 @@ _FORMULATIONS = {
             f"searchDistance=2.0, mu={MU}, tangentPenalty=1e6"
         ),
     ),
-    "integratedParentFace": dict(
-        facetOption=_TRIANGLES,
+    "integratedWholeFace": dict(
+        facetOption=_FACETS,
         constraintType="surfaceToDeformableSurfacePenalty",
         constraintOptions=(
             "slaveSurface=slaveSurf_facets, masterSurface=masterSurf_facets, penalty=1e6, type=quadratic, "
-            f"searchDistance=2.0, mu={MU}, tangentPenalty=1e6, quadrature=parentFace, masterProjection=parentFace"
-        ),
-    ),
-    "integratedSubcells": dict(
-        facetOption=_TRIANGLES,
-        constraintType="surfaceToDeformableSurfacePenalty",
-        constraintOptions=(
-            "slaveSurface=slaveSurf_facets, masterSurface=masterSurf_facets, penalty=1e6, type=quadratic, "
-            f"searchDistance=2.0, mu={MU}, tangentPenalty=1e6, quadrature=subcells, masterProjection=parentFace"
+            f"searchDistance=2.0, mu={MU}, tangentPenalty=1e6"
         ),
     ),
     "mortarPenalty": dict(
@@ -293,9 +285,7 @@ def _pointCoordinates(key) -> np.ndarray:
     return np.asarray(key.coordinates)
 
 
-@pytest.mark.parametrize(
-    "formulation", ["nodeToSurface", "integrated", "integratedParentFace", "integratedSubcells", "mortarPenalty"]
-)
+@pytest.mark.parametrize("formulation", ["nodeToSurface", "integrated", "integratedWholeFace", "mortarPenalty"])
 def test_refinement_transfers_a_linear_traction_field_exactly(formulation, tmp_path, monkeypatch):
     """A refinement keeps the history of the points it retains and interpolates it for those it
     creates (Wriggers 2006, Eq. 14.86). The patch test of that transfer: a traction field linear in

@@ -1,10 +1,9 @@
-** The hexa20 contact patch test of SurfaceToDeformableSurfaceContactPatchHexa20, integrated on the
-** parent element faces and projected onto the curved master faces (issue #216):
-** quadrature=parentFace (3 x 3 Gauss points on each of the 4 slave quad8 faces, weighted with the
-** face's own surface Jacobian; the facets play no part in the integration) and
-** masterProjection=parentFace (the flat-facet closest point refined by Newton's method on the
-** master's parent face, with the surface normal there). The exact solution is the same homogeneous
-** uniaxial stress, contact pressure 360 and a flat interface.
+** The hexa20 contact patch test of SurfaceToDeformableSurfaceContactPatchHexa20 on contact surfaces
+** generated as whole element faces (facets=wholeFace) instead of flat facets: the same contact
+** constraint then integrates each slave quad8 face with its native Gauss rule (3 x 3 points, weighted
+** with the face's own surface Jacobian) and projects onto the curved master faces, searched as they
+** are. The exact solution is the same homogeneous uniaxial stress, contact pressure 360 and a flat
+** interface.
 **
 ** Measured, at full load (36 slave points = 4 faces x 9):
 **   RFNormal     359.8920323902831, the C3D8 reference's 359.89203239028274 to 13 digits.
@@ -14,8 +13,7 @@
 **   cornerForce  -29.991002698979603, against -4 * p * A / 12 = -29.99100269919026.
 **
 ** The pressures and gaps are per Gauss point, nine per slave parent face, so their fromExpression
-** outputs are tied to upper_back -- the four elements owning those faces -- rather than to the facet
-** element set, whose 24 facets no longer carry the points.
+** outputs are tied to upper_back -- the four elements owning those faces.
 *material, name=LinearElastic, id=linearelastic, provider=edelweiss
 1.8e4, 0.0
 
@@ -51,12 +49,12 @@ elType  =C3D20
 *modelGenerator, generator=surfaceElementGenerator, name=gen1
 surface = upper_back
 name    = slaveSurf
-triangulation = midside
+facets  = wholeFace
 
 *modelGenerator, generator=surfaceElementGenerator, name=gen2
 surface = lower_front
 name    = masterSurf
-triangulation = midside
+facets  = wholeFace
 
 *section, name=section1, material=linearelastic, type=solid
 lower_all
@@ -64,8 +62,7 @@ upper_all
 
 *constraint, name=contact, type=surfaceToDeformableSurfacePenalty
 slaveSurface=slaveSurf_facets, masterSurface=masterSurf_facets, penalty=3e7, type=linear,
-searchDistance=1.0, sliding=small, quadrature=parentFace, gaussPointsPerDirection=3,
-masterProjection=parentFace
+searchDistance=1.0, sliding=small, gaussPointsPerDirection=3
 
 *fieldOutput
 >>perNode, elSet=lower_all, field=displacement, result=U, name=dispLower

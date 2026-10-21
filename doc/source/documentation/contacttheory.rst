@@ -771,57 +771,55 @@ the gap gradient -- a non-symmetric, variationally inconsistent operator, the sa
 confines the ``serendipityOptimal`` weight transform to small sliding. For straight-edged faces the
 two points coincide identically.
 
-How much the flat facets take part beyond identifying the surface is set by two options.
+**Two discretizations of the contact surface, one algorithm.** How the contact surfaces are cut up
+is decided by the surface element generator, and the integrated constraint accepts either; nothing
+in the contact algorithm changes, only where the slave points sit and how the master is searched.
 
-``quadrature`` decides where the slave integral lives. With ``quadrature=facet`` (the default) every
-slave facet carries an ``nQuadraturePoints``-point rule, mapped into the parent face through the
-facet's ``vertexParametricCoords``, with the constant weight :math:`J_q = A^\text{ref}_\text{facet}
-w_q`. That weight is the parent face's surface Jacobian only where the face's map is affine on the
-facet -- a flat face with straight edges and centred midside nodes -- and the default 3-point rule
-is exact to degree 2 while the serendipity functions contain cubic terms, so on a single facet the
-rule is not exact; over a whole flat, undistorted face the errors cancel, which is why the patch
-test below still passes exactly. With ``quadrature=parentFace`` every slave parent face carries its
-own Gauss-Legendre rule, ``gaussPointsPerDirection`` points per direction (default 3), weighted with
-the face's own surface Jacobian :math:`J_q = w_q |\boldsymbol{X}_{,\xi} \times
-\boldsymbol{X}_{,\eta}|(\xi_q)` in the reference configuration -- Gauss points defined on the slave
-segments and projected onto the master, as in Wriggers 2006, Section 9.5.3, p. 257 and Fig. 9.14.
-The facets then play no part in the integration. For a flat parallelogram face :math:`N_a J` has
-degree 2 per direction, so 2x2 points are exact for a constant pressure; 3x3 points integrate a
-flat face with off-centre midside nodes exactly as well (measured: nodal loads of a uniform pressure
-on a trapezoidal quad8 face with off-centre midside nodes 1.3e-11 from an independent 40x40
-integration, against 7.2 % with the facet rule), and converge on a curved face (on the parabolic
-cylinder :math:`y = 0.3 (x-1)^2`: 4.7e-4 against 1.2e-2 with the facet rule, relative to the largest
-nodal load).
+*Triangulated surfaces* (``facets=triangulated``, the default). Every element face is tiled by flat
+facets, and each slave facet is a **sub-cell** of its parent face's parametric domain carrying an
+``nQuadraturePoints``-point rule (default 3). A point sits at :math:`\xi = b \cdot \Xi` (with
+:math:`\Xi` the facet vertices' parametric coordinates, stamped by the generator) and carries the
+weight :math:`J_q = A_\Xi \, w_q \, |\boldsymbol{X}_{,\xi} \times \boldsymbol{X}_{,\eta}|(\xi_q)`,
+with :math:`A_\Xi` the facet's area in the parametric space and the parent face's own surface
+Jacobian. This is a composite rule over the parent face: on an affine face the weights are the flat
+facets' areas, on a curved or distorted face they follow the true geometry, to the order of the facet
+rule (measured, nodal loads of a uniform pressure against an independent 40x40 integration: a
+trapezoidal quad8 face with off-centre midside nodes 1.3e-3 with 3 points per facet and 1.3e-11 with
+6, against 7.2e-2 for weights from the flat facet areas; a quad8 face on the parabolic cylinder
+:math:`y = 0.3 (x-1)^2`: 4.0e-3 and 3.7e-5, against 1.2e-2).
 
-With ``quadrature=subcells`` the facets stay the integration cells and carry the same
-``nQuadraturePoints``-point rule as with ``quadrature=facet``, but each facet is taken as a sub-cell of its
-parent face's parametric domain: a point carries the weight :math:`J_q = A_\Xi \, w_q \,
-|\boldsymbol{X}_{,\xi} \times \boldsymbol{X}_{,\eta}|(\xi_q)`, with :math:`A_\Xi` the facet's area in the
-parametric space. This is a composite rule over the parent face with the face's own surface Jacobian:
-on an affine face the weights are the facet weights, on a curved or distorted face they follow the true
-geometry (measured on the trapezoidal face above: 1.3e-3 with 3 points per facet, 1.3e-11 with 6; on the
-parabolic cylinder 4.0e-3 and 3.7e-5). Being composite, it keeps the facet rule's tolerance of a kink in
-the integrand inside a slave face -- the kink of the master shape functions at a master element boundary
-on a non-matching interface -- which a single Gauss rule on the parent face integrates less accurately.
+*Whole-face surfaces* (``facets=wholeFace``, the element faces themselves as curved ``CON*``
+elements, as the mortar constraint uses them). Each slave face carries its native Gauss-Legendre
+rule of ``gaussPointsPerDirection`` points per direction (default 3) with the weight :math:`J_q = w_q
+|\boldsymbol{X}_{,\xi} \times \boldsymbol{X}_{,\eta}|(\xi_q)` -- Gauss points defined on the slave
+segments, as in Wriggers 2006, Section 9.5.3, p. 257 and Fig. 9.14 (measured as above: exact on the
+trapezoidal face, 4.7e-4 on the parabolic cylinder).
 
-``masterProjection`` decides where the gap is measured to. With ``masterProjection=facet`` (the
-default) the closest point is the one on the flat master facet, mapped into its parent face, and
-the frozen normal :math:`\bar{\boldsymbol{n}}` is the *facet's* normal. The direction the gap is
-measured along is then piecewise constant over the triangulation, which makes
-:math:`\bar{\boldsymbol{n}}` discontinuous across an element boundary once the master deforms;
-the consequences are quantified in :ref:`contact-explicit-dynamics`. With
-``masterProjection=parentFace`` the flat facets are the search only: the closest flat-facet point is
-the starting value of Newton's method for the minimum distance problem on the *curved* parent face
-(Wriggers 2006, Eqs. 4.2-4.3, solved with the linearization of Eqs. 9.81-9.82, p. 243, which
-starts from "the solution for a flat surface" as here), clamped to the face's parametric domain,
-and repeated on the parent faces of the other candidate facets and of the faces sharing a corner
-with the winner's, so that a point whose curved projection leaves its face is passed to the
-neighbour it lies over. The frozen normal is the surface normal :math:`\bar{\boldsymbol{a}}_1
-\times \bar{\boldsymbol{a}}_2 / |\cdot|` at the closest point (Wriggers 2006, Eq. 4.4), and the gap
-is the signed distance from the curved master surface at the start of the increment (measured on a
-parabolic-cylinder master: 1e-12 against more than 1e-4 for the facet projection). Under
-``sliding=small`` the projection stays frozen per increment, so the gap stays linear in the DOFs and
-none of the algebra below changes.
+The two differ where the integrand is not smooth inside a slave face: on a non-matching interface
+the master shape functions :math:`N^m` have a kink at every master element boundary crossing a slave
+face, which no Gauss rule integrates exactly. Many small sub-cells meet such a kink more gracefully
+than one smooth rule of high order (measured, master nodal loads of a uniform pressure on flat
+non-matching quad8 interfaces of 4/3, 7/5, 10/7 and 15/11 faces: 0.2 to 1.2 % with 3 points per
+facet, 2.3 to 4.4 % with 3x3 Gauss points; the Gauss rule catches up only from about 6x6). On the
+non-matching hexa20 contact patch test this is 5 % against 55 % pressure spread. On the other hand,
+with quadratic elements the whole-face points need far fewer Newton iterations (Hertz, hexa20: 52
+against 161), for reasons not traced. The comparison of both on the cases of the contact study is
+recorded with the study.
+
+**The master side is always the curved face.** Whatever the discretization, the closest point is the
+solution of the minimum distance problem on the curved master face (Wriggers 2006, Eqs. 4.2-4.3),
+found by Newton's method with the linearization of Eqs. 9.81-9.82 (p. 243) from a starting point of
+the broadphase, clamped to the face's parametric domain, and repeated on the candidate faces and the
+faces sharing a corner with the nearest one, so that a point whose projection leaves a face is passed
+to the neighbour it lies over. On a triangulated master the broadphase is the flat facets' exact
+search and the starting point the closest flat-facet point, mapped into its face ("using as a
+starting value the solution for a flat surface"); on a whole-face master the faces are searched by
+their centroids and the starting point is the closest of a regular sampling of the face. The frozen
+normal is the surface normal :math:`\bar{\boldsymbol{a}}_1 \times \bar{\boldsymbol{a}}_2 / |\cdot|` at
+the closest point (Eq. 4.4), and the gap is the signed distance from the curved master surface at the
+start of the increment (measured on a parabolic-cylinder master: 1e-12, against 61 % of the
+penetration for the closest point on the flat facets). Under ``sliding=small`` the projection stays
+frozen per increment, so the gap stays linear in the DOFs and none of the algebra below changes.
 
 **Measured** (``testfiles/edelweiss-only/SurfaceToDeformableSurfaceContactPatchHexa20``, the same
 matched 2x2 hexa20 interface as the table above):
@@ -952,22 +950,19 @@ is shared with the rigid-body variant (:ref:`integrated-contact-rigid-body`).
 
 **Once, at construction** (and again after an AMR retiling, through ``refresh``):
 
-#. The slave surface is divided into **integration cells**: its facets (``quadrature=facet`` and
-   ``quadrature=subcells``), or its parent faces, the facets grouped by the parent face they were cut from
-   (``quadrature=parentFace``; a parent face that the surface's facets cover only in part is
-   rejected, checked in the face's parametric domain).
+#. The slave surface is divided into **integration cells**: its facets on a triangulated surface,
+   its element faces on a whole-face surface (a surface mixing both is rejected).
 #. Each cell is given its quadrature rule: ``nQuadraturePoints`` points in the facet's own
    barycentric coordinates (:func:`~edelweissfe.utils.parentfacegeometry.facetQuadratureRule`),
    mapped into its *parent face* parametric space through the facet's stamped
-   ``vertexParametricCoords``; or the native Gauss rule of the parent face
+   ``vertexParametricCoords``; or the native Gauss rule of the face
    (:func:`~edelweissfe.utils.parentfacegeometry.parentFaceGaussRule`). The **contact points** are
    the flattened ``(cell, quadrature point)`` pairs -- not one per node. The parent-face shape
    functions :math:`N^s` are evaluated at each point. This is frozen for the whole analysis: a
    contact point does not move on its own slave parent face, whatever the body does.
-#. The point's integration weight is :math:`J_q`: the facet's measure times the rule's weight
-   (``facet``), the facet's parametric measure times the rule's weight times the parent face's surface
-   Jacobian at the point (``subcells``), or the parent face's surface Jacobian at the point times the
-   Gauss weight (``parentFace``) -- in the **reference**
+#. The point's integration weight is :math:`J_q`: the facet's parametric measure times the rule's
+   weight times the parent face's surface Jacobian at the point, or the face's surface Jacobian at
+   the point times the Gauss weight -- in the **reference**
    configuration either way, computed once and never updated. That is the same small-deformation
    choice the node-based constraint's tributary areas make, and it is why the weights need no
    per-increment refresh.
@@ -977,25 +972,22 @@ is shared with the rigid-body variant (:ref:`integrated-contact-rigid-body`).
 
 #. Every contact point's current position is evaluated from its slave parent face's *current*
    nodal coordinates through the frozen :math:`N^s`, so the points ride the curved slave surface.
-#. Candidate master facets come from the shared broadphase (a centroid k-d tree with a
-   triangle-inequality radius bound, a superset of the exhaustive sweep iterated in ascending facet
-   index, so it reproduces the exhaustive tie-break). The clamped closest point is computed on each
-   candidate **flat** facet and the nearest wins, subject to ``searchDistance`` where one is given.
-   Of facets within :math:`10^{-10} h` of the smallest distance the lowest index wins, so the
-   choice of the parent face does not depend on the rounding of the coordinates.
-#. What is frozen from the winner is *not* the flat-facet interpolation: the clamped barycentric
-   weights are mapped through that facet's ``vertexParametricCoords`` into its parent face's
-   parametric space, and the parent-face shape functions :math:`N^m` are evaluated there. The unit
-   normal :math:`\bar{\boldsymbol{n}}` is frozen alongside them: the facet's, or, on an edge or
-   vertex in the interior of the master surface, the one along the distance vector, as for the
-   node-to-surface constraint (:ref:`small-sliding-kinematics`). With
-   ``masterProjection=parentFace`` that parametric point is only the starting value: the closest
-   point on the curved parent face is found by Newton's method
-   (:func:`~edelweissfe.utils.parentfacegeometry.parentFaceClosestPoints`) on each candidate parent
-   face, the closest face wins under the same tie rule, :math:`N^m` is evaluated at its converged
-   point, and :math:`\bar{\boldsymbol{n}}` is the surface normal there -- or, on an edge or vertex
-   shared by equally close parent faces inside the master surface, the normal along the distance
-   vector. Where the iteration does not converge, the flat facet's point is kept for that face.
+#. Candidate master faces come from the broadphase: on a triangulated master the shared facet search
+   (a centroid k-d tree with a triangle-inequality radius bound, a superset of the exhaustive sweep),
+   whose candidate facets give their faces and whose closest flat-facet point gives the starting point
+   on each; on a whole-face master a centroid k-d tree over the faces, with the closest of a regular
+   sampling of each face as the starting point. The faces sharing a corner with the nearest one are
+   added either way.
+#. The closest point on each candidate curved face is found by Newton's method
+   (:func:`~edelweissfe.utils.parentfacegeometry.parentFaceClosestPoints`); the closest face wins,
+   and of faces within :math:`10^{-10} h` of the smallest distance the lowest index, so the choice
+   does not depend on the rounding of the coordinates. Where the iteration does not converge, the
+   starting point is kept for that face. What is frozen is the parametric location of the closest
+   point, from which the face's shape functions :math:`N^m` are evaluated, and the surface normal
+   :math:`\bar{\boldsymbol{n}}` there -- or, on an edge or vertex shared by equally close faces
+   inside the master surface, the normal along the distance vector, as for the node-to-surface
+   constraint (:ref:`small-sliding-kinematics`). A point farther than ``searchDistance`` is left
+   unassigned.
 #. Only *assigned* points contribute DOFs, and each contributes one dense block over its slave
    parent face's nodes plus its assigned master parent face's nodes. Gap activation is deliberately
    **not** part of this: an assigned point that happens to be open still owns its block, which is
@@ -1121,12 +1113,13 @@ Parameter guidance
   magnitude lower for the same (or better) penetration control.
 * Use ``type=quadratic`` whenever friction is active (see above); ``type=linear`` is appropriate
   for frictionless cases and yields the cleanest analytic correspondence (e.g. in patch tests).
-* ``nQuadraturePoints`` (integrated contact with ``quadrature=facet`` only) defaults to 3, exact to
+* ``nQuadraturePoints`` (integrated contact on a triangulated surface) defaults to 3, exact to
   degree 2 on a Tria3 facet. That does not integrate a quad8 parent face's shape functions exactly
   over a single facet (their cubic terms are missed), but over a whole flat, undistorted face the
   errors cancel, so the consistent nodal loads, negative corners included, come out exactly there;
-  on distorted or curved faces they do not, see ``quadrature=parentFace``
-  (:ref:`integrated-contact`). Beware of a misleading self-check here:
+  on distorted or curved faces the remaining error is that of the facet rule's degree
+  (:ref:`integrated-contact`). On a whole-face surface ``gaussPointsPerDirection`` takes its place.
+  Beware of a misleading self-check here:
   the facet weights sum to one, so the transmitted **resultant** is exact at any point count, and a
   test that only compares resultants passes at one point per facet. Under-integration degrades the
   *distribution* of that resultant over the parent-face nodes, which is the whole quantity of

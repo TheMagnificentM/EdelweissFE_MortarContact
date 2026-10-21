@@ -291,10 +291,12 @@ Module ``edelweissfe.constraints.nodetodeformablesurfacepenalty``
 -----------------------------------------------------------------------------
 
 The integrated (Gauss-point-to-segment) counterpart of the constraint above: contact is evaluated
-at *quadrature points* over the slave surface -- on its facets, or with ``quadrature=parentFace`` on
-its parent element faces with their native Gauss rule -- and the resulting pressure is distributed
-with each side's **parent element face** shape functions rather than with the flat facets' own. With
-``masterProjection=parentFace`` the points are projected onto the curved master parent faces.
+at *quadrature points* over the slave surface and the resulting pressure is distributed with each
+side's **parent element face** shape functions rather than with the flat facets' own; the points are
+projected onto the curved master faces. The surfaces may be generated as flat facets
+(``facets=triangulated``, the default; each facet a sub-cell of its element face) or as whole element
+faces (``facets=wholeFace``, native Gauss rule on each face) -- the same constraint, two
+discretizations of the surface.
 
 Use this instead of ``nodetodeformablesurfacepenalty`` on quadratic (hexa20/quad8) contact
 surfaces. There, a node-based penalty scheme cannot transmit a correct pressure at all -- the
@@ -330,11 +332,10 @@ Module ``edelweissfe.constraints.surfacetodeformablesurfacepenalty``
     :caption: Example (explicit dynamics):
               ``testfiles/edelweiss-only/NEDSurfaceContact/test.inp``
 
-.. literalinclude:: ../../../testfiles/edelweiss-only/SurfaceToDeformableSurfaceContactPatchHexa20ParentFace/test.inp
+.. literalinclude:: ../../../testfiles/edelweiss-only/SurfaceToDeformableSurfaceContactPatchHexa20WholeFace/test.inp
     :language: edelweiss
-    :caption: Example (the hexa20 acceptance test, integrated on the parent faces and projected onto
-              the curved master faces):
-              ``testfiles/edelweiss-only/SurfaceToDeformableSurfaceContactPatchHexa20ParentFace/test.inp``
+    :caption: Example (the hexa20 acceptance test on whole-face contact surfaces):
+              ``testfiles/edelweiss-only/SurfaceToDeformableSurfaceContactPatchHexa20WholeFace/test.inp``
 
 ``surfacetodiscreterigidbodypenalty`` - Integrated contact against a discrete rigid body
 -----------------------------------------------------------------------------------------------

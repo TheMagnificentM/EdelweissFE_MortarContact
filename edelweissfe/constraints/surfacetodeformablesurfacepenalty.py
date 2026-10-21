@@ -33,8 +33,10 @@ import numpy as np
 from edelweissfe.constraints.base.constraintbase import ConstraintBase
 from edelweissfe.constraints.base.contactpointsonslavesurface import (
     ContactPointsOnSlaveSurface,
-    checkFacetsCarryParentFaces,
     groupFacetsByParentFace,
+    surfaceFaceNodes,
+    surfaceFaceType,
+    surfaceKind,
 )
 from edelweissfe.constraints.base.forcesonlyexplicitevaluation import (
     ForcesOnlyExplicitEvaluation,
@@ -74,8 +76,6 @@ from edelweissfe.utils.facetcontactgeometry import (
     facetClosestPoints,
     facetNormalAndMeasure,
     facetQuadraturePointPatches,
-    facetSurfaceBoundary,
-    liesOnSurfaceBoundary,
     parentFaceQuadraturePointPatches,
 )
 from edelweissfe.utils.meshtools import currentNodeCoordinates
@@ -177,20 +177,12 @@ class SurfaceToDeformableSurfacePenaltySchema(SurfaceContactPenaltySchema):
     """
 
     masterSurface: str | None = schemaField(
-        description="The element set of contact facet elements (Tria3ContactFacet/Line2ContactFacet) "
-        "forming the master surface.",
+        description="The element set forming the master surface, from the surface element generator: "
+        "flat contact facets (facets=triangulated) or whole element faces (facets=wholeFace). The "
+        "contact points are projected onto the curved element faces either way.",
         dtype=str,
         default=None,
         required=True,
-    )
-    masterProjection: str = schemaField(
-        description="Where each contact point is projected onto the master surface: 'facet' (the "
-        "closest point on the flat master facet, mapped into its parent face, with the facet's "
-        "normal) or 'parentFace' (that point refined by Newton's method to the closest point on the "
-        "curved parent face, clamped to the face and passed to a neighbouring face where it lies "
-        "closer, with the surface normal there). The facets remain the search either way.",
-        dtype=str,
-        default="facet",
     )
     mu: float = frictionCoefficientField(" Evaluated at every quadrature point.")
     tangentPenalty: float = tangentPenaltyField("penalty")
@@ -207,22 +199,19 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
     -----------------------
     The contact points are *quadrature points*, not nodes, see
     :class:`~edelweissfe.constraints.base.contactpointsonslavesurface.ContactPointsOnSlaveSurface`.
-    With ``quadrature=facet`` each slave facet carries an ``nQuadraturePoints``-point rule; a point
-    at facet-barycentric coordinates :math:`b` sits at parent-face parametric coordinates
-    :math:`\\xi = b \\cdot \\Xi` (with :math:`\\Xi` the facet vertices' own parametric coordinates in
-    the parent face, stamped by the surface element generator), and carries the constant weight
-    :math:`J_q = A_{\\text{facet}}^{\\text{ref}} w_q`. With ``quadrature=parentFace`` each slave parent
-    face carries its native Gauss rule, weighted with the face's own surface Jacobian. Either way a
-    point's position follows the *curved* parent surface, :math:`x_q = N^s(\\xi_q) \\cdot x^s`, so the
-    slave-side faceting error of the node-based formulation disappears as well.
+    How they are placed follows from how the surface element generator discretized the slave
+    surface; the contact algorithm is the same either way. On a triangulated surface
+    (``facets=triangulated``, the default) each flat facet is a sub-cell of its parent face and
+    carries an ``nQuadraturePoints``-point rule, weighted with the parent face's own surface
+    Jacobian; on a whole-face surface (``facets=wholeFace``) each element face carries its native
+    Gauss rule of ``gaussPointsPerDirection`` points per direction, with the same Jacobian. Either way
+    a point's position follows the *curved* parent surface, :math:`x_q = N^s(\\xi_q) \\cdot x^s`, so
+    the slave-side faceting error of the node-based formulation disappears as well.
 
-    Under ``sliding=small`` the projection is frozen once per increment: the assigned master parent
-    face, the parametric location of the closest point *in that parent face*, and the unit normal
-    :math:`\\bar{n}`. With ``masterProjection=facet`` the closest point is that on the flat master
-    facet and :math:`\\bar{n}` the facet's normal; with ``masterProjection=parentFace`` it is the
-    closest point on the curved parent face (Wriggers 2006, Eqs. 4.2-4.3, by Newton's method from the
-    flat-facet point, Eqs. 9.81-9.82) and :math:`\\bar{n}` the surface normal there (Eq. 4.4). The gap
-    is then
+    Under ``sliding=small`` the projection is frozen once per increment: the assigned master face, the
+    parametric location of the closest point on the *curved* face (Wriggers 2006, Eqs. 4.2-4.3, by
+    Newton's method from a starting point of the broadphase, Eqs. 9.81-9.82), and the surface normal
+    :math:`\\bar{n}` there (Eq. 4.4). The gap is then
 
     .. math::
         g = \\bar{n} \\cdot \\left( N^s(\\xi_q) \\cdot x^s - N^m(\\xi_m) \\cdot x^m \\right) ,
@@ -239,9 +228,8 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
     to the flat facet point :math:`b \\cdot x^{\\text{facet}}`. This matters: distributing the force
     with :math:`N^m` while measuring the gap to the flat point would make the force distribution
     differ from the transpose of the gap gradient, i.e. a non-symmetric, variationally inconsistent
-    operator. The flat facets serve as the search and, with ``masterProjection=facet``, as the
-    parametrization scaffold; the contact geometry itself is the curved parent surface. For
-    straight-edged faces the two points coincide identically.
+    operator. Flat facets, where the surface has them, serve only as the search; the contact geometry
+    itself is the curved parent surface.
 
     ``sliding=finite`` is rejected rather than approximated. It would require the exact gap gradient
     and Hessian of a point against a *curved* quadratic surface, whose closest-point projection is
@@ -330,16 +318,9 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
 
         self.nQuadraturePoints = configuration.nQuadraturePoints
         self.searchDistance = configuration.searchDistance
-        self.quadrature = configuration.quadrature
         self.gaussPointsPerDirection = configuration.gaussPointsPerDirection
         if not 1 <= self.gaussPointsPerDirection <= 4:
             raise ValueError(f"gaussPointsPerDirection must be 1 to 4, got {self.gaussPointsPerDirection}.")
-        self.masterProjection = configuration.masterProjection
-        if self.masterProjection not in ("facet", "parentFace"):
-            raise ValueError(
-                f"Constraint '{name}': unknown masterProjection '{self.masterProjection}'; "
-                "choose 'facet' or 'parentFace'."
-            )
         self._projectionFallbacks = 0
 
         # The friction law and its per-point state; sized (and, after a retiling, remapped) by
@@ -354,10 +335,9 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         self.totalNormalForce = 0.0
 
         self.journal.message(
-            f"{self.name}: {self.nPoints} points ({self.slave.nCells} slave {self.quadrature} cells x "
-            f"{self.slave.pointsPerCell} quadrature points), {len(self.facetElements)} master facets, "
-            f"masterProjection={self.masterProjection}, sliding={self.sliding}, type={self.type}, "
-            f"mu={self._friction.mu:g}",
+            f"{self.name}: {self.nPoints} points ({self.slave.nCells} {self.slave.kind} slave cells x "
+            f"{self.slave.pointsPerCell} quadrature points), {len(self._masterFaceNodes)} {self._masterKind} "
+            f"master faces, sliding={self.sliding}, type={self.type}, mu={self._friction.mu:g}",
             self.identification,
         )
 
@@ -367,7 +347,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         Called once from ``__init__`` and again after an AMR retiling. Everything here derives from
         the reference configuration and the facets' stamped parent faces, so it is safe to redo
         wholesale -- except the frictional history, which is carried over for every point whose
-        slave facet (identified by its nodes) and quadrature point survive the retiling.
+        slave cell (identified by its nodes) and quadrature point survive the retiling.
 
         Parameters
         ----------
@@ -379,13 +359,12 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
 
         oldSlave = getattr(self, "slave", None)
         self.slave = ContactPointsOnSlaveSurface(
-            slaveSurface, self.nQuadraturePoints, self.name, self.quadrature, self.gaussPointsPerDirection
+            slaveSurface, self.nQuadraturePoints, self.name, self.gaussPointsPerDirection
         )
         self.facetElements = list(masterSurface)
+        self._masterKind = surfaceKind(self.facetElements, "master", self._masterSurfaceSetName, self.name)
 
-        checkFacetsCarryParentFaces(self.facetElements, "master", self._masterSurfaceSetName, self.name)
-
-        masterNodes = {node for facet in self.facetElements for node in facet.parentFaceNodes}
+        masterNodes = {node for facet in self.facetElements for node in surfaceFaceNodes(facet)}
         if not masterNodes.isdisjoint(self.slave.allParentNodes()):
             raise ValueError(
                 f"Constraint '{self.name}': slave surface '{self._slaveSurfaceSetName}' and master "
@@ -394,8 +373,8 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
             )
 
         # The frictional state per point, keyed by (slave cell nodes, quadrature point) across a
-        # retiling; the characteristic facet size of slipTolerance is the mean slave facet size,
-        # whatever the integration cells.
+        # retiling; the characteristic size of slipTolerance is the mean size of the slave surface
+        # elements.
         facetSize = characteristicFacetSize(self.slave.facetMeasure, max(len(self.slave.facets), 1), self.nDim)
         pointKeys = [(self.slave.cellKeys[c], q) for c, q in zip(self.slave.pointCell, self.slave.pointQuadraturePoint)]
         if self._pointKeys is None:
@@ -406,7 +385,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
             # Section 14.7.2).
             interpolation = None
             if self._friction.enabled:
-                if oldSlave.quadrature != "parentFace":
+                if oldSlave.kind == "triangulated":
                     oldPatches = facetQuadraturePointPatches(
                         oldSlave.facets, self.nQuadraturePoints, lambda facet, q: (tuple(facet.nodes), q)
                     )
@@ -423,17 +402,16 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         self._buildMasterParentFaces()
 
         self._referenceCoordsFacets = [np.array([n.coordinates for n in el.nodes]) for el in self.facetElements]
-        self._masterBoundary = facetSurfaceBoundary([el.nodes for el in self.facetElements])
-        # Two facets within this distance of each other count as equally close (see
+        # Two faces within this distance of each other count as equally close (see
         # closestFacetsWithTies).
         self._tieTolerance = 1e-10 * facetSize
         self._masterParentRefCoords = [
-            np.array([n.coordinates for n in el.parentFaceNodes]) for el in self.facetElements
+            np.array([n.coordinates for n in surfaceFaceNodes(el)]) for el in self.facetElements
         ]
 
         # Small-sliding frozen projection data, refreshed once per increment in updateConnectivity:
-        # the assigned master facet, the parent-face shape functions of the closest point within
-        # that facet's parent face, and the facet's unit normal.
+        # the assigned master element (a facet of the assigned face, or the face itself), the
+        # parent-face shape functions of the closest point on that face, and the unit normal there.
         self._assignedFacetIdx = [None] * self.nPoints
         self._frozenMasterShapeFunctions = [None] * self.nPoints
         self._frozenNormals = [None] * self.nPoints
@@ -495,82 +473,45 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         """Freeze each contact point's closest-point projection onto the master surface, and
         redeclare the constraint's DOF footprint accordingly.
 
-        Called once per increment by the solver, before the equation system is (re)built. The
-        candidate search runs on the *flat* master facets, which keeps it robust and lets it reuse
-        the node-based constraint's exact broadphase; what is frozen from it is the parametric
-        location of the closest point within the facet's *parent* face, from which the parent-face
-        shape functions -- the ones that may go negative at a corner -- are evaluated.
+        Called once per increment by the solver, before the equation system is (re)built. A
+        broadphase selects candidate master faces with a starting point on each -- on a triangulated
+        master the node-based constraint's exact search over the flat facets, on a whole-face master a
+        search over the faces themselves (see :meth:`_wholeFaceCandidates`) -- and the closest point on
+        the *curved* candidate faces is then found by Newton's method (:meth:`_projectOntoParentFaces`).
+        What is frozen is the parametric location of that point in its face, from which the parent-face
+        shape functions -- the ones that may go negative at a corner -- are evaluated, and the surface
+        normal there.
         """
 
         slavePointCoords = self.slave.currentPointCoordinates(model)
-        facetCoords = [
-            currentNodeCoordinates(el.nodes, model, self._referenceCoordsFacets[i])
-            for i, el in enumerate(self.facetElements)
-        ]
-
-        candidatesPerPoint = closestFacetCandidates(slavePointCoords, facetCoords, self.searchDistance)
-        # The closest facet; a tie -- the closest point on an edge or vertex shared by several
-        # facets -- goes to the lowest index, so the distribution basis does not depend on the last
-        # bits of the coordinates.
-        closestFacet, closestWeights, closestDistance, closestTied = closestFacetsWithTies(
-            slavePointCoords, facetCoords, candidatesPerPoint, self._tieTolerance
-        )
-
-        # The normal is a property of the facet, not of the point projecting onto it, and there are
-        # nQuadraturePoints times more points than facets. Memoised per facet for this update only;
-        # the arrays are shared between points, which is safe because nothing ever writes through
-        # _frozenNormals -- both evaluation paths only read it into a row of nBar.
-        facetNormals = {}
+        if self._masterKind == "triangulated":
+            pairPoint, pairFace, pairStart = self._triangulatedCandidates(model, slavePointCoords)
+        else:
+            pairPoint, pairFace, pairStart = self._wholeFaceCandidates(model, slavePointCoords)
+        surfaceProjection = self._projectOntoParentFaces(model, slavePointCoords, pairPoint, pairFace, pairStart)
 
         # The frozen normals before and after the update, NaN where there is none, for the transport
         # of the frictional history into the new tangent planes.
         previousNormals = np.full((self.nPoints, self.nDim), np.nan)
         newNormals = np.full((self.nPoints, self.nDim), np.nan)
 
-        assigned = (closestFacet >= 0) & (
-            closestDistance <= self.searchDistance if self.searchDistance is not None else True
-        )
-        if self.masterProjection == "parentFace":
-            surfaceProjection = self._projectOntoParentFaces(
-                model, slavePointCoords, facetCoords, candidatesPerPoint, np.flatnonzero(assigned), closestFacet
-            )
-
         newAssignment = [None] * self.nPoints
         for p in range(self.nPoints):
             if self._frozenNormals[p] is not None:
                 previousNormals[p] = self._frozenNormals[p]
-            bestFacet, bestWeights = int(closestFacet[p]), closestWeights[p]
-
-            if assigned[p] and self.masterProjection == "parentFace":
-                face, xi, normal, useEdgeNormal, closestPoint = surfaceProjection[p]
+            projection = surfaceProjection.get(p)
+            if projection is not None:
+                face, xi, normal, useEdgeNormal, closestPoint, distance = projection
+                if self.searchDistance is not None and distance > self.searchDistance:
+                    projection = None
+            if projection is not None:
                 newAssignment[p] = self._masterFaceFacets[face][0]
                 self._frozenMasterShapeFunctions[p] = parentFaceShapeFunctions(self._masterFaceTypes[face], xi)
                 if useEdgeNormal:
-                    # As for the facets below (Wriggers 2006, Fig. 10.8): on an edge or vertex shared by
-                    # equally close parent faces, the normal along the distance vector.
+                    # On an edge or vertex shared by equally close faces each face normal would give its
+                    # own gap (Wriggers 2006, Fig. 10.8); the normal along the distance vector gives the
+                    # one signed distance, continuous across the edge.
                     normal = edgeOrVertexNormal(slavePointCoords[p], closestPoint, normal, self._tieTolerance)
-                self._frozenNormals[p] = normal
-                newNormals[p] = normal
-            elif assigned[p]:
-                newAssignment[p] = bestFacet
-                facet = self.facetElements[bestFacet]
-                # The clamped barycentric weights locate the closest point in the flat facet; map
-                # that location into the parent face's parametric space and evaluate the parent
-                # face's shape functions there.
-                parametric = bestWeights @ facet.vertexParametricCoords
-                self._frozenMasterShapeFunctions[p] = parentFaceShapeFunctions(facet.parentFaceType, parametric)
-                normal = facetNormals.get(bestFacet)
-                if normal is None:
-                    normal, _ = facetNormalAndMeasure(facetCoords[bestFacet])
-                    facetNormals[bestFacet] = normal
-                if closestTied[p] and not liesOnSurfaceBoundary(facet.nodes, bestWeights, self._masterBoundary):
-                    # On an edge or vertex between facets each facet normal would give its own gap
-                    # (Wriggers 2006, Fig. 10.8); the normal along the distance vector gives the one
-                    # signed distance, continuous across the edge. Not on the boundary of the master
-                    # surface, where the point is beside the surface rather than over it.
-                    normal = edgeOrVertexNormal(
-                        slavePointCoords[p], bestWeights @ facetCoords[bestFacet], normal, self._tieTolerance
-                    )
                 self._frozenNormals[p] = normal
                 newNormals[p] = normal
             else:
@@ -583,36 +524,146 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
 
         return self._assignMasterFacets(newAssignment)
 
-    def _buildMasterParentFaces(self):
-        """Group the master facets by parent face, for ``masterProjection='parentFace'``: per face its
-        facets, type, reference node coordinates, the orientation of its canonical node order relative
-        to the outward facet normal, which of its parametric bounds lie on the boundary of the master
-        surface, and the faces it shares a corner with."""
+    def _triangulatedCandidates(self, model: FEModel, slavePointCoords: np.ndarray) -> tuple:
+        """The candidate master faces of each contact point on a triangulated master surface, with a
+        starting point on each.
 
-        if self.masterProjection != "parentFace":
-            return
+        The search runs on the flat facets with the node-based constraint's exact broadphase. The
+        candidates are the faces of a point's candidate facets and every face sharing a corner with the
+        face of its closest facet, so that a point whose curved projection leaves that face is passed to
+        the neighbour it lies over. On each candidate face, the starting point is the closest point on
+        its flat facets, mapped into the face (Wriggers 2006, Eqs. 9.81-9.82, p. 243: "using as a starting
+        value the solution for a flat surface").
+
+        Returns
+        -------
+        tuple
+            Per (point, face) pair: the point, the face, and the parametric starting point.
+        """
+
+        facetCoords = [
+            currentNodeCoordinates(el.nodes, model, self._referenceCoordsFacets[i])
+            for i, el in enumerate(self.facetElements)
+        ]
+        candidatesPerPoint = closestFacetCandidates(slavePointCoords, facetCoords, self.searchDistance)
+        closestFacet, _, _, _ = closestFacetsWithTies(
+            slavePointCoords, facetCoords, candidatesPerPoint, self._tieTolerance
+        )
+
+        pairPoint, pairFace = [], []
+        for p in np.flatnonzero(closestFacet >= 0):
+            faces = {int(self._facetMasterFace[f]) for f in candidatesPerPoint[p]}
+            faces.update(self._masterFaceNeighbours[int(self._facetMasterFace[closestFacet[p]])])
+            faces = sorted(faces)
+            pairPoint.extend([p] * len(faces))
+            pairFace.extend(faces)
+        pairPoint = np.array(pairPoint, dtype=np.intp)
+        pairFace = np.array(pairFace, dtype=np.intp)
+        localDim = {PARENT_FACE_LOCAL_DIMENSION[t] for t in self._masterFaceTypes}.pop() if self._masterFaceTypes else 2
+        xi = np.zeros((len(pairPoint), localDim))
+        if not len(pairPoint):
+            return pairPoint, pairFace, xi
+
+        startFacets = [(k, f) for k, face in enumerate(pairFace) for f in self._masterFaceFacets[face]]
+        startPair = np.array([k for k, _ in startFacets], dtype=np.intp)
+        startFacet = np.array([f for _, f in startFacets], dtype=np.intp)
+        stacked = np.asarray(facetCoords, dtype=float)
+        weights, distances = facetClosestPoints(slavePointCoords[pairPoint[startPair]], stacked[startFacet])
+        best = np.full(len(pairPoint), np.inf)
+        np.minimum.at(best, startPair, distances)
+        first = np.flatnonzero(distances == best[startPair])
+        first = first[np.r_[True, startPair[first[1:]] != startPair[first[:-1]]]]
+        xi[startPair[first]] = np.einsum(
+            "pk,pkd->pd",
+            weights[first],
+            np.array([self.facetElements[f].vertexParametricCoords for f in startFacet[first]], dtype=float),
+        )
+        return pairPoint, pairFace, xi
+
+    def _wholeFaceCandidates(self, model: FEModel, slavePointCoords: np.ndarray) -> tuple:
+        """The candidate master faces of each contact point on a whole-face master surface, with a
+        starting point on each.
+
+        The faces are searched by their centroids in a k-d tree: with :math:`d_0` the distance to the
+        nearest centroid and :math:`r` the largest centroid-to-point distance of any face (taken from
+        a sampling of the curved faces, with a margin), every face that could hold the closest point
+        has its centroid within :math:`d_0 + r`. The faces sharing a corner with the nearest one are
+        added, as on a triangulated master. On each candidate face, the starting point is the closest
+        of a regular sampling of the curved face.
+
+        Returns
+        -------
+        tuple
+            Per (point, face) pair: the point, the face, and the parametric starting point.
+        """
+
+        from scipy.spatial import cKDTree
+
+        nFaces = len(self._masterFaceNodes)
+        localDim = {PARENT_FACE_LOCAL_DIMENSION[t] for t in self._masterFaceTypes}.pop() if nFaces else 2
+        if not nFaces or not len(slavePointCoords):
+            return np.zeros(0, dtype=np.intp), np.zeros(0, dtype=np.intp), np.zeros((0, localDim))
+
+        samples = np.linspace(-1.0, 1.0, 5)
+        if localDim == 2:
+            sampleXi = np.array([[x, y] for x in samples for y in samples])
+        else:
+            sampleXi = samples[:, None]
+        samplePoints = np.empty((nFaces, len(sampleXi), self.nDim))
+        for face in range(nFaces):
+            coords = currentNodeCoordinates(self._masterFaceNodes[face], model, self._masterFaceRefCoords[face])
+            samplePoints[face] = parentFaceShapeFunctionsAt(self._masterFaceTypes[face], sampleXi) @ coords
+        centroids = samplePoints.mean(axis=1)
+        # The sampled radius misses at most the bulge between samples, hence the margin.
+        rMax = 1.5 * float(np.linalg.norm(samplePoints - centroids[:, None, :], axis=2).max())
+
+        tree = cKDTree(centroids)
+        nearestDistance, nearestFace = tree.query(slavePointCoords, k=1)
+        radius = nearestDistance + rMax
+        if self.searchDistance is not None:
+            radius = np.minimum(radius, self.searchDistance + rMax)
+        balls = tree.query_ball_point(slavePointCoords, radius)
+
+        pairPoint, pairFace = [], []
+        for p, ball in enumerate(balls):
+            faces = sorted(set(ball) | set(self._masterFaceNeighbours[int(nearestFace[p])]))
+            pairPoint.extend([p] * len(faces))
+            pairFace.extend(faces)
+        pairPoint = np.array(pairPoint, dtype=np.intp)
+        pairFace = np.array(pairFace, dtype=np.intp)
+        sampleDistances = np.linalg.norm(samplePoints[pairFace] - slavePointCoords[pairPoint][:, None, :], axis=2)
+        return pairPoint, pairFace, sampleXi[np.argmin(sampleDistances, axis=1)]
+
+    def _buildMasterParentFaces(self):
+        """Group the master surface elements by parent face: per face its elements (facets, or the
+        whole face itself), type, reference node coordinates, the orientation of its canonical node
+        order relative to the outward normal, which of its parametric bounds lie on the boundary of the
+        master surface, and the faces it shares a corner with."""
 
         facetIndex = {id(facet): i for i, facet in enumerate(self.facetElements)}
         groups = list(groupFacetsByParentFace(self.facetElements).values())
-        unsupported = [facets[0] for facets in groups if facets[0].parentFaceType not in PARENT_FACE_LOCAL_DIMENSION]
+        unsupported = [facets[0] for facets in groups if surfaceFaceType(facets[0]) not in PARENT_FACE_LOCAL_DIMENSION]
         if unsupported:
             raise ValueError(
-                f"Constraint '{self.name}': masterProjection='parentFace' does not support parent face type "
-                f"'{unsupported[0].parentFaceType}' (master facet {unsupported[0].elNumber})."
+                f"Constraint '{self.name}': the projection onto the curved master face does not support "
+                f"parent face type '{surfaceFaceType(unsupported[0])}' (master element {unsupported[0].elNumber})."
             )
 
         self._masterFaceFacets = [[facetIndex[id(facet)] for facet in facets] for facets in groups]
-        self._masterFaceTypes = [facets[0].parentFaceType for facets in groups]
-        self._masterFaceNodes = [list(facets[0].parentFaceNodes) for facets in groups]
+        self._masterFaceTypes = [surfaceFaceType(facets[0]) for facets in groups]
+        self._masterFaceNodes = [surfaceFaceNodes(facets[0]) for facets in groups]
         self._masterFaceRefCoords = [np.array([n.coordinates for n in nodes]) for nodes in self._masterFaceNodes]
         self._facetMasterFace = np.empty(len(self.facetElements), dtype=np.intp)
         for face, facets in enumerate(self._masterFaceFacets):
             self._facetMasterFace[facets] = face
 
-        # The canonical node order fixes the sign of a_1 x a_2 (or of the rotated tangent); align it
-        # with the outward normal of a facet of the same face, at that facet's parametric centroid.
-        self._masterFaceSign = np.empty(len(groups))
+        # The canonical node order fixes the sign of a_1 x a_2 (or of the rotated tangent). A whole face
+        # is emitted in the source element's outward winding; a facet's face is aligned with the
+        # outward normal of the facet, at that facet's parametric centroid.
+        self._masterFaceSign = np.ones(len(groups))
         for face, facets in enumerate(groups):
+            if self._masterKind == "wholeFace":
+                continue
             facet = facets[0]
             facetNormal, _ = facetNormalAndMeasure(np.array([n.coordinates for n in facet.nodes]))
             centroid = np.mean(np.asarray(facet.vertexParametricCoords, dtype=float), axis=0)[None]
@@ -658,67 +709,43 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         self,
         model: FEModel,
         slavePointCoords: np.ndarray,
-        facetCoords: list,
-        candidatesPerPoint: list,
-        points: np.ndarray,
-        closestFacet: np.ndarray,
+        pairPoint: np.ndarray,
+        pairFace: np.ndarray,
+        pairStart: np.ndarray,
     ) -> dict:
-        """The closest point of each assigned contact point on the curved master parent faces.
+        """The closest point of each contact point on its candidate curved master faces.
 
-        The flat facets remain the search: the candidates are the parent faces of the point's candidate
-        facets and every face sharing a corner with the face of its closest facet, so that a point whose
-        curved projection leaves that face is passed to the neighbour it lies over. On each candidate
-        face, the closest point on its flat facets is the starting point of Newton's method on the
-        curved face (Wriggers 2006, Eqs. 9.81-9.82, p. 243: "using as a starting value the solution for
-        a flat surface"), see :func:`~edelweissfe.utils.parentfacegeometry.parentFaceClosestPoints`. The
-        closest face wins, a tie within the tie tolerance going to the lowest face index; where the
-        iteration does not converge, the flat facet's point is kept for that face.
+        On each candidate face, Newton's method for the minimum distance problem (Wriggers 2006, Eqs.
+        4.2-4.3, linearized as in Eqs. 9.81-9.82) runs from the given starting point, see
+        :func:`~edelweissfe.utils.parentfacegeometry.parentFaceClosestPoints`. The closest face wins, a
+        tie within the tie tolerance going to the lowest face index; where the iteration does not
+        converge, the starting point is kept for that face.
+
+        Parameters
+        ----------
+        pairPoint, pairFace, pairStart
+            Per (point, face) pair, ordered by point and, per point, by ascending face: the contact
+            point, the candidate face, and the parametric starting point on it.
 
         Returns
         -------
         dict
-            Per point: the face, the parametric coordinates of the closest point, the outward unit
-            surface normal there (Wriggers 2006, Eq. 4.4), whether the point projects onto an edge or
-            vertex shared by equally close faces inside the master surface, and the closest point.
+            Per point with a candidate: the face, the parametric coordinates of the closest point, the
+            outward unit surface normal there (Wriggers 2006, Eq. 4.4), whether the point projects onto
+            an edge or vertex shared by equally close faces inside the master surface, the closest point,
+            and the distance.
         """
 
-        if not len(points):
+        if not len(pairPoint):
             return {}
 
         nDim = self.nDim
-        pairPoint, pairFace = [], []
-        for p in points:
-            faces = {int(self._facetMasterFace[f]) for f in candidatesPerPoint[p]}
-            faces.update(self._masterFaceNeighbours[int(self._facetMasterFace[closestFacet[p]])])
-            faces = sorted(faces)
-            pairPoint.extend([p] * len(faces))
-            pairFace.extend(faces)
-        pairPoint = np.array(pairPoint, dtype=np.intp)
-        pairFace = np.array(pairFace, dtype=np.intp)
         nPairs = len(pairPoint)
         faceCoords = {
             face: currentNodeCoordinates(self._masterFaceNodes[face], model, self._masterFaceRefCoords[face])
             for face in np.unique(pairFace).tolist()
         }
-
-        # The starting point on each candidate face: its closest flat facet point, mapped into the face.
-        startFacets = [(k, f) for k, face in enumerate(pairFace) for f in self._masterFaceFacets[face]]
-        startPair = np.array([k for k, _ in startFacets], dtype=np.intp)
-        startFacet = np.array([f for _, f in startFacets], dtype=np.intp)
-        stacked = np.asarray(facetCoords, dtype=float)
-        weights, distances = facetClosestPoints(slavePointCoords[pairPoint[startPair]], stacked[startFacet])
-        best = np.full(nPairs, np.inf)
-        np.minimum.at(best, startPair, distances)
-        first = np.flatnonzero(distances == best[startPair])
-        first = first[np.r_[True, startPair[first[1:]] != startPair[first[:-1]]]]
-
-        localDim = {PARENT_FACE_LOCAL_DIMENSION[t] for t in self._masterFaceTypes}.pop()
-        xi = np.zeros((nPairs, localDim))
-        xi[startPair[first]] = np.einsum(
-            "pk,pkd->pd",
-            weights[first],
-            np.array([self.facetElements[f].vertexParametricCoords for f in startFacet[first]], dtype=float),
-        )
+        xi = np.array(pairStart, dtype=float)
 
         closestPoint = np.zeros((nPairs, nDim))
         normal = np.zeros((nPairs, nDim))
@@ -758,7 +785,14 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
                 self._masterFaceOnBoundary[face][alpha, 1 if xi[k, alpha] > 0.0 else 0]
                 for alpha in np.flatnonzero(atBound)
             )
-            result[p] = (face, xi[k].copy(), normal[k].copy(), bool(tied[p] and not onBoundary), closestPoint[k])
+            result[p] = (
+                face,
+                xi[k].copy(),
+                normal[k].copy(),
+                bool(tied[p] and not onBoundary),
+                closestPoint[k],
+                float(distance[k]),
+            )
         return result
 
     def _assignMasterFacets(self, newAssignment: list) -> bool:
@@ -775,8 +809,8 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         for p in range(self.nPoints):
             if newAssignment[p] is None:
                 continue
-            pointNodes = (
-                self.slave.parentNodes[self.slave.pointCell[p]] + self.facetElements[newAssignment[p]].parentFaceNodes
+            pointNodes = self.slave.parentNodes[self.slave.pointCell[p]] + surfaceFaceNodes(
+                self.facetElements[newAssignment[p]]
             )
             newNodes.extend(pointNodes)
             newFieldsOnNodes.extend([["displacement"]] * len(pointNodes))
@@ -823,14 +857,12 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
             "nQuadraturePoints": np.array([self.nQuadraturePoints], dtype=np.int64),
             "masterFacets": np.array([facet.elNumber for facet in self.facetElements], dtype=np.int64),
         }
-        # The point layout and the meaning of the frozen projection depend on these as well; entered
-        # only where they differ from the defaults, so that a checkpoint written without them still fits.
-        if self.quadrature == "parentFace":
+        # The frozen projection is that onto the curved master faces, which a checkpoint written before
+        # it does not hold; the version entry refuses such a checkpoint. On a whole-face slave the point
+        # layout depends on the Gauss rule as well.
+        layout["curvedProjection"] = np.array([1], dtype=np.int64)
+        if self.slave.kind == "wholeFace":
             layout["gaussPointsPerDirection"] = np.array([self.gaussPointsPerDirection], dtype=np.int64)
-        if self.quadrature == "subcells":
-            layout["quadratureSubcells"] = np.array([1], dtype=np.int64)
-        if self.masterProjection != "facet":
-            layout["masterProjectionParentFace"] = np.array([1], dtype=np.int64)
         return layout
 
     def _frozenProjection(self) -> dict[str, np.ndarray]:
@@ -1052,7 +1084,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
             self.nDim
             * (
                 len(self.slave.parentNodes[self.slave.pointCell[p]])
-                + len(self.facetElements[self._assignedFacetIdx[p]].parentFaceNodes)
+                + len(surfaceFaceNodes(self.facetElements[self._assignedFacetIdx[p]]))
             )
             for p in range(self.nPoints)
             if self._assignedFacetIdx[p] is not None
@@ -1195,12 +1227,12 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
     def getNormalPressures(self) -> np.ndarray:
         """The current normal contact pressures (positive in compression), one per contact point.
 
-        Ordered by slave integration cell (facet, or parent face with ``quadrature=parentFace``)
+        Ordered by slave integration cell (facet, or element face on a whole-face surface)
         and, within a cell, by quadrature point -- *not* by node, unlike the node-based constraint's
         accessor of the same name. A ``fromExpression`` field output reading this therefore cannot be
         tied to a node set; use a reduction (``np.max``, ``np.mean``, ...) or
         :meth:`getSlaveNodalNormalForces` instead, over a set whose size divides the point count
-        (the facet set, or with ``quadrature=parentFace`` the elements owning the slave faces).
+        (the facet set, or the element set of a whole-face surface).
         """
 
         return self.slave.normalPressures(self._normalForceCurrent)

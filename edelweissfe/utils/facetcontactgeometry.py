@@ -822,8 +822,8 @@ def facetQuadraturePointPatches(facets: list, nQuadraturePoints: int, pointKey) 
 
 
 def parentFaceQuadraturePointPatches(slavePoints, pointKey) -> list:
-    """The old slave parent faces of the integrated contact, integrated with
-    ``quadrature='parentFace'``, as patches for
+    """The old slave element faces of the integrated contact on a whole-face surface
+    (``facets=wholeFace``), as patches for
     :func:`~edelweissfe.utils.contactfriction.historyInterpolation`. The counterpart of
     :func:`facetQuadraturePointPatches` with the parent face as the patch: a linear field in the
     face's parametric coordinates is fitted to the values at its Gauss points by least squares
