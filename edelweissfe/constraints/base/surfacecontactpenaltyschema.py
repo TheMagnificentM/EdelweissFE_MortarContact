@@ -47,10 +47,10 @@ class SurfaceContactPenaltySchema:
     """
 
     slaveSurface: str | None = schemaField(
-        description="The element set forming the slave surface, from the surface element generator: "
-        "flat contact facets (facets=triangulated, Tria3ContactFacet/Line2ContactFacet, carrying their "
-        "parent faces) or whole element faces (facets=wholeFace). Contact is integrated over it at "
-        "quadrature points.",
+        description="The element set forming the slave surface: flat contact facets from the surface "
+        "element generator (facets=triangulated, carrying their parent faces), or whole element faces "
+        "(CONQUAD4/CONQUAD8/CONLINE2/CONLINE3, from facets=wholeFace or a mesh generator). Contact is "
+        "integrated over it at quadrature points, see integration.",
         dtype=str,
         default=None,
         required=True,
@@ -68,8 +68,17 @@ class SurfaceContactPenaltySchema:
         default="linear",
         optionName="type",
     )
+    integration: str = schemaField(
+        description="How the slave surface is integrated, whatever it is given as (flat facets or whole "
+        "element faces): 'triangles' (the default; every element face cut into flat facets as by "
+        "the surface element generator, each a sub-cell of the face with nQuadraturePoints points weighted "
+        "with the face's own surface Jacobian) or 'wholeFace' (the native Gauss rule of "
+        "gaussPointsPerDirection points per direction on every element face).",
+        dtype=str,
+        default="triangles",
+    )
     nQuadraturePoints: int = schemaField(
-        description="On a triangulated slave surface (facets=triangulated), the number of quadrature "
+        description="For integration='triangles', the number of quadrature "
         "points per facet: 1, 3 or 6 for a Tria3 facet (3D), 1, 2 or 3 for a Line2 facet (2D). Each facet "
         "is a sub-cell of its parent face and its points are weighted with the parent face's own "
         "surface Jacobian, so the rule integrates the parent face's geometry, curved or distorted, to "
@@ -78,7 +87,7 @@ class SurfaceContactPenaltySchema:
         default=3,
     )
     gaussPointsPerDirection: int = schemaField(
-        description="On a whole-face slave surface (facets=wholeFace), the number of Gauss points per "
+        description="For integration='wholeFace', the number of Gauss points per "
         "parametric direction of an element face (1 to 4): n x n on a quadrilateral face, n on an "
         "edge face.",
         dtype=int,

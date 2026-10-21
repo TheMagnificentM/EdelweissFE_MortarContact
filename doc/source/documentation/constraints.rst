@@ -268,7 +268,9 @@ Module ``edelweissfe.constraints.mortarcontact``
 The complete theory of this constraint -- surface discretization and triangulation, tributary
 areas, finite- and small-sliding gap kinematics, penalty and augmented-Lagrange normal laws,
 Coulomb friction with consistent tangents, solver integration, and the verification methodology
--- is documented in :doc:`contacttheory`.
+-- is documented in :doc:`contacttheory`. The surfaces may be given as flat facets from the surface element
+generator or as whole element faces (``CON*`` elements, e.g. from a mesh generator, as for the mortar
+constraint), which the constraint cuts into exactly the facets the generator would cut from them.
 
 Module ``edelweissfe.constraints.nodetodeformablesurfacepenalty``
 
@@ -293,10 +295,11 @@ Module ``edelweissfe.constraints.nodetodeformablesurfacepenalty``
 The integrated (Gauss-point-to-segment) counterpart of the constraint above: contact is evaluated
 at *quadrature points* over the slave surface and the resulting pressure is distributed with each
 side's **parent element face** shape functions rather than with the flat facets' own; the points are
-projected onto the curved master faces. The surfaces may be generated as flat facets
-(``facets=triangulated``, the default; each facet a sub-cell of its element face) or as whole element
-faces (``facets=wholeFace``, native Gauss rule on each face) -- the same constraint, two
-discretizations of the surface.
+projected onto the curved master faces. The surfaces may be given as flat facets from the surface
+element generator or as whole element faces (``CON*`` elements, e.g. from a mesh generator, as for the
+mortar constraint); ``integration`` chooses how the slave surface is integrated, whatever it was given
+as: ``triangles`` (the default; each face cut into facets, each facet a sub-cell of its element face)
+or ``wholeFace`` (native Gauss rule on each face).
 
 Use this instead of ``nodetodeformablesurfacepenalty`` on quadratic (hexa20/quad8) contact
 surfaces. There, a node-based penalty scheme cannot transmit a correct pressure at all -- the

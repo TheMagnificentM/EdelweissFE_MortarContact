@@ -73,6 +73,8 @@ class TestIntegratedSurfaceContact(unittest.TestCase):
 
     #: The surface element generator's discretization of both surfaces.
     FACETS = "triangulated"
+    #: How the constraint integrates the slave surface.
+    INTEGRATION = "triangles"
 
     def setUp(self):
         self.journal = Journal()
@@ -83,6 +85,7 @@ class TestIntegratedSurfaceContact(unittest.TestCase):
         return twoBlockModel(self.journal, penetration, nodalWeights, facets=self.FACETS)
 
     def _constraint(self, model, slaveSurface, masterSurface, **options) -> IntegratedContact:
+        options.setdefault("integration", self.INTEGRATION)
         configuration = SurfaceToDeformableSurfacePenaltySchema(
             penalty=options.pop("penalty", 1.0e4),
             searchDistance=options.pop("searchDistance", 1.0),
@@ -481,7 +484,7 @@ class TestIntegratedSurfaceContact(unittest.TestCase):
         for nQuadraturePoints in (1, 3, 6):
             model, slaveSurface, masterSurface = self._twoBlockModel(penetration=0.05)
             constraint = self._constraint(model, slaveSurface, masterSurface, nQuadraturePoints=nQuadraturePoints)
-            self.assertEqual(constraint.nPoints, len(slaveSurface) * nQuadraturePoints)
+            self.assertEqual(constraint.nPoints, len(constraint.slave.facets) * nQuadraturePoints)
             self.assertEqual(len(constraint.getNormalPressures()), constraint.nPoints)
 
     def test_resultant_is_independent_of_the_quadrature_rule(self):
@@ -554,11 +557,25 @@ class TestIntegratedSurfaceContact(unittest.TestCase):
         self.assertFalse(constraint.refresh(model, ModelChange(kind=ModelChangeType.REFINEMENT)))
 
 
-class TestIntegratedSurfaceContactOnWholeFaces(TestIntegratedSurfaceContact):
-    """Every test of the base class again on whole element faces (``facets=wholeFace``): native Gauss
-    rule on each slave face, the master faces searched and projected onto as they are."""
+class TestIntegratedSurfaceContactTrianglesOnWholeFaces(TestIntegratedSurfaceContact):
+    """Every test of the base class again on surfaces given as whole element faces (as from a mesh
+    generator), integrated over the facets the constraint cuts them into (the default)."""
 
     FACETS = "wholeFace"
+
+    def test_unstamped_facets_are_rejected(self):
+        self.skipTest("a whole-face surface has no facets")
+
+    def test_serendipity_weighted_surfaces_are_rejected(self):
+        self.skipTest("a whole-face surface carries no nodal weights")
+
+
+class TestIntegratedSurfaceContactOnWholeFaces(TestIntegratedSurfaceContact):
+    """Every test of the base class again with ``integration=wholeFace`` on whole element faces: native
+    Gauss rule on each slave face, the master faces searched and projected onto as they are."""
+
+    FACETS = "wholeFace"
+    INTEGRATION = "wholeFace"
 
     def test_quadrature_point_count_is_honoured(self):
         for n in (1, 2, 3, 4):
@@ -604,13 +621,15 @@ class TestSlaveSurfaceQuadrature(unittest.TestCase):
         )
 
         errors = {}
-        for name, facets, nPoints in (
-            ("triangulated 3", "triangulated", 3),
-            ("triangulated 6", "triangulated", 6),
-            ("wholeFace", "wholeFace", 3),
+        for name, facets, integration, nPoints in (
+            ("triangulated 3", "triangulated", "triangles", 3),
+            ("triangulated 6", "triangulated", "triangles", 6),
+            ("triangles from whole faces", "wholeFace", "triangles", 3),
+            ("wholeFace", "wholeFace", "wholeFace", 3),
+            ("wholeFace from facets", "triangulated", "wholeFace", 3),
         ):
             _, slaveSurface, _ = twoBlockModel(Journal(), 0.0, mapping=mapping, facets=facets)
-            slave = ContactPointsOnSlaveSurface(slaveSurface, nPoints, "c", 3)
+            slave = ContactPointsOnSlaveSurface(slaveSurface, nPoints, "c", integration, 3)
             p = 1.0
             loads = dict(
                 zip(slave.surfaceNodes, slave.nodalNormalForces(-p * np.concatenate(slave.integrationWeights)))
@@ -624,6 +643,9 @@ class TestSlaveSurfaceQuadrature(unittest.TestCase):
         """Measured: 4.0e-3, 3.7e-5 and 4.7e-4."""
 
         errors = self._loadErrors(lambda x: np.array([x[0], x[1] + 0.3 * (x[0] - 1.0) ** 2, x[2]]))
+        # The integration does not depend on how the surface was given.
+        self.assertEqual(errors["triangles from whole faces"], errors["triangulated 3"])
+        self.assertEqual(errors["wholeFace from facets"], errors["wholeFace"])
         self.assertLess(errors["triangulated 3"], 5e-3)
         self.assertLess(errors["triangulated 6"], 1e-4)
         self.assertLess(errors["wholeFace"], 1e-3)
@@ -659,11 +681,13 @@ class TestIntegratedSurfaceFriction(unittest.TestCase):
     :mod:`edelweissfe.utils.contactfriction`, evaluated at every quadrature point."""
 
     FACETS = "triangulated"
+    INTEGRATION = "triangles"
 
     def setUp(self):
         self.journal = Journal()
 
     def _configuration(self, **options) -> SurfaceToDeformableSurfacePenaltySchema:
+        options.setdefault("integration", self.INTEGRATION)
         return SurfaceToDeformableSurfacePenaltySchema(
             penalty=1.0e4, searchDistance=1.0, contactType="quadratic", **options
         )
@@ -844,9 +868,10 @@ class TestIntegratedSurfaceFriction(unittest.TestCase):
 
 
 class TestIntegratedSurfaceFrictionOnWholeFaces(TestIntegratedSurfaceFriction):
-    """Every friction test again on whole element faces (``facets=wholeFace``)."""
+    """Every friction test again with ``integration=wholeFace`` on whole element faces."""
 
     FACETS = "wholeFace"
+    INTEGRATION = "wholeFace"
     # A whole face is larger than a facet, so its stick range is too.
     REGULARIZED_SLIDE = 2e-1
 

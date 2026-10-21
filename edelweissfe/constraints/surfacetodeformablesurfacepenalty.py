@@ -177,9 +177,9 @@ class SurfaceToDeformableSurfacePenaltySchema(SurfaceContactPenaltySchema):
     """
 
     masterSurface: str | None = schemaField(
-        description="The element set forming the master surface, from the surface element generator: "
-        "flat contact facets (facets=triangulated) or whole element faces (facets=wholeFace). The "
-        "contact points are projected onto the curved element faces either way.",
+        description="The element set forming the master surface: flat contact facets from the surface "
+        "element generator or whole element faces (CONQUAD4/CONQUAD8/CONLINE2/CONLINE3, e.g. from a mesh "
+        "generator). The contact points are projected onto the curved element faces either way.",
         dtype=str,
         default=None,
         required=True,
@@ -199,14 +199,14 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
     -----------------------
     The contact points are *quadrature points*, not nodes, see
     :class:`~edelweissfe.constraints.base.contactpointsonslavesurface.ContactPointsOnSlaveSurface`.
-    How they are placed follows from how the surface element generator discretized the slave
-    surface; the contact algorithm is the same either way. On a triangulated surface
-    (``facets=triangulated``, the default) each flat facet is a sub-cell of its parent face and
-    carries an ``nQuadraturePoints``-point rule, weighted with the parent face's own surface
-    Jacobian; on a whole-face surface (``facets=wholeFace``) each element face carries its native
-    Gauss rule of ``gaussPointsPerDirection`` points per direction, with the same Jacobian. Either way
-    a point's position follows the *curved* parent surface, :math:`x_q = N^s(\\xi_q) \\cdot x^s`, so
-    the slave-side faceting error of the node-based formulation disappears as well.
+    The surfaces may be given as flat facets or as whole element faces; how the slave surface is
+    integrated is chosen by ``integration``, whatever it was given as. With ``integration=triangles``
+    (the default) each flat facet is a sub-cell of its parent face and carries an
+    ``nQuadraturePoints``-point rule, weighted with the parent face's own surface Jacobian; with
+    ``integration=wholeFace`` each element face carries its native Gauss rule of
+    ``gaussPointsPerDirection`` points per direction, with the same Jacobian. Either way a point's
+    position follows the *curved* parent surface, :math:`x_q = N^s(\\xi_q) \\cdot x^s`, so the
+    slave-side faceting error of the node-based formulation disappears as well.
 
     Under ``sliding=small`` the projection is frozen once per increment: the assigned master face, the
     parametric location of the closest point on the *curved* face (Wriggers 2006, Eqs. 4.2-4.3, by
@@ -318,6 +318,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
 
         self.nQuadraturePoints = configuration.nQuadraturePoints
         self.searchDistance = configuration.searchDistance
+        self.integration = configuration.integration
         self.gaussPointsPerDirection = configuration.gaussPointsPerDirection
         if not 1 <= self.gaussPointsPerDirection <= 4:
             raise ValueError(f"gaussPointsPerDirection must be 1 to 4, got {self.gaussPointsPerDirection}.")
@@ -335,7 +336,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         self.totalNormalForce = 0.0
 
         self.journal.message(
-            f"{self.name}: {self.nPoints} points ({self.slave.nCells} {self.slave.kind} slave cells x "
+            f"{self.name}: {self.nPoints} points ({self.slave.nCells} slave cells, integration={self.integration}, x "
             f"{self.slave.pointsPerCell} quadrature points), {len(self._masterFaceNodes)} {self._masterKind} "
             f"master faces, sliding={self.sliding}, type={self.type}, mu={self._friction.mu:g}",
             self.identification,
@@ -359,7 +360,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
 
         oldSlave = getattr(self, "slave", None)
         self.slave = ContactPointsOnSlaveSurface(
-            slaveSurface, self.nQuadraturePoints, self.name, self.gaussPointsPerDirection
+            slaveSurface, self.nQuadraturePoints, self.name, self.integration, self.gaussPointsPerDirection
         )
         self.facetElements = list(masterSurface)
         self._masterKind = surfaceKind(self.facetElements, "master", self._masterSurfaceSetName, self.name)
@@ -375,7 +376,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         # The frictional state per point, keyed by (slave cell nodes, quadrature point) across a
         # retiling; the characteristic size of slipTolerance is the mean size of the slave surface
         # elements.
-        facetSize = characteristicFacetSize(self.slave.facetMeasure, max(len(self.slave.facets), 1), self.nDim)
+        facetSize = characteristicFacetSize(self.slave.facetMeasure, max(self.slave.nCells, 1), self.nDim)
         pointKeys = [(self.slave.cellKeys[c], q) for c, q in zip(self.slave.pointCell, self.slave.pointQuadraturePoint)]
         if self._pointKeys is None:
             self._friction.resize(self.nPoints)
@@ -385,7 +386,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
             # Section 14.7.2).
             interpolation = None
             if self._friction.enabled:
-                if oldSlave.kind == "triangulated":
+                if oldSlave.integration == "triangles":
                     oldPatches = facetQuadraturePointPatches(
                         oldSlave.facets, self.nQuadraturePoints, lambda facet, q: (tuple(facet.nodes), q)
                     )
@@ -861,7 +862,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         # it does not hold; the version entry refuses such a checkpoint. On a whole-face slave the point
         # layout depends on the Gauss rule as well.
         layout["curvedProjection"] = np.array([1], dtype=np.int64)
-        if self.slave.kind == "wholeFace":
+        if self.integration == "wholeFace":
             layout["gaussPointsPerDirection"] = np.array([self.gaussPointsPerDirection], dtype=np.int64)
         return layout
 
@@ -1227,12 +1228,12 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
     def getNormalPressures(self) -> np.ndarray:
         """The current normal contact pressures (positive in compression), one per contact point.
 
-        Ordered by slave integration cell (facet, or element face on a whole-face surface)
+        Ordered by slave integration cell (facet, or element face with ``integration=wholeFace``)
         and, within a cell, by quadrature point -- *not* by node, unlike the node-based constraint's
         accessor of the same name. A ``fromExpression`` field output reading this therefore cannot be
         tied to a node set; use a reduction (``np.max``, ``np.mean``, ...) or
         :meth:`getSlaveNodalNormalForces` instead, over a set whose size divides the point count
-        (the facet set, or the element set of a whole-face surface).
+        (e.g. the element set the slave faces belong to).
         """
 
         return self.slave.normalPressures(self._normalForceCurrent)

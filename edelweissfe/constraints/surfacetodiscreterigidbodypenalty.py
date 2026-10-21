@@ -239,6 +239,7 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
             )
         self.nQuadraturePoints = configuration.nQuadraturePoints
         self.searchDistance = configuration.searchDistance
+        self.integration = configuration.integration
         self.gaussPointsPerDirection = configuration.gaussPointsPerDirection
         if not 1 <= self.gaussPointsPerDirection <= 4:
             raise ValueError(f"gaussPointsPerDirection must be 1 to 4, got {self.gaussPointsPerDirection}.")
@@ -250,7 +251,7 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         self._buildFromSlaveSurface(slaveSurface)
 
         self.journal.message(
-            f"contact '{self.name}': {self.nPoints} points ({self.slave.nCells} {self.slave.kind} slave cells x "
+            f"contact '{self.name}': {self.nPoints} points ({self.slave.nCells} slave cells, integration={self.integration}, x "
             f"{self.slave.pointsPerCell} quadrature points) against rigid body '{rigidBody.name}' "
             f"({len(self._rigidTriangles)} triangles), type={self.type}",
             self.identification,
@@ -281,7 +282,7 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         """
 
         self.slave = ContactPointsOnSlaveSurface(
-            slaveSurface, self.nQuadraturePoints, self.name, self.gaussPointsPerDirection
+            slaveSurface, self.nQuadraturePoints, self.name, self.integration, self.gaussPointsPerDirection
         )
 
         parentNodeCounts = {len(nodes) for nodes in self.slave.parentNodes}
@@ -442,7 +443,7 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
             "subcellWeights": np.array([1], dtype=np.int64),
         } | (
             {"gaussPointsPerDirection": np.array([self.gaussPointsPerDirection], dtype=np.int64)}
-            if self.slave.kind == "wholeFace"
+            if self.integration == "wholeFace"
             else {}
         )
 

@@ -1,9 +1,9 @@
 ** The hexa20 contact patch test of SurfaceToDeformableSurfaceContactPatchHexa20 on contact surfaces
-** generated as whole element faces (facets=wholeFace) instead of flat facets: the same contact
-** constraint then integrates each slave quad8 face with its native Gauss rule (3 x 3 points, weighted
-** with the face's own surface Jacobian) and projects onto the curved master faces, searched as they
-** are. The exact solution is the same homogeneous uniaxial stress, contact pressure 360 and a flat
-** interface.
+** given as whole element faces (facets=wholeFace, as a mesh generator would deliver them) and
+** integrated with integration=wholeFace: each slave quad8 face carries its native Gauss rule (3 x 3
+** points, weighted with the face's own surface Jacobian), and the points are projected onto the curved
+** master faces, searched as they are. The exact solution is the same homogeneous uniaxial stress,
+** contact pressure 360 and a flat interface.
 **
 ** Measured, at full load (36 slave points = 4 faces x 9):
 **   RFNormal     359.8920323902831, the C3D8 reference's 359.89203239028274 to 13 digits.
@@ -62,7 +62,7 @@ upper_all
 
 *constraint, name=contact, type=surfaceToDeformableSurfacePenalty
 slaveSurface=slaveSurf_facets, masterSurface=masterSurf_facets, penalty=3e7, type=linear,
-searchDistance=1.0, sliding=small, gaussPointsPerDirection=3
+searchDistance=1.0, sliding=small, integration=wholeFace, gaussPointsPerDirection=3
 
 *fieldOutput
 >>perNode, elSet=lower_all, field=displacement, result=U, name=dispLower

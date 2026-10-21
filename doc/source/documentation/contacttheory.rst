@@ -771,12 +771,17 @@ the gap gradient -- a non-symmetric, variationally inconsistent operator, the sa
 confines the ``serendipityOptimal`` weight transform to small sliding. For straight-edged faces the
 two points coincide identically.
 
-**Two discretizations of the contact surface, one algorithm.** How the contact surfaces are cut up
-is decided by the surface element generator, and the integrated constraint accepts either; nothing
-in the contact algorithm changes, only where the slave points sit and how the master is searched.
+**The surface as given, the integration as chosen.** The contact surfaces may be given as flat
+facets cut from the element faces by the surface element generator (``facets=triangulated``) or as
+the element faces themselves -- curved ``CON*`` contact elements, from ``facets=wholeFace`` or
+directly from a mesh generator, the same element sets the mortar constraint takes. How the slave
+surface is integrated is chosen in the constraint by ``integration``, independently of how it was
+given; nothing else in the contact algorithm changes.
 
-*Triangulated surfaces* (``facets=triangulated``, the default). Every element face is tiled by flat
-facets, and each slave facet is a **sub-cell** of its parent face's parametric domain carrying an
+*integration=triangles* (the default). Every element face is tiled by flat facets -- those given, or,
+for a whole face, exactly those the surface element generator would cut from it
+(:func:`~edelweissfe.generators.surfaceelementgenerator.facetsOfWholeFace`) -- and each slave facet
+is a **sub-cell** of its parent face's parametric domain carrying an
 ``nQuadraturePoints``-point rule (default 3). A point sits at :math:`\xi = b \cdot \Xi` (with
 :math:`\Xi` the facet vertices' parametric coordinates, stamped by the generator) and carries the
 weight :math:`J_q = A_\Xi \, w_q \, |\boldsymbol{X}_{,\xi} \times \boldsymbol{X}_{,\eta}|(\xi_q)`,
@@ -788,8 +793,8 @@ trapezoidal quad8 face with off-centre midside nodes 1.3e-3 with 3 points per fa
 6, against 7.2e-2 for weights from the flat facet areas; a quad8 face on the parabolic cylinder
 :math:`y = 0.3 (x-1)^2`: 4.0e-3 and 3.7e-5, against 1.2e-2).
 
-*Whole-face surfaces* (``facets=wholeFace``, the element faces themselves as curved ``CON*``
-elements, as the mortar constraint uses them). Each slave face carries its native Gauss-Legendre
+*integration=wholeFace*. Each slave element face -- given whole, or as the facets that cover it --
+carries its native Gauss-Legendre
 rule of ``gaussPointsPerDirection`` points per direction (default 3) with the weight :math:`J_q = w_q
 |\boldsymbol{X}_{,\xi} \times \boldsymbol{X}_{,\eta}|(\xi_q)` -- Gauss points defined on the slave
 segments, as in Wriggers 2006, Section 9.5.3, p. 257 and Fig. 9.14 (measured as above: exact on the

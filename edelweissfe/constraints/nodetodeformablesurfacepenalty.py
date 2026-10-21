@@ -46,6 +46,7 @@ from edelweissfe.constraints.base.penaltylaw import (
     normalPenaltyForce,
     validatedContactType,
 )
+from edelweissfe.generators.surfaceelementgenerator import asFacets
 from edelweissfe.journal.journal import Journal
 from edelweissfe.models.femodel import FEModel
 from edelweissfe.models.meshdependent import MeshDependent
@@ -110,16 +111,17 @@ class NodeToDeformableSurfacePenaltySchema:
     """
 
     slaveSurface: str | None = schemaField(
-        description="The element set of contact facet elements (Tria3ContactFacet/Line2ContactFacet) "
-        "forming the slave surface; its nodes act as the contact points, penalty-weighted by their "
-        "tributary areas.",
+        description="The element set forming the slave surface: contact facets from the surface element "
+        "generator (Tria3ContactFacet/Line2ContactFacet) or whole element faces (CONQUAD4/CONQUAD8/CONLINE2/"
+        "CONLINE3, e.g. from a mesh generator), which are cut into the facets the generator would cut "
+        "from them; its nodes act as the contact points, penalty-weighted by their tributary areas.",
         dtype=str,
         default=None,
         required=True,
     )
     masterSurface: str | None = schemaField(
-        description="The element set of contact facet elements (Tria3ContactFacet/Line2ContactFacet) "
-        "forming the master surface.",
+        description="The element set forming the master surface: contact facets or whole element faces, "
+        "as for slaveSurface.",
         dtype=str,
         default=None,
         required=True,
@@ -358,8 +360,8 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         if self.sliding not in ["finite", "small"]:
             raise ValueError(f"Constraint sliding '{self.sliding}' is not supported. Use 'finite' or 'small'.")
 
-        self._bindSlaveSurface(list(slaveSurface))
-        self._bindMasterSurface(list(masterSurface))
+        self._bindSlaveSurface(asFacets(list(slaveSurface), slaveSurface.name))
+        self._bindMasterSurface(asFacets(list(masterSurface), masterSurface.name))
 
         masterNodes = {node for el in self.facetElements for node in el.nodes}
         if not masterNodes.isdisjoint(self.slaveNodes):
@@ -673,7 +675,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         oldSlaveFacets = self.slaveFacetElements
         oldLambda = dict(zip(self.slaveNodes, self._lambdaN))
 
-        self._bindSlaveSurface(list(model.elementSets[self._slaveSurfaceSetName]))
+        self._bindSlaveSurface(asFacets(list(model.elementSets[self._slaveSurfaceSetName]), self._slaveSurfaceSetName))
 
         # A retained node keeps its history; a new one takes it interpolated from the old slave
         # facet it lies on (Wriggers 2006, Eq. 14.86).
@@ -701,7 +703,9 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         """Rebuild the master facet list/reference coordinates from the regenerated facet set. Any
         per-slave facet assignment is invalidated, since it indexes into this list."""
 
-        self._bindMasterSurface(list(model.elementSets[self._masterSurfaceSetName]))
+        self._bindMasterSurface(
+            asFacets(list(model.elementSets[self._masterSurfaceSetName]), self._masterSurfaceSetName)
+        )
 
         self._assignedFacetIdx = [None] * self.nSlaves
         self._frozenWeights = [None] * self.nSlaves

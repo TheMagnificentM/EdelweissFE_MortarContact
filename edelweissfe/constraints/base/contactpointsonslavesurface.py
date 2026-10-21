@@ -171,13 +171,52 @@ def groupFacetsByParentFace(facets: list) -> dict[tuple, list]:
     return groups
 
 
+def checkFacetsTileParentFace(faceFacets: list, setName: str, constraintName: str):
+    """Reject a parent face that the facets of a surface cover only in part, for an integration over
+    whole faces. The check is made in the face's parametric domain, where the facets' parametric
+    areas (lengths) sum to that of the domain exactly, however the face is curved.
+
+    Parameters
+    ----------
+    faceFacets
+        The facets of one parent face.
+    setName
+        The name of the facet element set, for the error message.
+    constraintName
+        The name of the constraint, for the error message.
+    """
+
+    face = faceFacets[0]
+    localDimension = PARENT_FACE_LOCAL_DIMENSION[face.parentFaceType]
+    covered = 0.0
+    for facet in faceFacets:
+        Xi = np.asarray(facet.vertexParametricCoords, dtype=float)
+        if localDimension == 2:
+            e1, e2 = Xi[1] - Xi[0], Xi[2] - Xi[0]
+            covered += 0.5 * abs(e1[0] * e2[1] - e1[1] * e2[0])
+        else:
+            covered += abs(Xi[1, 0] - Xi[0, 0])
+    domain = 2.0**localDimension
+    if abs(covered - domain) > 1e-10 * domain:
+        raise ValueError(
+            f"Constraint '{constraintName}': the facets of surface '{setName}' cover only "
+            f"{covered / domain:.1%} of the parent face of facet {face.elNumber}; integration=wholeFace "
+            "integrates over whole element faces."
+        )
+
+
+#: The ways of integrating over the slave surface, see :class:`ContactPointsOnSlaveSurface`.
+INTEGRATIONS = ("triangles", "wholeFace")
+
+
 class ContactPointsOnSlaveSurface:
     """The quadrature points of a slave surface, used as contact points.
 
-    The contact algorithm is the same whatever the surface, but the points follow from how the
-    surface is discretized, which the surface element generator decides:
+    The surface may be given as flat facets (``facets=triangulated`` of the surface element generator)
+    or as whole element faces (``CON*`` contact elements, from ``facets=wholeFace`` or a mesh
+    generator); how it is integrated is chosen by ``integration``, whatever it was given as:
 
-    * ``facets=triangulated`` (the default): each flat slave facet is an *integration cell*, a
+    * ``integration='triangles'`` (the default): each flat slave facet is an *integration cell*, a
       sub-cell of its parent face's parametric domain, and carries an ``nQuadraturePoints``-point
       rule. A point at facet-barycentric coordinates :math:`b` sits at parent-face parametric
       coordinates :math:`\\xi = b \\cdot \\Xi` (with :math:`\\Xi` the facet vertices' own parametric
@@ -186,8 +225,11 @@ class ContactPointsOnSlaveSurface:
       :math:`L_{\\Xi} \\, w_q \\, |X_{,\\xi}|(\\xi_q)` (2D), with :math:`A_{\\Xi}` (:math:`L_{\\Xi}`) the
       facet's area (length) in the parametric space and the parent face's own surface Jacobian -- a
       composite rule over the parent face, exact for the face's geometry however it is curved or
-      distorted, up to the order of the facet rule.
-    * ``facets=wholeFace``: each element face is a cell and carries the native Gauss-Legendre rule of
+      distorted, up to the order of the facet rule. Whole element faces are cut into the facets the
+      surface element generator would cut from them
+      (:func:`~edelweissfe.generators.surfaceelementgenerator.facetsOfWholeFace`).
+    * ``integration='wholeFace'``: each element face is a cell (the facets of a triangulated surface
+      grouped by their parent face, which they must cover) and carries the native Gauss-Legendre rule of
       ``gaussPointsPerDirection`` points per direction, with the weight
       :math:`J_q = w_q \\, |X_{,\\xi} \\times X_{,\\eta}|(\\xi_q)` (3D) or :math:`w_q |X_{,\\xi}|(\\xi_q)` (2D)
       -- Gauss points defined on the slave segments, as in Wriggers 2006, Section 9.5.3, p. 257 and
@@ -201,18 +243,21 @@ class ContactPointsOnSlaveSurface:
     slaveSurface
         The element set of the slave surface: contact facets, or whole-face contact elements.
     nQuadraturePoints
-        The number of quadrature points per slave facet, for a triangulated surface.
+        The number of quadrature points per slave facet, for ``integration='triangles'``.
     constraintName
         The name of the owning constraint, for error messages.
+    integration
+        One of :data:`INTEGRATIONS`.
     gaussPointsPerDirection
-        The number of Gauss points per parametric direction, for a whole-face surface.
+        The number of Gauss points per parametric direction, for ``integration='wholeFace'``.
 
     Attributes
     ----------
     facets : list
-        The slave surface elements (facets, or whole faces).
-    kind : str
-        ``'triangulated'`` or ``'wholeFace'``, see :func:`surfaceKind`.
+        The slave surface elements integrated over: facets for ``integration='triangles'`` (those given,
+        or those cut from whole faces), the given elements for ``integration='wholeFace'``.
+    integration : str
+        One of :data:`INTEGRATIONS`.
     nCells : int
         The number of integration cells.
     pointsPerCell : int
@@ -235,8 +280,8 @@ class ContactPointsOnSlaveSurface:
         configuration (consistent with the small-deformation setting, as the node-based
         constraint's tributary areas are).
     facetMeasure : float
-        The summed reference measure of the slave surface -- with ``len(facets)``, the basis of a
-        characteristic size of its elements.
+        The summed reference measure of the slave surface -- with ``nCells``, the basis of a
+        characteristic size of its integration cells.
     pointCell : numpy.ndarray
         The cell index of each contact point.
     pointQuadraturePoint : numpy.ndarray
@@ -254,11 +299,23 @@ class ContactPointsOnSlaveSurface:
         slaveSurface: ElementSet,
         nQuadraturePoints: int,
         constraintName: str,
+        integration: str = "triangles",
         gaussPointsPerDirection: int = 3,
     ):
+        from edelweissfe.generators.surfaceelementgenerator import asFacets
+
         self.setName = slaveSurface.name
-        self.facets = list(slaveSurface)
-        self.kind = surfaceKind(self.facets, "slave", self.setName, constraintName)
+        elements = list(slaveSurface)
+        surfaceKind(elements, "slave", self.setName, constraintName)
+        if integration not in INTEGRATIONS:
+            raise ValueError(
+                f"Constraint '{constraintName}': unknown integration '{integration}'; choose one of {INTEGRATIONS}."
+            )
+        self.integration = integration
+        # Integrated over triangles, a whole-face surface is cut into the facets the surface element
+        # generator would cut from the same faces; integrated over whole faces, the given elements are
+        # grouped by face.
+        self.facets = asFacets(elements, self.setName) if integration == "triangles" else elements
 
         for element in self.facets:
             if surfaceFaceType(element) not in PARENT_FACE_LOCAL_DIMENSION:
@@ -276,7 +333,7 @@ class ContactPointsOnSlaveSurface:
         self.shapeFunctions = []
         self.integrationWeights = []
 
-        if self.kind == "triangulated":
+        if integration == "triangles":
             self.pointsPerCell = nQuadraturePoints
             for facet in self.facets:
                 barycentric, weights = facetQuadratureRule(facet.nNodes, nQuadraturePoints)
@@ -290,13 +347,16 @@ class ContactPointsOnSlaveSurface:
                 )
         else:
             self.pointsPerCell = 0
-            for face in self.facets:
+            for faceElements in groupFacetsByParentFace(self.facets).values():
+                face = faceElements[0]
+                if not isWholeFaceElement(face):
+                    checkFacetsTileParentFace(faceElements, self.setName, constraintName)
                 faceType = surfaceFaceType(face)
                 parametric, gaussWeights = parentFaceGaussRule(faceType, gaussPointsPerDirection)
-                referenceCoordinates = np.array([n.coordinates for n in face.nodes])
+                referenceCoordinates = np.array([n.coordinates for n in surfaceFaceNodes(face)])
                 tangents = parentFaceTangents(faceType, parametric, referenceCoordinates)
                 self._addCell(
-                    tuple(face.nodes),
+                    tuple(surfaceFaceNodes(face)),
                     face,
                     parametric,
                     parentFaceShapeFunctionsAt(faceType, parametric),

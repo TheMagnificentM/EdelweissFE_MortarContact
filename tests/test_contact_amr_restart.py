@@ -145,12 +145,28 @@ _FORMULATIONS = {
             f"searchDistance=2.0, mu={MU}, tangentPenalty=1e6"
         ),
     ),
-    "integratedWholeFace": dict(
+    "integratedOnWholeFaces": dict(
         facetOption=_FACETS,
         constraintType="surfaceToDeformableSurfacePenalty",
         constraintOptions=(
             "slaveSurface=slaveSurf_facets, masterSurface=masterSurf_facets, penalty=1e6, type=quadratic, "
             f"searchDistance=2.0, mu={MU}, tangentPenalty=1e6"
+        ),
+    ),
+    "integratedWholeFaceGauss": dict(
+        facetOption=_FACETS,
+        constraintType="surfaceToDeformableSurfacePenalty",
+        constraintOptions=(
+            "slaveSurface=slaveSurf_facets, masterSurface=masterSurf_facets, penalty=1e6, type=quadratic, "
+            f"searchDistance=2.0, mu={MU}, tangentPenalty=1e6, integration=wholeFace"
+        ),
+    ),
+    "nodeToWholeFaces": dict(
+        facetOption=_FACETS,
+        constraintType="nodeToDeformableSurfacePenalty",
+        constraintOptions=(
+            "slaveSurface=slaveSurf_facets, masterSurface=masterSurf_facets, penalty=1e6, type=quadratic, "
+            f"searchDistance=2.0, sliding=small, mu={MU}, tangentPenalty=1e6"
         ),
     ),
     "mortarPenalty": dict(
@@ -285,7 +301,17 @@ def _pointCoordinates(key) -> np.ndarray:
     return np.asarray(key.coordinates)
 
 
-@pytest.mark.parametrize("formulation", ["nodeToSurface", "integrated", "integratedWholeFace", "mortarPenalty"])
+@pytest.mark.parametrize(
+    "formulation",
+    [
+        "nodeToSurface",
+        "integrated",
+        "integratedOnWholeFaces",
+        "integratedWholeFaceGauss",
+        "nodeToWholeFaces",
+        "mortarPenalty",
+    ],
+)
 def test_refinement_transfers_a_linear_traction_field_exactly(formulation, tmp_path, monkeypatch):
     """A refinement keeps the history of the points it retains and interpolates it for those it
     creates (Wriggers 2006, Eq. 14.86). The patch test of that transfer: a traction field linear in

@@ -226,8 +226,8 @@ records file, one line per slave node::
 ===== module documentation: edelweissfe.constraints.nodetodeformablesurfacepenalty =====
 [nodeToDeformableSurfacePenalty] A penalty based unilateral contact constraint preventing the nodes of a slave surface from penetrating a deformable master surface, both represented by contact facet elements.
   required arguments
-    [slaveSurface] The element set of contact facet elements (Tria3ContactFacet/Line2ContactFacet) forming the slave surface; its nodes act as the contact points, penalty-weighted by their tributary areas. (<class 'str'>)
-    [masterSurface] The element set of contact facet elements (Tria3ContactFacet/Line2ContactFacet) forming the master surface. (<class 'str'>)
+    [slaveSurface] The element set forming the slave surface: contact facets from the surface element generator (Tria3ContactFacet/Line2ContactFacet) or whole element faces (CONQUAD4/CONQUAD8/CONLINE2/CONLINE3, e.g. from a mesh generator), which are cut into the facets the generator would cut from them; its nodes act as the contact points, penalty-weighted by their tributary areas. (<class 'str'>)
+    [masterSurface] The element set forming the master surface: contact facets or whole element faces, as for slaveSurface. (<class 'str'>)
     [penalty] The numerical penalty value, an interface stiffness modulus per unit slave surface area. (<class 'float'>)
   optional arguments
     [type] The formulation type: 'linear' (linear force, constant stiffness with jump) or 'quadratic' (quadratic force, linear stiffness). (<class 'str'>, default = linear)
