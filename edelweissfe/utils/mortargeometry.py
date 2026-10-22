@@ -114,8 +114,8 @@ def buildBoundingVolumeHierarchy(facetsWithBounds) -> BVHNode:
     if len(facetsWithBounds) <= 2:
         return BVHNode(aabbMin, aabbMax, facets=[f[0] for f in facetsWithBounds])
 
-    extent = aabbMax - aabbMin
-    splitAxis = np.argmax(extent)
+    boxSize = aabbMax - aabbMin
+    splitAxis = np.argmax(boxSize)
 
     facetsWithBounds.sort(key=lambda f: f[1][splitAxis])
     mid = len(facetsWithBounds) // 2
@@ -206,6 +206,14 @@ def toPlaneCoordinates(points, origin, t1, t2):
     return np.array(coords)
 
 
+def extent(points) -> float:
+    """The largest extent of the bounding box of a set of points: the length scale against which the
+    geometric tolerances of this module are taken. Written in Python scalars, since it is evaluated
+    for every point mapped back and numpy's dispatch would cost more than the arithmetic."""
+    rows = points.tolist() if hasattr(points, "tolist") else points
+    return float(max(max(column) - min(column) for column in zip(*rows))) if len(rows) else 0.0
+
+
 def sutherlandHodgmanClip(subjectPolygon, clipPolygon):
     """Clip one 2D polygon against another by the algorithm of Sutherland & Hodgman (1974).
 
@@ -225,10 +233,14 @@ def sutherlandHodgmanClip(subjectPolygon, clipPolygon):
         The vertices of the overlap, possibly empty.
     """
 
+    # The inclusion test compares a length squared; its tolerance is relative to the size of the
+    # clip window, so that the clipping does not depend on the length unit.
+    insideTolerance = -1e-12 * extent(clipPolygon) ** 2
+
     def inside(p, cp1, cp2):
         # Left of the directed edge cp1 -> cp2. Inclusive, so that a vertex lying exactly on the
         # edge is kept rather than dropped and the overlap does not lose a sliver of area.
-        return (cp2[0] - cp1[0]) * (p[1] - cp1[1]) - (cp2[1] - cp1[1]) * (p[0] - cp1[0]) >= -1e-12
+        return (cp2[0] - cp1[0]) * (p[1] - cp1[1]) - (cp2[1] - cp1[1]) * (p[0] - cp1[0]) >= insideTolerance
 
     def intersection(cp1, cp2, s, e):
         # The crossing of the subject edge s -> e with the line of the clip edge, written along the
@@ -308,7 +320,8 @@ def mapPlaneToNatural(el, planeCoords, planePoint, maxIterations=10, tol=1e-12):
     planePoint
         The plane point.
     maxIterations, tol
-        The iteration limit, and the tolerance on the residual and on the update.
+        The iteration limit, and the tolerance on the update and, relative to the size of the facet in
+        the plane, on the residual.
 
     Returns
     -------
@@ -323,6 +336,9 @@ def mapPlaneToNatural(el, planeCoords, planePoint, maxIterations=10, tol=1e-12):
     of ``np.linalg.solve`` would cost more than the arithmetic.
     """
     elType = el.elType.upper()
+    size = extent(planeCoords)
+    residualTolerance = tol * size
+    singularJacobian = 1e-14 * size * size
 
     if "LINE" in elType:
         xi = 0.0
@@ -333,12 +349,12 @@ def mapPlaneToNatural(el, planeCoords, planePoint, maxIterations=10, tol=1e-12):
             xMapped = N @ planeCoords
             r0 = xMapped[0] - planePoint[0]
             r1 = xMapped[1] - planePoint[1]
-            if math.sqrt(r0 * r0 + r1 * r1) < tol:
+            if math.sqrt(r0 * r0 + r1 * r1) < residualTolerance:
                 return localCoords, True
             J = el.getShapeFunctionDerivatives(localCoords) @ planeCoords  # (1, 2)
             j0, j1 = J[0, 0], J[0, 1]
             jSquared = j0 * j0 + j1 * j1
-            if jSquared < 1e-14:
+            if jSquared < singularJacobian:
                 return localCoords, False
             delta = (j0 * r0 + j1 * r1) / jSquared
             xi -= delta
@@ -360,7 +376,7 @@ def mapPlaneToNatural(el, planeCoords, planePoint, maxIterations=10, tol=1e-12):
         xMapped = N @ planeCoords
         r0 = xMapped[0] - planePoint[0]
         r1 = xMapped[1] - planePoint[1]
-        if math.sqrt(r0 * r0 + r1 * r1) < tol:
+        if math.sqrt(r0 * r0 + r1 * r1) < residualTolerance:
             return localCoords, True
         Jm = el.getShapeFunctionDerivatives(localCoords) @ planeCoords  # (2, 2); the Jacobian is its transpose
         a00, a01 = Jm[0, 0], Jm[1, 0]
@@ -415,10 +431,12 @@ def isConvexPolygon(polygon, tol: float = 1e-14) -> bool:
     reflex vertex silently removes area); the subject, because the overlap inherits its reflex
     vertices and the fan triangulation of :func:`triangulatePolygon` then counts area outside the
     polygon. Only the quadrilateral sub-cells of CONQUAD4, CONQUAD8 and CONQUAD9 can be non-convex.
+    ``tol`` is relative to the squared size of the polygon.
     """
     n = len(polygon)
     if n < 4:
         return True
+    tol = tol * extent(polygon) ** 2
     sign = 0.0
     for i in range(n):
         a = polygon[(i + 1) % n] - polygon[i]

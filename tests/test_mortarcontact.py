@@ -180,7 +180,11 @@ class _TwoBlockModel:
 
     @staticmethod
     def build(
-        gap: float = 0.0, elementType: str = "C3D8", masterShift: float = 0.0, flipNonMortar: bool = False
+        gap: float = 0.0,
+        elementType: str = "C3D8",
+        masterShift: float = 0.0,
+        flipNonMortar: bool = False,
+        lengthScale: float = 1.0,
     ) -> FEModel:
         from edelweissfe.elements.displacementelement.element import DisplacementElement
 
@@ -203,8 +207,9 @@ class _TwoBlockModel:
                 model.nodes[node.label] = node
             return nodes
 
-        lowerNodes = cube(0.0, 0.0, 0.0, 1.0, 1)
-        upperNodes = cube(masterShift, 1.0 + gap, 0.0, 1.0, 101)
+        s = lengthScale
+        lowerNodes = cube(0.0, 0.0, 0.0, s, 1)
+        upperNodes = cube(s * masterShift, s * (1.0 + gap), 0.0, s, 101)
 
         with model.topology.changes():
             for nodes, name in ((lowerNodes, "lower"), (upperNodes, "upper")):
@@ -378,6 +383,22 @@ class TestCouplingMatrices(unittest.TestCase):
             self.assertAlmostEqual(float(np.trace(D)), trace, places=11, msg=f"shift {shift}")
             scaled = np.asarray(constraint.currentNodalWeights) / constraint.currentNodalScale
             np.testing.assert_allclose(scaled, 0.25, rtol=1e-11, err_msg=f"shift {shift}")
+
+    def test_the_coupling_does_not_depend_on_the_length_unit(self):
+        """The same interface in units from 1e-8 to 1e6 of the unit cube: D and C scale with the
+        area, the weighted gap with the area times the length, and nothing else changes. Every
+        geometric tolerance of the segmentation is taken relative to the facet size; an absolute
+        one would drop the integration cells of a small model or keep spurious ones in a large one."""
+
+        reference = self._assembled(_TwoBlockModel.build(masterShift=0.3, gap=0.01))
+        D0 = np.asarray(reference.currentD.todense())
+        C0 = np.asarray(reference.currentC.todense())
+        g0 = np.asarray(reference.currentWeakGap)
+        for s in (1e-8, 1e-4, 1e3, 1e6):
+            constraint = self._assembled(_TwoBlockModel.build(masterShift=0.3, gap=0.01, lengthScale=s))
+            np.testing.assert_allclose(np.asarray(constraint.currentD.todense()) / s**2, D0, rtol=1e-10, atol=1e-14)
+            np.testing.assert_allclose(np.asarray(constraint.currentC.todense()) / s**2, C0, rtol=1e-10, atol=1e-14)
+            np.testing.assert_allclose(np.asarray(constraint.currentWeakGap) / s**3, g0, rtol=1e-10, atol=1e-14)
 
     def test_the_coverage_is_the_nodal_scaling_factor(self):
         """The coverage reported is the scaling factor of Popp et al. (2013), Eq. (36): per node, the

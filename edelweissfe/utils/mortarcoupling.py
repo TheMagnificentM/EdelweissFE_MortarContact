@@ -92,6 +92,7 @@ from edelweissfe.elements.contactelement.element import (
 )
 from edelweissfe.utils.mortargeometry import (
     buildBoundingVolumeHierarchy,
+    extent,
     getSubCells,
     isConvexPolygon,
     isInsideReferenceElement,
@@ -105,11 +106,12 @@ from edelweissfe.utils.mortargeometry import (
 
 
 def _searchBox(coords: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """The broadphase box of a facet: its bounding box, widened by 15 % of its largest extent and at
-    least 0.1. A search radius, not a tolerance of the formulation; a facet stays a candidate a little
-    before it touches. Both values are chosen here; the absolute 0.1 is a length."""
+    """The broadphase box of a facet: its bounding box, widened by 15 % of its largest extent. A search
+    radius, not a tolerance of the formulation; a facet stays a candidate a little before it touches.
+    The factor is chosen here; relative to the facet, so that the search does not depend on the length
+    unit."""
     lo, hi = coords.min(axis=0), coords.max(axis=0)
-    margin = max(0.15 * np.max(hi - lo), 0.1)
+    margin = 0.15 * np.max(hi - lo)
     return lo - margin, hi + margin
 
 
@@ -385,6 +387,8 @@ def _segment3D(context, candidates, owners, coordinates, elementClass, result):
         plane = _AuxiliaryPlane(x0, n0, t1, t2, coordinates)
         qSFull = plane.of(sEl)
         qS = qSFull[sSub]
+        # Integration cells below this (twice the) area, relative to the sub-cell, carry no weight.
+        minimumArea = 1e-14 * extent(qS) ** 2
         if not isConvexPolygon(qS):
             result.nonConvex.append(("non-mortar", sEl.elNumber))
 
@@ -401,7 +405,7 @@ def _segment3D(context, candidates, owners, coordinates, elementClass, result):
                 for tri in triangulatePolygon(polygon):
                     v0, v1, v2 = tri
                     area = abs((v1[0] - v0[0]) * (v2[1] - v0[1]) - (v2[0] - v0[0]) * (v1[1] - v0[1]))
-                    if area < 1e-14:
+                    if area < minimumArea:
                         continue
                     # The points of the cell, grouped by the pair of facets they are attributed to.
                     groups = {}

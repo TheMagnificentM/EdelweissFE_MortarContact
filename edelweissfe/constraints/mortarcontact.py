@@ -106,7 +106,7 @@ from edelweissfe.utils.contactfriction import (
     tangentPenaltyField,
 )
 from edelweissfe.utils.mortarcoupling import computeMortarCoupling
-from edelweissfe.utils.mortargeometry import curvedFacetHistoryPatches
+from edelweissfe.utils.mortargeometry import curvedFacetHistoryPatches, extent
 from edelweissfe.utils.schema import buildSchemaFromOptions, schemaField
 
 #: Relative noise floor of the mortar quantities (entries of D and C, nodal weights, weighted gaps):
@@ -829,7 +829,7 @@ class Constraint(ConstraintBase, MeshDependent):
         slaveCentroid = np.mean(self._X[: self.nNonMortarNodes], axis=0)
         masterCentroid = np.mean(self._X[self.nNonMortarNodes :], axis=0)
         towardsMaster = masterCentroid - slaveCentroid
-        if np.linalg.norm(towardsMaster) < 1e-14:
+        if np.linalg.norm(towardsMaster) < 1e-14 * extent(self._X):
             return  # coincident centroids: no information
 
         meanNormal = np.mean(normals, axis=0)
@@ -1135,7 +1135,8 @@ class Constraint(ConstraintBase, MeshDependent):
                 else:
                     nNode = np.array([t[0][1], -t[0][0]])
                 length = np.linalg.norm(nNode)
-                if length <= 1e-14:
+                # The tangents carry the facet size: the cross product an area, the 2D normal a length.
+                if length <= 1e-14 * extent(coords) ** (dim - 1):
                     # A degenerate facet at this node contributes nothing.
                     continue
                 normals[nodeToIndex[node]] += nNode / length
