@@ -52,12 +52,7 @@ from edelweissfe.solvers.base.dirichlet import applyDirichletToStiffness
 from edelweissfe.solvers.base.nonlinearsolverbase import NonlinearSolverBase
 from edelweissfe.stepactions.base.stepactionbase import StepActionBase
 from edelweissfe.timesteppers.timestep import TimeStep
-from edelweissfe.utils.exceptions import (
-    CutbackRequest,
-    DivergingSolution,
-    IncrementFailed,
-    ReachedMaxIterations,
-)
+from edelweissfe.utils.exceptions import CutbackRequest, DivergingSolution, IncrementFailed, ReachedMaxIterations
 from edelweissfe.utils.fieldoutput import FieldOutputController
 from edelweissfe.utils.schema import schemaField
 
@@ -745,6 +740,15 @@ class NIST(NonlinearSolverBase):
         """
 
         iterationCounter = 0
+        # Newton iterations already spent when the current augmentation round
+        # started; 0 without an augmenting constraint.
+        iterationsAtAugmentationStart = 0
+        # Set right after an augmentation: the constraint forces changed, so the
+        # state is no longer equilibrated and a correction MUST be taken before the
+        # convergence test is meaningful again. Without this the solver would re-test
+        # the very state it just accepted, pass, and augment again - the outer loop
+        # would advance the multipliers while the displacements never respond.
+        justAugmented = False
         incrementResidualHistory = dict.fromkeys(self.theDofManager.idcsOfFieldsInDofVector, (0.0, 0))
 
         elements = model.elements
@@ -818,18 +822,52 @@ class NIST(NonlinearSolverBase):
                 for dirichlet in dirichlets:
                     R[dirichlet.constrainedDofIndices] = 0.0
 
-                converged, nodesWithLargestResidual = self.checkConvergence(
-                    R, ddU, dU, F, FConstraints, iterationCounter, incrementResidualHistory
+                # Iterations spent in the current augmentation round (iterationCounter
+                # without an augmenting constraint): every round is a Newton solve in its
+                # own right and must not inherit the relaxed late-iteration tolerances of
+                # its predecessors.
+                roundIterations = iterationCounter - iterationsAtAugmentationStart
+
+                # A constraint may report that its own state has changed since the last
+                # correction - the warm-started multiplier estimate of a nested scheme at the
+                # beginning of an increment is the typical case. The equilibrium that would be
+                # accepted here is then not the one the assembled forces belong to, and a correction
+                # has to be taken first.
+                stateChanged = justAugmented or any(
+                    c.requiresCorrectionBeforeConvergence() for c in constraints.values()
                 )
 
+                converged, nodesWithLargestResidual = (
+                    (False, {})
+                    if stateChanged
+                    else self.checkConvergence(R, ddU, dU, F, FConstraints, roundIterations, incrementResidualHistory)
+                )
+                justAugmented = False
+
                 if converged:
-                    break
+                    # Outer (augmentation) loop. A constraint enforced by a nested
+                    # scheme, such as an augmented Lagrangian, advances its multiplier
+                    # estimate only once the Newton-Raphson loop has converged, and
+                    # equilibrium is then re-established with the updated multipliers.
+                    # Every other constraint inherits the no-op default of
+                    # ConstraintBase.augmentConstraint.
+                    if not self.augmentConstraints(constraints):
+                        break
+
+                    # The constraint forces just changed, so the residual that was
+                    # tested is stale: re-assemble before taking any Newton step,
+                    # and restart the divergence bookkeeping and the iteration
+                    # budget for the new round.
+                    incrementResidualHistory = dict.fromkeys(self.theDofManager.idcsOfFieldsInDofVector, (0.0, 0))
+                    iterationsAtAugmentationStart = iterationCounter
+                    justAugmented = True
+                    continue
 
                 if self.checkDivergingSolution(incrementResidualHistory, maxGrowingIter):
                     self.printResidualOutlierNodes(nodesWithLargestResidual)
                     raise DivergingSolution("Residual grew {:} times, cutting back".format(maxGrowingIter))
 
-                if iterationCounter == maxIter:
+                if roundIterations == maxIter:
                     self.printResidualOutlierNodes(nodesWithLargestResidual)
                     raise ReachedMaxIterations("Reached max. iterations in current increment, cutting back")
 
@@ -1005,6 +1043,33 @@ class NIST(NonlinearSolverBase):
             F[el] += abs(Pe)
 
         return P, K, F
+
+    @performancetiming.timeit("augment constraints")
+    def augmentConstraints(self, constraints) -> bool:
+        """Give every constraint the chance to perform one outer iteration on the
+        converged state, and report whether any of them requires the equilibrium
+        iteration to be resumed.
+
+        Parameters
+        ----------
+        constraints
+            The dictionary of all constraints.
+
+        Returns
+        -------
+        bool
+            True if at least one constraint augmented itself.
+
+        """
+
+        # Deliberately not short-circuiting: every constraint must see the
+        # converged state, even if an earlier one already asked for another round.
+        augmented = False
+        for constraint in constraints.values():
+            if constraint.augmentConstraint():
+                augmented = True
+
+        return augmented
 
     @performancetiming.timeit("assemble constraints")
     def assembleConstraints(

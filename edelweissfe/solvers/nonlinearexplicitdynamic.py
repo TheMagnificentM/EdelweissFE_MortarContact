@@ -1663,7 +1663,7 @@ class NED(NonlinearSolverBase):
             criticalTimeStep = previous.criticalTimeStep
         else:
             criticalTimeStep = self.options.get("courant-number") * self.getCriticalTimeStepForExplicitDynamics(
-                model, U
+                model, U, self._rawLumpedMass
             )
             self.journal.message(
                 "Critical time step for explicit dynamics: {:e}".format(criticalTimeStep), self.identification, 1
@@ -2077,13 +2077,24 @@ class NED(NonlinearSolverBase):
             1,
         )
 
-    def getCriticalTimeStepForExplicitDynamics(self, model: FEModel, U: DofVector) -> float:
+    def getCriticalTimeStepForExplicitDynamics(self, model: FEModel, U: DofVector, lumpedMass: DofVector) -> float:
         """Compute the critical time step for explicit dynamics.
+
+        The minimum over the elements and over the constraints. The element bound is the CFL
+        condition of the mesh; the constraint bound is what a constraint acting through a
+        stiffness -- a penalty contact -- adds on top of it. A constraint that does not estimate its
+        own bound inherits ``inf`` from
+        :meth:`~edelweissfe.constraints.base.constraintbase.ConstraintBase.computeCriticalTimeStepForExplicitDynamics`.
 
         Parameters
         ----------
         model
             The model tree.
+        U
+            The current solution.
+        lumpedMass
+            The unfolded lumped mass, handed to the constraints so they can weigh their own
+            stiffness against the inertia it acts on.
 
         Returns
         -------
@@ -2097,5 +2108,19 @@ class NED(NonlinearSolverBase):
             elementTimeStep = element.computeCriticalTimeStepForExplicitDynamics(U[element])
             if elementTimeStep < minTimeStep:
                 minTimeStep = elementTimeStep
+
+        elementTimeStep = minTimeStep
+        for name, constraint in model.constraints.items():
+            constraintTimeStep = constraint.computeCriticalTimeStepForExplicitDynamics(lumpedMass[constraint])
+            if constraintTimeStep < minTimeStep:
+                minTimeStep = constraintTimeStep
+                self.journal.message(
+                    "Constraint '{:}' limits the stable time increment to {:e}, below the mesh's "
+                    "{:e} -- its stiffness, not the mesh, now sets the cost of this analysis.".format(
+                        name, constraintTimeStep, elementTimeStep
+                    ),
+                    self.identification,
+                    1,
+                )
 
         return minTimeStep

@@ -255,6 +255,86 @@ class ConstraintBase(OptionSchemaProvider, ABC, VIJEntityBase):
         K = self.shapeVIJContribution(scratch)
         self.applyConstraint(U_np, dU, PExt, K, timeStep)
 
+    def computeCriticalTimeStepForExplicitDynamics(self, lumpedMass: np.ndarray) -> float:
+        """This constraint's own stability limit on the explicit time step.
+
+        An explicit solver derives its critical time step from the elements, whose wave speed
+        and characteristic length give the CFL bound of the MESH. A constraint that acts through
+        a stiffness -- every penalty-type contact -- adds its own frequency on top of that, and
+        it is not in the mesh's estimate: with a stiff enough penalty the integration simply
+        leaves the stability limit. This hook is how a constraint reports the bound it imposes,
+        so that the solver can take it into account.
+
+        The default is ``inf``: a constraint that adds no stiffness, or one that does not estimate
+        its own bound, leaves the mesh's limit intact.
+
+        Parameters
+        ----------
+        lumpedMass
+            The lumped mass of this constraint's degrees of freedom, in its own ordering. The
+            *unfolded* mass: the true nodal inertia, before any multi-point-constraint folding,
+            since that is what the constrained degrees of freedom actually carry.
+
+        Returns
+        -------
+        float
+            The largest stable time increment this constraint permits, or ``inf``.
+        """
+
+        return np.inf
+
+    def requiresCorrectionBeforeConvergence(self) -> bool:
+        """May the increment be declared converged on the state as it stands?
+
+        A constraint that changed its own internal state since the last Newton
+        correction has invalidated the equilibrium the solver is about to accept -
+        the assembled forces are not the ones that produced the current
+        displacements. The typical case is a nested scheme whose multiplier
+        estimate is warm-started at the beginning of an increment.
+
+        This matters because the state under test may never have been corrected at
+        all: at iteration 0 there is no correction yet, and a convergence criterion
+        cannot distinguish "the correction is small" from "there is no correction".
+
+        Constraints that are fully enforced by the equations of the global system -
+        every Lagrange-multiplier constraint - inherit the no-op below.
+
+        Returns
+        -------
+        bool
+            True if at least one Newton correction has to be taken before the
+            convergence of the increment may be tested.
+
+        """
+
+        return False
+
+    def augmentConstraint(self) -> bool:
+        """Perform one outer (augmentation) iteration once the Newton loop of the
+        current increment has converged.
+
+        This is the hook for nested solution strategies in which the constraint is
+        enforced by an OUTER loop around the equilibrium iteration - most notably
+        the augmented Lagrangian (Uzawa) scheme, where the multiplier estimate is
+        updated from the converged constraint violation and equilibrium is then
+        re-established. The order matters: the estimate is advanced only once the
+        Newton-Raphson loop has converged, never inside it, because it is the
+        converged violation it is meant to correct.
+
+        Constraints that are fully enforced within the Newton loop - every
+        constraint using Lagrange multipliers as unknowns, and pure penalty - do
+        not need this and inherit the no-op below.
+
+        Returns
+        -------
+        bool
+            True if the constraint updated its internal state and requires the
+            equilibrium iteration to be resumed, False if it is satisfied.
+
+        """
+
+        return False
+
     @abstractmethod
     def applyConstraint(
         self,

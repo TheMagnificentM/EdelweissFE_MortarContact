@@ -288,6 +288,46 @@ class FEModel:
 
                 constraint.assignAdditionalScalarVariables(scalarVariables)
 
+    def reassignScalarVariablesOfConstraint(self, constraint) -> list:
+        """Re-create the ScalarVariables of one constraint, for a constraint whose number of
+        additional unknowns changed with the mesh (e.g. the Lagrange multipliers of a mortar contact
+        after an AMR refinement of its non-mortar surface). Called from the constraint's own
+        :meth:`~edelweissfe.models.meshdependent.MeshDependent.refresh`.
+
+        The constraint's previous variables are removed and ``{name}_{i}`` is requested anew for
+        ``i < constraint.getNumberOfAdditionalNeededScalarVariables()``, all cold-started at 0;
+        mapping the converged values onto the new variables is the constraint's business, since only
+        it knows which unknown belongs to which entity. The solver picks the new set up at its next
+        equation-system rebuild, which the refresh triggers by returning True.
+
+        Parameters
+        ----------
+        constraint
+            The constraint, registered in :attr:`constraints`.
+
+        Returns
+        -------
+        list
+            The new ScalarVariables, also assigned to the constraint.
+        """
+
+        name = next(key for key, value in self.constraints.items() if value is constraint)
+        for variable in list(constraint.scalarVariables):
+            for key in [key for key, value in self.scalarVariables.items() if value is variable]:
+                del self.scalarVariables[key]
+        # a variable of this constraint that it no longer holds a reference to (e.g. created by a
+        # concurrent rebuild with a stale count) must not block the name either
+        prefix = f"{name}_"
+        for key in [key for key in self.scalarVariables if key.startswith(prefix) and key[len(prefix) :].isdigit()]:
+            del self.scalarVariables[key]
+
+        scalarVariables = [
+            self._requestAdditionalScalarVariable(f"{name}_{i}")
+            for i in range(constraint.getNumberOfAdditionalNeededScalarVariables())
+        ]
+        constraint.assignAdditionalScalarVariables(scalarVariables)
+        return scalarVariables
+
     def _prepareVariablesAndFields(self, journal):
         """Prepare all variables and fields for a simulation.
 
@@ -578,8 +618,13 @@ class FEModel:
                     nf.createFieldValueEntry(entryName)
                 storedValues.read_direct(nf[entryName])
 
+        # A variable the checkpoint does not hold is left as it is: a constraint whose number of
+        # unknowns follows the mesh (a mortar contact's multipliers) holds its setup count until its
+        # own refresh, which then restores its values from its own restart data by entity.
+        storedScalarVariables = f["scalarVariables"].attrs
         for name, scalarVariable in self.scalarVariables.items():
-            scalarVariable.value = f["scalarVariables"].attrs[name]
+            if name in storedScalarVariables:
+                scalarVariable.value = storedScalarVariables[name]
 
         # One uniform loop, by element number, with no skip set and nothing swallowed -- sound only
         # because the replay above reproduces the original numbering exactly, verified against the
