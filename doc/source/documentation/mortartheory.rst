@@ -192,92 +192,67 @@ The tangent
 ~~~~~~~~~~~
 
 How the geometry -- the segmentation, the coupling matrices and the nodal normals -- enters the
-residual and the tangent is set by ``geometryUpdate``.
-
-**consistent**, on request under the implicit solvers. The geometry is rebuilt at every Newton
-iterate, at the iterate itself, and the tangent carries its full linearisation, as in Popp,
-Gitterle, Gee and Wall (2010), Section 4.3 and Appendix A, and in two dimensions Popp, Gee and Wall
-(2009), Appendix A. Every quantity D, C and the weighted gap are built from is differentiated with
-respect to the nodal coordinates, and the derivatives are chained down
-(:mod:`~edelweissfe.utils.mortarcoupling`, building blocks in
-:mod:`~edelweissfe.utils.mortarlinearization`):
-
-* the element normal at each node and their unweighted average, Eqs. (A1)--(A3) of Popp et al.
-  (2010);
-* the auxiliary plane, its centre and its normal interpolated from the nodal normals, Eqs. (A18)
-  and (A15), and the orthogonal projection of the nodes into it, Eq. (A17);
-* the vertices of the clipped polygon, each either a surviving subject vertex or the intersection of
-  a subject edge with the line of a clip edge, Eq. (A19);
-* the fan triangles, their Jacobian, Eq. (A7), and the Gauss points in them, Eq. (A16);
-* the natural coordinates of every Gauss point on both sides along the auxiliary normal, Eqs.
-  (A12)--(A14), by the inverse plane map of the face that contains the point (see *Segmentation of
-  the overlap*); where that is not the face whose sub-segment produced it, the nodes of that face,
-  and on the non-mortar side those its nodal normals depend on, enter the point's derivatives too;
-* the dual coefficients on the integrated part of the slave element, Popp, Seitz, Gee and Wall
-  (2013), Eqs. (26)--(28), with the basis transformation constant -- it is "defined once at t = 0"
-  and stays "unaltered during the entire finite deformation process" (Popp, Wohlmuth, Gee and Wall
-  2012, p. B432) -- and, on the reference-element fallback, the whole-element integrals through the
-  surface Jacobian, Popp et al. (2010), Eqs. (A24)--(A26);
-* D and C, Eqs. (A4)--(A5), the weighted gap at the Gauss points with the interpolated normal,
-  Eqs. (A8)--(A11), the nodal scaling factor, Popp et al. (2013), Eq. (38), and the derivative of the
-  contact forces, the matrix of Popp et al. (2010), Eq. (51);
-* in two dimensions, the segment ends projected along the normal field and their derivatives, Popp,
-  Gee and Wall (2009), Eqs. (A25)--(A31), and the nodal weighted gap, their Eq. (A36).
-
-Where the geometry built here goes beyond the cases the sources treat, its derivatives follow from
-the chain rule. The auxiliary plane belongs to a linear sub-segment of a quadratic facet, to which
-Popp et al. (2010), Section 4.2, apply their algorithm "nearly unchanged"; the basis transformation
-of quadratic slave elements is composed with the integrated-part biorthogonality and the nodal
-scaling of Popp et al. (2013), who treat first-order elements; and the in-plane basis of the
-auxiliary plane is varied without rotation about its normal, which no quantity leaving the plane
-depends on. As in the reference, a derivative holds for a fixed layout: which vertices the polygon
-has, how it is triangulated, which facets overlap and whether a slave element takes the
-reference-element fallback is decided at each iterate and not differentiated. An entry of D, C or
-the gap matrices below the noise floor keeps its column and its derivative with the value exactly
-zero: a coupling that vanishes because the two meshes coincide along one direction does not vanish
-in the neighbouring configuration, and its derivative is not zero.
-
-The residual is the same as under ``frozen``: the contact forces are :math:`-\lambda_I D_{IK} n_I`
+residual and the tangent is set by ``geometryUpdate``. In both modes the residual is the same
+function of the displacements and the geometry: the contact forces are :math:`-\lambda_I D_{IK} n_I`
 and :math:`+\lambda_I C_{IJ} n_I` with the nodal normal (Popp et al. 2010, Eq. (30)), the weighted
 gap carries the normal at the Gauss points, and the variation of D and C in the virtual work is
-neglected, as in Popp et al. (2010), Section 7. The tangent is the exact derivative of this residual;
-in three dimensions it is non-symmetric, under ``penalty`` as well.
-
-Measured against central differences of the residual with the geometry rebuilt at every
-perturbation, on a tilted, curved, laterally shifted pair of surfaces, for all seven contact element
-types and both formulations: :math:`\max |K - K_{FD}| / \max |K|` between :math:`1.4 \cdot 10^{-10}`
-and :math:`8.8 \cdot 10^{-8}`; friction in stick and in slip, with and without ``slipTolerance``,
-passes the same check to the :math:`10^{-6}` of the test. Without the geometric terms the same
-comparison gives :math:`5.5 \cdot 10^{-2}` under ``penalty`` (CONQUAD4). Once the active set has
-settled the Newton iteration converges quadratically; on ``MortarContactTilted`` the residual of the
-first increment runs 1.4, :math:`6.3 \cdot 10^{-3}`, :math:`2.1 \cdot 10^{-7}`,
-:math:`1.1 \cdot 10^{-15}`.
+neglected, as in Popp et al. (2010), Section 7. In both modes the tangent differentiates that
+residual with the geometry held fixed: the rows of D, C and the gap matrices and the nodal normal
+enter as constants, and in three dimensions the tangent is non-symmetric, under ``penalty`` as well.
+What the two modes differ in is the configuration the geometry is built at.
 
 **frozen**, the default, and always under explicit dynamics. The geometry is built once per
 increment from the last converged configuration and held fixed for that increment's Newton
-iterations. The tangent omits the derivatives of D, C and the
-normals and is exact for the residual with the geometry frozen: against central differences with
-the geometry frozen, :math:`\max |K - K_{FD}| / \max |K| = 5.3 \cdot 10^{-10}`. The residual,
-however, belongs to the configuration at the start of the increment, which makes the scheme
-staggered and first order in the increment size -- an error of the increment, not of the iteration,
-which shrinks with the step and not with the tolerance. Measured as the largest deviation of the
-final state from the consistent one at the smallest increment, relative to its largest entry:
+iterations. The tangent is then exact for the residual that is assembled: against central
+differences with the geometry frozen, :math:`\max |K - K_{FD}| / \max |K| = 5.3 \cdot 10^{-10}`.
+The residual, however, belongs to the configuration at the start of the increment, which makes the
+scheme staggered and first order in the increment size -- an error of the increment, not of the
+iteration, which shrinks with the step and not with the tolerance.
+
+**incomplete**, on request under the implicit solvers. The geometry is rebuilt at every Newton
+iterate, at the iterate itself, and held fixed within the Newton step: the coupling matrices "können
+innerhalb eines Newton-Iterationsschrittes :math:`(t^k_{n+1} \rightarrow t^{k+1}_{n+1})` als
+konstant angenommen werden" (Hartmann 2007, Section 6.2.4, p. 98), and the constraint is linearised
+through the displacements alone, with the normal and the coupling of the iterate, Eqs.
+(7.30)--(7.34). Popp, Gitterle, Gee and Wall (2010), Table I, name this the *incomplete
+linearization*: no linearisation of the nodal normal and of the two mortar matrices. The converged
+state of an increment then satisfies the contact conditions in its own configuration, and the
+staggering error is gone. The price is the Newton rate: the tangent omits terms of the residual, so
+the iteration converges linearly once the active set has settled, and Popp et al. (2010), Table I,
+measure 52 Newton steps for it against 16 with the full linearisation under the same fixed-point
+active-set strategy.
+
+Hartmann's formulation is frictionless and condenses the multipliers into an exact active-set loop
+that restarts every pass from the converged state (Section 7.1.3, pp. 112--113); here only the treatment of
+the geometry is taken from it. The active set stays the semi-smooth one described above, re-decided
+in every Newton iteration, and the multipliers stay unknowns of the system.
+
+Measured on ``tests/test_mortarcontact.py::TestIncompleteTangent``, a tilted, curved, laterally
+shifted pair of surfaces, for all seven contact element types and both formulations: against central
+differences with the geometry of the iterate held, :math:`\max |K - K_{FD}| / \max |K|` between
+:math:`5.1 \cdot 10^{-11}` and :math:`1.0 \cdot 10^{-8}`; against central differences with the
+geometry rebuilt at every perturbation, between :math:`3.9 \cdot 10^{-2}` and :math:`2.3 \cdot
+10^{-1}` under ``penalty`` and of order one under ``lagrange``, whose forces carry the derivatives of
+D, C and the normal times the multiplier. Friction in stick and in slip passes the first check as
+well.
+
+The two modes against each other, as the largest deviation of the final state from the
+``incomplete`` one at the smallest increment, relative to its largest entry
+(``tests/test_mortargeometryupdate.py`` checks the same on ``MortarContactTilted``):
 
 ====================================  ===========  ===========  ===========  ===========  ===========
 maxInc                                0.5          0.25         0.125        0.0625       0.03125
 ====================================  ===========  ===========  ===========  ===========  ===========
-``MortarContactTilted``, frozen       1.4e-2       5.6e-3       2.5e-3       1.2e-3       5.6e-4
-``MortarContactPartialOverlap``,      7.6e-3       4.5e-3       2.1e-3       1.0e-3       5.1e-4
+``MortarContactTilted``, frozen       2.0e-2       1.0e-2       5.3e-3       2.6e-3       1.3e-3
+``MortarContactTilted``, incomplete   2.2e-8       7.6e-9       3.8e-9       7.6e-9       0
+``MortarContactPartialOverlap``,      2.8e-3       1.7e-3       8.8e-4       4.4e-4       2.2e-4
 frozen
-both decks, consistent                < 4e-12      < 4e-12      < 4e-12      < 4e-12      0
+``MortarContactPartialOverlap``,      1.3e-9       8.2e-9       6.4e-9       1.3e-9       0
+incomplete
 ====================================  ===========  ===========  ===========  ===========  ===========
 
-``frozen`` is not the *incomplete linearisation* Popp et al. (2010) measure in their Table I -- a
-live geometry carried with a tangent that omits the derivatives of the nodal normal and of the two
-coupling matrices, which costs them 52 Newton steps against 16 with the full linearisation under the
-same fixed-point active-set strategy (8 with the semi-smooth one). Here the tangent is exact for the
-residual it belongs to; it is the residual that lags.
-
+The frozen error halves with the increment; the incomplete one is the tolerance at which the Newton
+iteration stops.
 
 Friction
 ~~~~~~~~
@@ -312,8 +287,7 @@ pointwise slip of the node, so the node enters the shared law as a contact point
    \end{cases}
 
 :math:`\Delta u` is the increment since the last converged state under the implicit solvers and one
-time step's displacement under the explicit one. That is the slip measure of the frozen geometry; the
-consistent one replaces it by the objective slip below. :math:`\varepsilon_T` (``tangentPenalty``, by
+time step's displacement under the explicit one. :math:`\varepsilon_T` (``tangentPenalty``, by
 default the resolved :math:`\varepsilon_N`) is a pointwise modulus exactly like
 :math:`\varepsilon_N`: a sticking node carries :math:`\varepsilon_T` times the relative tangential
 displacement. The nodal forces :math:`A\,c_a t_I = w_a t_I` are the gradient of the convex stick
@@ -322,23 +296,10 @@ counts as without pressure -- no friction, no tangent -- within the noise floor 
 The characteristic facet size of ``slipTolerance`` is taken from the mortar weights at the first
 geometry rebuild, :math:`h = (\sum_I |D_{II}| / n_{facets})^{1/(d-1)}`.
 
-Under ``geometryUpdate=consistent`` the slip is the objective one of Gitterle, Popp, Gee and Wall
-(2010), Eq. (53), at the iterate,
-
-.. math::
-
-   \Delta u_T = P_T \, \frac{\big[ -(D - D_n)\, x_s + (C - C_n)\, x_m \big]_I}{|D_{II}|} ,
-
-with :math:`D_n, C_n` the coupling matrices of the last converged configuration and everything else
-at the iterate; it is the measure of Yang et al., Eq. (47), as well. A rigid rotation leaves D and C
-unchanged and so produces no slip, and the history needs no correction between increments. Gitterle
-et al. treat two dimensions; in three the slip is projected onto the tangent plane, as the weighted
-relative tangential velocity of Farah (2018), Eq. (3.43). Its linearisation is their Eq. (A3) with
-the normal, the coupling matrices and the pressure all differentiated, and it is the chain rule of
-this implementation for the tangent plane in three dimensions.
-
-Under ``geometryUpdate=frozen`` the slip measure within an increment is the frozen-geometry one,
-:math:`D \Delta u_s - C \Delta u_m`, which keeps the tangent exact. On its own it is not objective: a rigid rotation :math:`\theta` of a
+Within an increment the slip measure is :math:`D \Delta u_s - C \Delta u_m` with the coupling of
+the assembly, differentiated with that coupling held fixed like the normal part: under ``frozen``
+the coupling of the last converged state, which keeps the tangent exact, under ``incomplete`` that
+of the iterate. On its own it is not objective: a rigid rotation :math:`\theta` of a
 penetrating pair turns the weighted gap vector :math:`g_I = \sum_K D_{IK} x_K - \sum_J C_{IJ} x_J`
 and reads as a slip of about :math:`\theta` times the penalty gap, which in stick would accumulate
 over the increments. The objective measure of Yang et al., Eq. (47), and of Gitterle et al. (2010),
@@ -352,9 +313,16 @@ correction of the shared history transport),
    t_{I,n} \leftarrow P_T \Big( t_{I,n} + \varepsilon_T \Big( \frac{g_I^{new}}{|D_{II}^{new}|}
    - \frac{g_I^{old}}{|D_{II}^{old}|} \Big) \Big),
 
-and returned onto the cone of the accepted pressure. Integrated over any number of increments the
-slip is then the objective one; what remains is the error of the frozen normal, first order in one
-increment and not accumulated. A pure slide of a flat pair leaves :math:`g_I` unchanged and is not
+and returned onto the cone of the accepted pressure, at every rebuild at a converged configuration:
+once per connectivity tick under ``frozen``, once per increment attempt under ``incomplete``, whose
+rebuilds at the iterates carry nothing. Under ``frozen``, integrated over any number of increments,
+the slip is then the objective one; what remains is the error of the frozen normal, first order in
+one increment and not accumulated. Under ``incomplete`` the measure of an increment, taken with the
+coupling of its end, differs from the objective one by the change of :math:`g_I` as well, which the
+same correction removes, and by :math:`(D_{n+1} - D_n)(x_{n+1} - x_n)` and its mortar counterpart,
+which it does not: a remainder of second order in the increment, zero under a rigid rotation, which
+leaves D and C unchanged. Hartmann (2007) treats no friction; carrying the frozen measure onto the
+geometry of the iterate is this implementation's step. A pure slide of a flat pair leaves :math:`g_I` unchanged and is not
 corrected. Measured on two blocks rotated rigidly in stick by 0.01 per increment, the frozen measure
 alone leaves :math:`0.7\,p\,\varepsilon_T/\varepsilon_N` after seven increments, the corrected one
 never more than the single increment's :math:`0.1`. The node-to-surface and integrated formulations
@@ -612,8 +580,9 @@ their Eqs. (30)--(35), and the physical traction is recovered as :math:`\bar\lam
 their Eq. (39). Because one factor scales the whole row, the constraint is unchanged -- which is the
 point Popp et al. make against the earlier, element-wise factor of Cichosz and Bischoff, under which
 "contributions from different elements are scaled with different factors and the resulting
-discretization is then no longer consistent". The factor is deformation dependent and linearised,
-their Eq. (38). Popp et al. (2013) treat first-order elements; for quadratic ones the transformed
+discretization is then no longer consistent". The factor is deformation dependent, and Popp et al.
+linearise it, their Eq. (38); here it is held fixed within a Newton step like the rest of the
+geometry (see *The tangent*). Popp et al. (2013) treat first-order elements; for quadratic ones the transformed
 shape functions :math:`\tilde N` of Popp et al. (2012) are integrated, with their own reference
 integrals as :math:`\alpha_e`, which is this implementation's extension.
 
@@ -859,12 +828,13 @@ Choosing the parameters
 Inside the solver
 ~~~~~~~~~~~~~~~~~
 
-**Under ``geometryUpdate=consistent`` the geometry follows the iterate.** The segmentation, the
+**Under ``geometryUpdate=incomplete`` the geometry follows the iterate.** The segmentation, the
 coupling matrices and the nodal normals are rebuilt at every assembly, at the configuration the
-solver hands in, together with their derivatives; nothing geometric is carried from one iterate to
-the next. With friction, the coupling matrices of the last converged configuration are built once
-more at the start of every increment attempt, since the objective slip measures the change from
-them.
+solver hands in; nothing geometric is carried from one iterate to the next. At the start of every
+increment attempt they are built once more at the last converged configuration, which is where the
+frictional history is carried and the quantities derived once (the penalty stiffness, the elastic
+slip length) are derived; where the solver starts the attempt from that configuration itself, the
+two builds are one.
 
 **Under ``geometryUpdate=frozen`` the geometry is frozen, and the SOLVER decides how often it is
 rebuilt.** The segmentation, the coupling matrices and the nodal normals are evaluated from the last
@@ -888,10 +858,12 @@ two coincide exactly and nothing about the implicit behaviour changes.
 What the frozen geometry costs is the subject of the section on the tangent above. What it buys is
 that the contact contribution of one increment is a smooth function of the displacements, with no
 re-segmentation happening underneath the iteration, and an assembly that is cheaper by the
-segmentation. Measured per assembly (single-threaded BLAS), on ``MortarContactPatchHexa20`` 42 ms
-frozen against 284 ms consistent, on ``MortarContactPenaltyHexa20`` 14 ms against 275 ms, on
-``MortarContactFrictionSlide`` 2.8 ms against 26 ms; the consistent geometry spends that on
-rebuilding the segmentation with its derivatives at every iterate.
+segmentation. Measured per assembly (single-threaded BLAS), on ``MortarContactPatchHexa20`` 41 ms
+frozen against 88 ms incomplete, on ``MortarContactPenaltyHexa20`` 14 ms against 79 ms, on
+``MortarContactFrictionSlide`` 2.6 ms against 9.4 ms; the incomplete geometry spends that on
+rebuilding the segmentation at every iterate. It also needs more of them where the geometry moves
+within an increment: 157 assemblies against 87 on ``MortarContactFrictionSlide``, 13 against 9 on
+``MortarContactTilted``.
 
 **The active set is re-decided in every Newton iteration.** This is the semi-smooth Newton method,
 and it is what gives the active set superlinear convergence rather than a fixed-point character.
@@ -1129,7 +1101,7 @@ What is verified, and how
 
 Every number below is measured on the cases named, not estimated. ``MortarContactPatch``,
 ``MortarContactPatchQuadratic``, ``MortarContactPartialOverlap``, ``MortarContactPunchEdge``,
-``MortarContactTilted`` and ``MortarContactFrictionSlide`` set ``geometryUpdate=consistent``; the
+``MortarContactTilted`` and ``MortarContactFrictionSlide`` set ``geometryUpdate=incomplete``; the
 other mortar decks run on the default frozen geometry.
 
 **The patch test** establishes the property the whole method exists for: a constant pressure
@@ -1177,15 +1149,17 @@ quadratic patch test with the multipliers eliminated. It is the only deck that r
 solver hooks. Its header carries the comparison against the same model with the loop switched off.
 
 **The tangent** is checked against central differences of the assembled forces with the active set
-held fixed, since across a change of the set there is no tangent to compare. Under
-``geometryUpdate=consistent`` the geometry is rebuilt at every perturbation
-(``tests/test_mortarlinearization.py``): all seven contact element types, both formulations, and
-friction in stick and slip with and without ``slipTolerance``, on a tilted, curved, laterally shifted
-pair of surfaces, agree to :math:`\max |K - K_{FD}| / \max |K| \le 1.1 \cdot 10^{-7}`; every
-building block of the linearisation is checked on its own as well. Under ``geometryUpdate=frozen``
-the geometry is held at the start of the increment, which is the residual that tangent belongs to;
-measured on an interpenetrating, laterally shifted pair of quadratic facets with every node in
-contact: :math:`\max |K - K_{FD}| / \max |K| = 5.3 \cdot 10^{-10}`.
+held fixed, since across a change of the set there is no tangent to compare, and with the geometry
+held at the configuration it was built at, which is the residual the tangent belongs to. Under
+``geometryUpdate=frozen`` that is the start of the increment; measured on an interpenetrating,
+laterally shifted pair of quadratic facets with every node in contact: :math:`\max |K - K_{FD}| /
+\max |K| = 5.3 \cdot 10^{-10}`. Under ``geometryUpdate=incomplete`` it is the iterate: all seven
+contact element types, both formulations, and friction in stick and slip with and without
+``slipTolerance``, on a tilted, curved, laterally shifted pair of surfaces, agree to :math:`\max |K
+- K_{FD}| / \max |K| \le 1.0 \cdot 10^{-8}`, and the same tangent misses the residual with the
+geometry rebuilt at every perturbation by :math:`3.9 \cdot 10^{-2}` and more (see *The tangent*).
+That the converged state under ``incomplete`` does not depend on the increment size is checked in
+``tests/test_mortargeometryupdate.py``.
 
 **The building blocks** are covered by unit tests beside the code rather than by decks: the clipping
 against analytic overlap areas including the area a non-convex window loses, the triangulation, the
@@ -1249,9 +1223,9 @@ Force reaching nodes outside a contact surface that ends under pressure
 
     With ``formulation=penalty`` the force a sliver node carries is its pressure times its integrated
     weight, so the share grows with the stiffness towards the constrained value: 0.18 % at
-    :math:`\varepsilon_N = 10^6` under the consistent geometry, and under the frozen one 0.05 % at
+    :math:`\varepsilon_N = 10^6` under the incomplete geometry, and under the frozen one 0.05 % at
     :math:`10^6` and 6.3 % at :math:`10^9`. A stiffness of :math:`10^9` does not converge on this
-    model under the consistent geometry, see the next entry.
+    model under the incomplete geometry, see the next entry.
 
     Two things bound the problem. It requires the pressure to be at full value where the surface
     ends, so a contact that tapers off between curved bodies is not affected in this way. And it does
@@ -1261,13 +1235,13 @@ Force reaching nodes outside a contact surface that ends under pressure
     cannot: a rescaling of the constraint leaves the solution invariant, and it is the solution that
     is at issue here, not the conditioning.
 
-A non-smooth geometry at slivers, under ``geometryUpdate=consistent``
+A non-smooth geometry at slivers, under ``geometryUpdate=incomplete``
     The geometry is a smooth function of the displacements only for a fixed layout, and at a sliver
     the layout of the clipped polygons changes under displacements of the order of the rounding. On
     the model of the previous entry the residual is not differentiable there: at one entry of the
-    penalty tangent, which is 4.3 for the fixed layout, central differences give :math:`-48` and
-    :math:`-488` for steps of :math:`10^{-7}` and :math:`10^{-8}`. No tangent describes such a change. The
-    frozen geometry meets it only from one increment to the next; the consistent one meets it within
+    penalty tangent, central differences of the residual with the geometry rebuilt give :math:`-48`
+    and :math:`-488` for steps of :math:`10^{-7}` and :math:`10^{-8}`. No tangent describes such a change. The
+    frozen geometry meets it only from one increment to the next; the incomplete one meets it within
     the Newton iteration. Measured on that model: ``lagrange`` converges at every refinement, and
     ``penalty`` up to :math:`\varepsilon_N = 10^6`, i.e. :math:`10^3 E`; at :math:`10^9` the iteration
     does not converge, while ``geometryUpdate=frozen`` does. With the smaller surface on the
@@ -1281,13 +1255,6 @@ Curved edges of quadratic facets
     a uniform multiplier reproduces the consistent nodal loads of a uniform pressure up to the
     quadrature of the cells that straddle a curved edge: :math:`9.1 \cdot 10^{-5}` to
     :math:`3.2 \cdot 10^{-4}` on the fixture described there, and zero for a straight edge.
-
-Reproducibility under threaded BLAS, ``geometryUpdate=consistent``
-    The linearisation is assembled by matrix products that numpy hands to BLAS. With more than one
-    BLAS thread their summation order varies from run to run, and two runs of the same deck then
-    agree to rounding rather than bit for bit; a frictional run, whose stick/slip decisions follow
-    that rounding, measured :math:`9 \cdot 10^{-6}` of a displacement of 0.4. With
-    ``OMP_NUM_THREADS=1`` the results are reproducible exactly.
 
 The stopping criterion of the augmented outer loop
     Convergence is measured as the change of the pressure estimate relative to that estimate's own
@@ -1330,7 +1297,7 @@ that a reader checking a single line does not have to reconstruct which work it 
   transformation is needed in the case of quad9 surfaces, because the corresponding shape functions
   already satisfy" the positivity condition. They suggest :math:`\alpha = 1/5`; the value used here
   is Farah's, for the reason given under *The dual basis*. The transformation is constant, "defined
-  once at t = 0", p. B432, so it carries no derivative.
+  once at t = 0", p. B432.
 * T. Cichosz, M. Bischoff: *Consistent treatment of boundaries with mortar contact formulations
   using dual Lagrange multipliers*, Computer Methods in Applied Mechanics and Engineering 200
   (2011), 1317--1332. -- The partially covered facet at the boundary of the contact area and the
@@ -1384,25 +1351,30 @@ that a reader checking a single line does not have to reconstruct which work it 
 * M. Gitterle, A. Popp, M. W. Gee, W. A. Wall: *Finite deformation frictional mortar contact using a
   semi-smooth Newton method with consistent linearization*, International Journal for Numerical
   Methods in Engineering 84 (2010), 543--571. -- The objective weighted slip increment, Eq. (53),
-  which the friction option uses under ``geometryUpdate=consistent`` and which the frozen-geometry
-  slip measure approximates; its linearisation, Appendix A, Eq. (A3).
+  which the slip measure of the friction option approximates, and its relation to the
+  non-objective measure, Eqs. (47) and (50)--(51).
 * A. Popp, M. W. Gee, W. A. Wall: *A finite deformation mortar contact formulation using a
   primal-dual active set strategy*, International Journal for Numerical Methods in Engineering 79
   (2009), 1354--1391. -- The two-dimensional segmentation along the continuous normal field, Eqs.
-  (44)--(48), the nodal weighted gap, Eq. (50), and the consistent linearisation in two dimensions,
-  Appendix A.
+  (44)--(48), and the nodal weighted gap, Eq. (50).
 * A. Popp, M. Gitterle, M. W. Gee, W. A. Wall: *A dual mortar approach for 3D finite deformation
   contact with consistent linearization*, International Journal for Numerical Methods in Engineering
   83 (2010), 1428--1465. -- The averaged nodal normal, Eq. (37); the three-dimensional segmentation
   of Section 4.1 with the auxiliary plane of Eqs. (A15) and (A18), the integration of D, M and the
-  weighted gap, Eqs. (39)--(41), and the sub-segments of quadratic facets, Section 4.2;
-  the consistent linearisation of the geometry, Section 4.3 and Appendix A, Eqs. (A1)--(A26); the
-  neglected variation of the coupling matrices, Section 7; the cost of an incomplete linearisation,
-  Table I.
+  weighted gap, Eqs. (39)--(41), and the sub-segments of quadratic facets, Section 4.2; the
+  neglected variation of the coupling matrices, Section 7; the name *incomplete linearization* for
+  a geometry rebuilt at the iterate without the derivatives of the nodal normal and of D and M, and
+  its cost against the full linearisation, Table I.
+* S. Hartmann: *Kontaktanalyse dünnwandiger Strukturen bei großen Deformationen*, Bericht Nr. 49,
+  Institut für Baustatik und Baudynamik, Universität Stuttgart, 2007 (Dissertation). -- The mortar
+  contact of Hüeber and Wohlmuth (2005) for finite deformations with the coupling matrices held
+  constant within a Newton step, Section 6.2.4, p. 98, and no linearisation of the contact forces,
+  Section 6.1.4, p. 94; the constraint linearised through the displacements with the normal and the
+  coupling of the iterate, Eqs. (7.30)--(7.34): the ``geometryUpdate=incomplete`` of this
+  constraint. The exact active-set loop of Section 7.1.3 is not used here.
 * P. Farah: *Mortar Methods for Computational Contact Mechanics Including Wear and General Volume
   Coupled Problems*, Dissertation, TU München, 2018. -- The averaged nodal normal written out as
-  Eq. (4.41), over the *unit* normals of the adjacent elements; the weighted relative tangential
-  velocity in three dimensions, Eq. (3.43); and the transformation parameter
+  Eq. (4.41), over the *unit* normals of the adjacent elements; and the transformation parameter
   :math:`\alpha = 1/3` of his Section 6.2.3.2, Eq. (6.20), which is the value used here.
 * P. Farah, A. Popp, W. A. Wall: *Segment-based vs. element-based integration for mortar methods in
   computational contact mechanics*, Computational Mechanics 55 (2015), 209--228. -- Why the overlap
