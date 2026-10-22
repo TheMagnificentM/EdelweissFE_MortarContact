@@ -1,13 +1,18 @@
 Contact mechanics: theory
 =========================
 
-This page documents the theory of the node-to-deformable-surface contact stack implemented in
-EdelweissFE: the discretization of contact surfaces into flat facets
+This page documents the theory of the penalty contacts between a slave surface and a deformable or
+rigid master surface implemented in EdelweissFE: the node-to-surface contact
+(:mod:`~edelweissfe.constraints.nodetodeformablesurfacepenalty`), the integrated
+(Gauss-point-to-surface) contact (:mod:`~edelweissfe.constraints.surfacetodeformablesurfacepenalty`)
+and its rigid-body variant (:mod:`~edelweissfe.constraints.surfacetodiscreterigidbodypenalty`). It
+covers the discretization of contact surfaces into flat facets
 (:mod:`~edelweissfe.elements.contactsurfaceelement`,
-:mod:`~edelweissfe.generators.surfaceelementgenerator`), the gap kinematics in their finite-sliding
-and small-sliding variants (:mod:`~edelweissfe.utils.facetcontactgeometry`,
-:mod:`~edelweissfe.constraints.nodetodeformablesurfacepenalty`), the penalty and augmented-Lagrange
-normal contact laws, Coulomb friction, and the integration into the implicit solver. Every formula
+:mod:`~edelweissfe.generators.surfaceelementgenerator`) or whole element faces, the gap kinematics
+in their finite-sliding and small-sliding variants (:mod:`~edelweissfe.utils.facetcontactgeometry`),
+the penalty and augmented-Lagrange normal contact laws, the Coulomb friction law shared with the
+mortar contact (:doc:`mortartheory`), and the integration into the implicit and explicit solvers.
+Every formula
 stated here is implemented literally in the referenced modules and has been verified against
 independent finite differences, symbolic differentiation, or analytic benchmark solutions; the
 verification methodology is summarized at the end.
@@ -550,8 +555,8 @@ matching meshes:
   pointwise pressure oscillation (measured: relative spread :math:`\sim 0.5` for a 3x3-on-2x2
   interface, with exact total force and mean pressure; manual variant
   ``NodeToDeformableSurfaceContactPatch/test_mismatched.inp``). Eliminating this pointwise error
-  on non-matching meshes is precisely what mortar/segment-to-segment methods buy -- and the
-  measured spread is this project's quantified tripwire for ever adopting one.
+  on non-matching meshes is precisely what mortar/segment-to-segment methods buy, see
+  :doc:`mortartheory`.
 
 
 .. _serendipity-weighting:
@@ -807,9 +812,8 @@ than one smooth rule of high order (measured, master nodal loads of a uniform pr
 non-matching quad8 interfaces of 4/3, 7/5, 10/7 and 15/11 faces: 0.2 to 1.2 % with 3 points per
 facet, 2.3 to 4.4 % with 3x3 Gauss points; the Gauss rule catches up only from about 6x6). On the
 non-matching hexa20 contact patch test this is 5 % against 55 % pressure spread. On the other hand,
-with quadratic elements the whole-face points need far fewer Newton iterations (Hertz, hexa20: 52
-against 161), for reasons not traced. The comparison of both on the cases of the contact study is
-recorded with the study.
+on curved interfaces of quadratic elements the whole-face points have been observed to need fewer
+Newton iterations.
 
 **The master side is always the curved face.** Whatever the discretization, the closest point is the
 solution of the minimum distance problem on the curved master face (Wriggers 2006, Eqs. 4.2-4.3),
@@ -931,9 +935,7 @@ assigned master facet changes, so that quadrature error does not shrink under re
 rule. Exactness on non-matching meshes requires integrating over *clipped* slave-master segments
 and enforcing the constraint weakly through a multiplier field -- mortar (Puso & Laursen 2004;
 for the quadratic dual basis, built on a transformed set of serendipity shape functions, Popp,
-Wohlmuth, Gee & Wall, SISC 2012). The measured spread of
-:math:`\sim 0.5` on a 3x3-on-2x2 interface remains this project's tripwire for that step, and
-:mod:`~edelweissfe.constraints.tie` would share the same clipping layer.
+Wohlmuth, Gee & Wall, SISC 2012), as in :doc:`mortartheory`.
 
 **Cost.** Each contact point couples both parent faces, so in 3D a block is
 :math:`(8+8) \times 3 = 48` DOF rather than the node-based :math:`(1+3) \times 3 = 12`, and there
@@ -1076,8 +1078,10 @@ increments. The stiffness consists of one block per slave facet plus the RP bloc
 whose RP carries Dirichlet conditions.
 
 **Penalty units.** In both integrated constraints ``penalty`` is a modulus per unit area (force per
-length cubed), multiplied by each point's integration weight. The node-based constraints use a
-force per length per node instead, so a node-based value converts approximately as
+length cubed), multiplied by each point's integration weight; ``nodeToDeformableSurfacePenalty`` is
+the same quantity, multiplied by the tributary area of each slave node, and so is the
+``penaltyStiffness`` of the mortar contact. Only ``nodeToDiscreteRigidBodyPenalty`` uses a force per
+length per node, so a value of it converts approximately as
 :math:`p_\text{integrated} \approx p_\text{node} / A_\text{tributary}`:
 
 .. list-table::
@@ -1086,7 +1090,8 @@ force per length per node instead, so a node-based value converts approximately 
     * - Constraint
       - ``type=linear``
       - ``type=quadratic``
-    * - ``surfaceToDeformableSurfacePenalty``, ``surfaceToDiscreteRigidBodyPenalty``
+    * - ``surfaceToDeformableSurfacePenalty``, ``surfaceToDiscreteRigidBodyPenalty``,
+        ``nodeToDeformableSurfacePenalty``, ``mortarContact``
       - force / length\ :sup:`3`
       - force / length\ :sup:`4`
     * - ``nodeToDiscreteRigidBodyPenalty``
@@ -1106,12 +1111,14 @@ What the constraints require of a solver, how the options should be chosen, and 
 Parameter guidance
 ~~~~~~~~~~~~~~~~~~
 
-* ``tangentPenalty`` :math:`t` regularizes stick; the stick window (elastic reversal length) is
-  :math:`\delta_{stick} \approx \mu N / k_T` per node. Choose it such that
-  :math:`\delta_{stick}` is *well below* the expected slip per increment but not so stiff that
-  the collective stick-to-slip transition at sliding onset makes Newton oscillate -- in practice
-  one to two orders of magnitude softer than the normal penalty. (The physics is insensitive to
-  this choice: the sliding plateau :math:`T/N = \mu` is exact for any regularization.)
+* ``tangentPenalty`` :math:`\varepsilon_T` regularizes stick: a traction per unit tangential
+  slip, by default equal to the normal ``penalty``. A sticking point slips elastically by up to
+  :math:`\mu p / \varepsilon_T` (the stick window). It should be well below the expected slip per
+  increment; a softer value can make the collective stick-to-slip transition at sliding onset
+  easier for Newton. On lightly loaded interfaces, where :math:`\mu p / \varepsilon_T` falls below one
+  Newton correction, ``slipTolerance`` (a pressure-proportional :math:`\varepsilon_T`) keeps the
+  stick/slip state from chattering. (The sliding plateau :math:`T/N = \mu` is exact for any
+  regularization.)
 * ``penalty`` :math:`p` sets the penetration :math:`g \approx -N_s / (p A_s)` (linear) or
   :math:`g \approx -\sqrt{2 N_s / (p A_s)}` (quadratic). With ``augmentedLagrange=True`` the
   multiplier absorbs the load over the increments and :math:`p` can be chosen an order of
@@ -1162,8 +1169,9 @@ The constraint participates in the implicit solution through three hooks:
 Per-slave results -- normal pressures :math:`p_s = -f_n/A_s`, tangential traction magnitudes,
 stick/slip states, gaps -- are exposed via ``getNormalPressures()`` / ``getTangentialTractions()`` /
 ``getSlipStates()`` / ``getGaps()``,
-ordered like the generator's ``<prefix>_nodes`` node set, and are typically requested as
-``fromExpression`` field outputs.
+ordered like the generator's ``<prefix>_nodes`` node set (for a slave surface given as whole element
+faces without such a set: the first-encounter order of the nodes over the facets cut from the faces,
+element by element), and are typically requested as ``fromExpression`` field outputs.
 
 The integrated constraint (:ref:`integrated-contact-algorithm`) presents the same
 ``updateConnectivity`` / ``applyConstraint`` pair, with three differences worth knowing at the

@@ -235,16 +235,9 @@ comments of the ``applyConstraint`` method in the module source.
 ``mortarcontact`` - Segment-to-segment (mortar) contact
 -------------------------------------------------------------------------
 
-A unilateral contact constraint between two deformable surfaces that integrates the
-non-penetration condition over the overlap of their faces instead of sampling it at nodes, so that a
-constant pressure crosses a non-matching interface exactly. The complete theory -- segmentation and
-clipping of the overlap, the dual basis and its transformation for quadratic faces, nodal normals,
-the semi-smooth active set, the three formulations and the known limitations -- is documented in
-:doc:`mortartheory`.
-
-The two surfaces are element sets of contact elements
-(:mod:`~edelweissfe.elements.contactelement.element`), most conveniently produced by
-:mod:`~edelweissfe.generators.surfaceelementgenerator` with ``facets=wholeFace``.
+The theory -- segmentation and clipping of the overlap, the dual basis, nodal normals, the
+semi-smooth active set, the three formulations, friction, explicit dynamics and the known
+limitations -- is documented in :doc:`mortartheory`.
 
 Module ``edelweissfe.constraints.mortarcontact``
 
@@ -345,8 +338,9 @@ Module ``edelweissfe.constraints.surfacetodeformablesurfacepenalty``
 
 The integrated counterpart of ``nodetodiscreterigidbodypenalty``, and the rigid-body counterpart
 of ``surfacetodeformablesurfacepenalty``: contact is evaluated at quadrature points over a slave
-facet surface and distributed with the slave parent-face shape functions, against the triangulated,
-closed surface of a :doc:`discrete rigid body <rigidbodies>`. The theory is documented in
+surface (flat facets or whole element faces, integrated as chosen by ``integration``) and distributed
+with the slave parent-face shape functions, against the triangulated, closed surface of a
+:doc:`discrete rigid body <rigidbodies>`. The theory is documented in
 :ref:`integrated-contact-rigid-body`. Use it for any contact against rigid supports or indenters,
 in particular with quadratic slave faces.
 
