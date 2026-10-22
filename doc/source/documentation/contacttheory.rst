@@ -109,7 +109,7 @@ the master surface is computed once per increment from the last converged config
 **frozen for all Newton iterations of that increment**:
 
 1. For every master facet, the true closest point of the *closed* facet domain is computed --
-   interior, edge, or vertex -- via the barycentric region classification (Ericson's real-time
+   interior, edge, or vertex -- via the classification into the triangle's Voronoi feature regions (Ericson's real-time
    collision detection test), yielding clamped, non-negative weights
    :math:`\bar{N}_a \geq 0,\; \sum_a \bar{N}_a = 1`. The facet with the smallest true distance is
    assigned. Because the *closed* domain is used, there is no dead zone at facet seams: a node
@@ -387,7 +387,8 @@ node for node-to-surface, the same slave facet and quadrature point for the inte
 from the nodes of the old slave facet's parent face with its shape functions (Wriggers 2006, Section
 14.7.2, Eq. 14.86), respectively from a linear field fitted by least squares to the quadrature points
 of the old slave facet (Wriggers 2006, Eqs. 14.32-14.33). A transferred traction need not lie in the
-cone of its pressure (Perić et al. 1996, Remark 4.3); the next connectivity update projects and
+cone of its pressure (by analogy with the yield condition of a transferred plastic state, Perić et
+al. 1996, Remark 4.3); the next connectivity update projects and
 returns it like any other.
 
 **Anti-chattering.** A Newton iteration on the non-smooth Coulomb law can flip points near the cone

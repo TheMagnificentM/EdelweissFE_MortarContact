@@ -55,7 +55,7 @@ class BVHNode:
     """A node of the bounding volume hierarchy over the mortar-side facets.
 
     A leaf carries the facets themselves; an inner node carries two children and the axis-aligned
-    box enclosing both. The hierarchy is the standard one of Ericson (2004): it exists so that a
+    box enclosing both. The hierarchy is the standard one of Ericson (2005): it exists so that a
     non-mortar facet can find the few mortar facets that could possibly overlap it without testing
     all of them.
 

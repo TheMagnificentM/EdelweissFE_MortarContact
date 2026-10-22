@@ -387,7 +387,9 @@ def _assignQuadConsistentShares(quadFacets: list):
 def _applyModifiedSerendipityShares(cornerTriangles: list):
     """Reassign each corner node's tributary share to its two adjacent midside nodes, yielding the
     modified serendipity shape functions ``Ntilde_mid = N_mid + 1/2 (N_c1 + N_c2)``,
-    ``Ntilde_corner = 0`` of Puso, Laursen & Solberg (CMAME 197, 2008).
+    ``Ntilde_corner = 0``. This weighting is this implementation's; the defect it addresses, the
+    negative serendipity corner function, is the one Puso, Laursen & Solberg (CMAME 197, 2008, Eq. 29)
+    show for quadratic mortar contact.
 
     Why this particular weighting: for a quad8 face of area :math:`A` the consistent nodal loads of
     a uniform pressure are :math:`-pA/12` per corner and :math:`+pA/3` per midside node. A
@@ -764,8 +766,7 @@ class SurfaceElementGeneratorSchema:
         "(the consistent nodal loads of the flat facet tiling itself) or 'serendipityOptimal' "
         "(the resultant-exact, non-negative weighting that minimises the mismatch against a "
         "quadratic face's own consistent nodal loads, by reassigning each corner node's share to "
-        "its two adjacent midside nodes -- the modified shape functions of Puso, Laursen & "
-        "Solberg, CMAME 2008). Reduces the spurious corner/midside load pattern on hexa20 "
+        "its two adjacent midside nodes). Reduces the spurious corner/midside load pattern on hexa20 "
         "contact surfaces by a third, at the price of corner nodes ceasing to be contact points -- "
         "but NO measured benefit has been demonstrated, because a quadratic face under near-uniform "
         "pressure lifts its corner nodes off anyway, which makes their weight moot; see the contact "

@@ -37,10 +37,12 @@ beyond the case it treats, the step says so.
 Three dimensions -- Popp, Gitterle, Gee & Wall (2010), Section 4 and Appendix A:
 
 * an auxiliary plane per slave (sub-)segment through its centre ``x0``, with the interpolated nodal
-  normal there as its normal ``n0``, Eqs. (A15) and (A18);
-* the orthogonal projection of slave and master (sub-)segments into it, Eq. (A17), clipping by
-  Sutherland & Hodgman, triangulation into integration cells, a 7-point rule per cell (Dunavant
-  1985; the choice of Puso & Laursen 2004, Section 3.1, for most of their examples);
+  normal there as its normal ``n0`` (Algorithm 1; cf. the linearisations, Eqs. (A15) and (A18));
+* the projection of slave and master (sub-)segments into it along ``n0`` (cf. Eq. (A17)), clipping
+  by Sutherland & Hodgman, a fan triangulation of the overlap from its first vertex (this
+  implementation's choice; Popp et al. triangulate around the polygon's centre), a 7-point rule
+  per cell (Dunavant 1985; recommended by Farah, Popp & Wall 2015, and used by Puso & Laursen 2004,
+  Section 3.1, for most of their examples);
 * quadratic facets split into linear sub-segments for the clipping, Popp et al. (2010), Section 4.2,
   and Puso, Laursen & Solberg (2008), Fig. 3;
 * the Gauss point mapped back along ``n0``, Eq. (A12), by the inverse of the isoparametric map of
@@ -67,7 +69,8 @@ Both dimensions:
   integrated, Popp, Seitz, Gee & Wall (2013), Section 4.1, Eqs. (21)-(28) -- in 2D the treatment of
   Cichosz & Bischoff (2011), Eq. (41);
 * for quadratic slave elements the basis transformation of Popp, Wohlmuth, Gee & Wall (2012),
-  Section 4.4.1, with the parameter of Farah (2018), Eq. (6.20); composing it with the
+  Section 4.4.1, Eq. (4.5), with alpha = 1/3, the value Farah (2018), Section 6.2.3.2, uses for the
+  analogous transformation of tet10 elements; composing it with the
   partially-integrated biorthogonality of Popp et al. (2013), which treats first-order elements, is
   this implementation's step;
 * the nodal scaling factor of Popp et al. (2013), Section 4.2, Eqs. (36)-(38), with which the rows of
@@ -131,7 +134,8 @@ class MortarCoupling:
     ----------
     D, M
         ``(nSlave, nSlave)`` and ``(nSlave, nMaster)`` mortar matrices, Popp et al. (2010),
-        Eqs. (39)-(40).
+        Eqs. (39)-(40); D in the full, for quadratic elements non-diagonal form of Popp et al. (2012),
+        Eqs. (4.11)-(4.12).
     Dn, Mn
         Per spatial component, the gap matrices: the weighted gap of slave node ``j`` is
         ``g_j = sum_l Mn[j,l] . x_l - sum_k Dn[j,k] . x_k``, so that ``Dn[j,k] = int Phi_j N_k n``
@@ -222,7 +226,7 @@ def computeMortarCoupling(
     nSlave, nMaster = len(slaveIndex), len(masterIndex)
     result = MortarCoupling(None, None, [], [], np.zeros(nSlave))
 
-    # Broad phase: a bounding volume hierarchy over the mortar facets (Ericson 2004).
+    # Broad phase: a bounding volume hierarchy over the mortar facets (Ericson 2005).
     facetsWithBounds = []
     for mEl in mortarFacets:
         mCoords = np.array([coordinates[n] for n in mEl.nodes])
@@ -371,7 +375,7 @@ def _segment3D(context, candidates, owners, coordinates, elementClass, result):
     for sSub in getSubCells(sEl):
         subEl = _subCellElement(len(sSub), elementClass)
         N0 = subEl.getShapeFunctions(_subCellCentre(len(sSub)))
-        # Auxiliary plane: centre x0 and interpolated nodal normal n0 there, Eqs. (A18) and (A15).
+        # Auxiliary plane: centre x0 and interpolated nodal normal n0 there (Popp et al. 2010, Algorithm 1).
         x0 = N0 @ context.coords[sSub]
         n0raw = N0 @ context.normals[sSub]
         if np.linalg.norm(n0raw) < 1e-14:

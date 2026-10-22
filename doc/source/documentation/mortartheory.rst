@@ -210,12 +210,13 @@ Segmentation of the overlap
 In three dimensions the overlap is constructed per non-mortar face as in Popp et al. (2010),
 Section 4.1:
 
-#. candidate mortar faces are found through a bounding-volume hierarchy (Ericson 2004);
+#. candidate mortar faces are found through a bounding-volume hierarchy (Ericson 2005);
 #. an auxiliary plane is set up through the centre of the non-mortar face, with the nodal normals
    interpolated there as its normal;
 #. both faces are projected into that plane, and the projections are clipped against each other
    (Sutherland & Hodgman 1974); the clip polygons have to be convex, which is reported otherwise;
-#. the overlap is triangulated into integration cells, each integrated with the seven-point rule of
+#. the overlap is triangulated into integration cells (a fan from its first vertex, this
+   implementation's choice), each integrated with the seven-point rule of
    Dunavant (1985);
 #. each integration point is mapped back onto both faces along the auxiliary normal.
 
@@ -259,9 +260,11 @@ Wohlmuth, Gee & Wall 2012):
 
 Without it the corner functions of an eight-node face integrate to :math:`-A/12`, those of a six-node
 triangle to zero, and the dual basis would not exist. The transformation keeps the partition of unity.
-:math:`\alpha = 1/3` is the value of Farah (2018); Popp et al. (2012) suggest :math:`1/5`. Both are
-admissible, and :math:`1/3` gives the shallower negative dip of the transformed corner function, which
-matters where a face is only partly covered. ``CONQUAD9`` needs no transformation and gets none. Since
+:math:`\alpha = 1/3` is the value Farah (2018) uses for the analogous transformation of quadratic
+tetrahedra; Popp et al. (2012) suggest :math:`1/5` and give the conditions :math:`\alpha > 0` (six-node
+triangle) and :math:`\alpha > 1/8` (eight-node quadrilateral), which both values satisfy. :math:`1/3` gives
+the shallower negative dip of the transformed corner function, which matters where a face is only partly
+covered. ``CONQUAD9`` needs no transformation and gets none. Since
 the transformed basis is not biorthogonal to the untransformed one, :math:`D` is not diagonal for
 quadratic faces; it is used in full.
 
@@ -270,7 +273,7 @@ Nodal normals
 ~~~~~~~~~~~~~
 
 The normal of a non-mortar node is the average of the unit element normals of the adjacent faces,
-each evaluated at the node's own natural coordinate, normalized again (Popp et al. 2010; written out by
+each evaluated at the node's own natural coordinate, normalized again (Popp et al. 2010; the same average is written out with unit normals by
 Farah 2018):
 
 .. math::
@@ -498,7 +501,7 @@ Sources of the mortar formulation
 * I. E. Sutherland, G. W. Hodgman, *Reentrant polygon clipping*, Commun. ACM **17** (1974) 32--42.
 * D. A. Dunavant, *High degree efficient symmetrical Gaussian quadrature rules for the triangle*,
   Int. J. Numer. Methods Eng. **21** (1985) 1129--1148.
-* C. Ericson, *Real-Time Collision Detection*, Morgan Kaufmann, 2004.
+* C. Ericson, *Real-Time Collision Detection*, Morgan Kaufmann, 2005.
 * R. F. Kulak, *Critical time step estimation for three-dimensional explicit impact analysis*, Argonne
   National Laboratory, CONF-8907161, 1989.
 * T. Ghesquière-Diérickx, J.-F. Molinari, G. Anciaux, *Stability of extrinsic cohesive zone model with

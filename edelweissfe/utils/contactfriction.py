@@ -79,7 +79,7 @@ Eqs. 39 and 47-49, in 2D, and Puso, Laursen & Solberg 2008, Eqs. 16-21, in 3D):
 
 The history ``t_n`` is the converged TRACTION (force per area), in global components, as in the
 trial state of Simo & Laursen 1992, Eq. 3.12, and Puso et al. 2008, Eq. 19 (Wriggers 2006 keeps the
-plastic slip instead, Eq. 10.121); the law is then independent of the size of the interface measure
+plastic slip instead, Box 14 and Eq. 10.127); the law is then independent of the size of the interface measure
 each formulation assigns to a point. The tangential modulus ``eps_T`` is a traction per unit slip --
 either constant (``tangentPenalty``; by default the formulation's normal penalty modulus, the one
 parameter for normal contact and stick of Wriggers 2006, p. 236, and Puso et al. 2008, Eqs. 18-19)
@@ -207,7 +207,7 @@ def historyInterpolation(
 
     A refinement transfers the history of every point it keeps unchanged and has to interpolate it
     for every point it creates, with the shape functions of the old element that contains the new
-    point (Wriggers 2006, Section 14.7.2, Eqs. 14.83-14.86, pp. 452-454; Peric et al. 1996,
+    point (Wriggers 2006, Section 14.7.2, Eqs. 14.83-14.86, pp. 453-454; Peric et al. 1996,
     Section 4.1). Each old patch -- an old facet, or a parent face -- knows where a point lies in it
     and returns the interpolation weights over its own points.
 
@@ -373,7 +373,8 @@ class CoulombFriction:
         status where the weighted status is more than one half -- or, without an entry there,
         starts at rest. The interpolated traction is projected onto the new tangent plane and
         returned onto the cone of the interpolated pressure by the next :meth:`carry`, since a
-        transferred state need not satisfy the slip condition (Peric et al. 1996, Remark 4.3)."""
+        transferred state need not satisfy the slip condition (by analogy with the yield condition of Peric
+        et al. 1996, Remark 4.3)."""
 
         oldIndex = {key: i for i, key in enumerate(oldKeys)}
         traction, pressure, active = self.tractionConverged, self.pressureConverged, self.activeConverged

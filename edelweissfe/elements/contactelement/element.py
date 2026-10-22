@@ -501,14 +501,15 @@ class ContactElement(BaseElement):
             N~_mid    = (1 - 2 alpha) * N_mid ,
 
         which keeps the partition of unity and makes the integrals of the corner functions positive,
-        as the dual basis requires (Popp, Wohlmuth, Gee & Wall 2012, Section 4.4.1, Eqs. (4.6), (4.9)).
+        as the dual basis requires (Popp, Wohlmuth, Gee & Wall 2012, Section 4.4.1, Eq. (4.5)).
         Without it the corner integrals are ``-A/12`` (CONQUAD8) and 0 (CONTRI6). CONLINE3 has positive
         integrals already; the transformation makes its corner functions pointwise non-negative, which
         matters where a facet is covered only in part.
 
-        alpha = 1/3, the value of Farah (2018), Section 6.2.3.2, Eq. (6.20), for the same transformation
-        (admissible for alpha < 1/2), where Popp et al. (2012) suggest 1/5. Both satisfy the
-        conditions alpha > 0 (tri6) and alpha > 1/8 (quad8); 1/3 is taken because the minimum of the
+        alpha = 1/3, the value Farah (2018), Section 6.2.3.2, uses for the analogous transformation of
+        tet10 elements (with alpha < 1/2); Popp et al. (2012) suggest 1/5 and give the conditions
+        alpha > 0 (tri6) and alpha > 1/8 (quad8) for undistorted elements, which both values satisfy.
+        Its use for contact surfaces is this implementation's choice; 1/3 is taken because the minimum of the
         transformed quad8 corner function over the element is -1/324 at alpha = 1/3 against -0.0706
         at alpha = 1/5, which matters for partially covered facets.
 

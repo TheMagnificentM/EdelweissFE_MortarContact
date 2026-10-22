@@ -1109,10 +1109,10 @@ class Constraint(ConstraintBase, MeshDependent):
 
         The element normal ``x,xi x x,eta`` (2D: the tangent rotated by -90 degrees) is evaluated at
         the node's own natural coordinate in every adjacent facet, normalised, summed, and the sum is
-        normalised again: the averaged nodal normal of Popp, Gitterle, Gee & Wall (2010), Eq. (37),
-        written out as Farah (2018), Eq. (4.41). Evaluated per node, the normal follows the curvature
-        of quadratic facets; summed unweighted, as in both sources, it does not depend on the size of
-        the reference element. A node whose contributions vanish or cancel gets a zero normal and
+        normalised again: the averaged nodal normal of Popp, Gitterle, Gee & Wall (2010), Eq. (37); Farah
+        (2018), Eq. (4.41), writes the same average out with unit element normals (for the master side
+        of his node-to-surface projection). Evaluated per node, the normal follows the curvature of
+        quadratic facets; summed unweighted, it does not depend on the size of the reference element. A node whose contributions vanish or cancel gets a zero normal and
         cannot become active; that is reported.
         """
 
@@ -1221,8 +1221,8 @@ class Constraint(ConstraintBase, MeshDependent):
 
         The update ``p^(k+1)_I = max(0, p^k_I + eps_N * penetration_I)`` is that of Puso, Laursen &
         Solberg (2008), Eq. (18), applied only once the Newton loop has converged, as they require;
-        the projection onto ``p >= 0`` is the first-order update of Wriggers (2006), Eq. (10.79),
-        p. 339. The node-wise stiffness ``eps_N / |D_II|`` turns the weighted gap into the pointwise
+        the projection onto ``p >= 0`` is applied directly (Wriggers 2006, Eq. (10.79), p. 339, prints a
+        first-order update with a min). The node-wise stiffness ``eps_N / |D_II|`` turns the weighted gap into the pointwise
         penetration. Gaps within the noise floor (:attr:`currentGapTolerance`) count as zero, so that
         a load-free interface does not feed its own round-off into the estimate. The loop terminates on
         the relative change of the estimate (see ``augmentationTolerance``).
@@ -1407,9 +1407,9 @@ class Constraint(ConstraintBase, MeshDependent):
 
         The node is active or inactive by :meth:`_isActiveLagrange`, re-decided in every Newton
         iteration until the active set is frozen (see :meth:`_freezeActiveSetIfSettled`): the semi-smooth
-        Newton method of Hintermueller, Ito & Kunisch (2002), with the complementarity function of De
-        Luca, Facchinei & Kanzow (1996) in the contact form of Hueber & Wohlmuth (2005), Eq. (3.9), and
-        Gitterle et al. (2010), Eq. (55). The indicator uses the physical opening ``g_weak / D_II``, a
+        Newton method of Hintermueller, Ito & Kunisch (2002), whose complementarity function, Eq. (3.1),
+        is the max form above, in the contact form of Hueber & Wohlmuth (2005), Eq. (3.9), and Gitterle
+        et al. (2010), Eq. (55). The indicator uses the physical opening ``g_weak / D_II``, a
         length, where Gitterle et al. use the weighted gap, so that ``c_n g_n`` is a pressure and
         ``c_n ~ E`` is dimensionally meaningful; at convergence either gap vanishes.
 
@@ -1558,7 +1558,7 @@ class Constraint(ConstraintBase, MeshDependent):
         reads as a slip of the gap vector. :meth:`_carryFrictionHistory` removes the difference to the
         objective slip of Yang et al. (2005), Eq. (47), at every rebuild. Under ``incomplete`` a
         remainder of second order in the increment is left. Friction under ``incomplete`` is this
-        implementation's extension; Hartmann (2007) treats frictionless contact.
+        implementation's extension; Hartmann (2007) treats no Coulomb sliding friction.
 
         Parameters
         ----------
