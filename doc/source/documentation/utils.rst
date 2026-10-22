@@ -133,3 +133,16 @@ Module ``edelweissfe.utils.contactfriction``
 
 .. automodule:: edelweissfe.utils.contactfriction
    :members:
+
+Mortar surface geometry
+-----------------------
+
+The geometry a segment-to-segment mortar constraint needs and a node-to-surface one does not
+(:doc:`mortartheory`): the bounding-volume hierarchy that pairs two surfaces, and the auxiliary-plane
+projection, polygon clipping and triangulation that turn a pair of facets into the polygon they
+share.
+
+Module ``edelweissfe.utils.mortargeometry``
+
+.. automodule:: edelweissfe.utils.mortargeometry
+   :members:

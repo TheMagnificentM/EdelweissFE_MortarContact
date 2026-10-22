@@ -1,0 +1,110 @@
+** Mortar contact across a partially covered non-mortar surface.
+**
+** Every other deck in this suite has the two surfaces cover each other completely, so every
+** non-mortar node has material opposite it over the whole of its own facets. Here the mortar block
+** spans 0.625 of the width of the non-mortar one, ending in the middle of a non-mortar face rather
+** than at its edge, which splits the non-mortar nodes into three populations the formulation has to
+** keep apart: covered and closed, partially covered, and not covered at all.
+**
+** Measured at the end of step 2, by position across the interface. kappa is the nodal scaling
+** factor of Popp, Seitz, Gee & Wall (2013), Eq. (36), reported as the coverage; D_II the nodal
+** weight, integrated over the covered part only; lambda the scaled multiplier the system solves
+** for, Eq. (29); lambda/kappa the traction recovered from it, Eq. (39); and the nodal force
+** lambda D_II / kappa.
+**
+**     x     kappa    D_II    D_II/kappa   lambda   lambda/kappa   force
+**   0.00    1.000   0.0624     0.0624      9.802       9.802      0.611
+**   0.25    1.000   0.1247     0.1247     10.164      10.164      1.268
+**   0.50    0.879   0.1097     0.1248      9.383      10.672      1.171
+**   0.75    0.129   0.0162     0.1248      4.445      34.357      0.555
+**   1.00    0.000   0.0000     0.0000      0.000       0.000      0.000
+**
+** Two things are worth reading off that table. The scaled weights D_II/kappa stay the facet
+** integrals across full, partial and vanishing coverage, which is what the nodal scaling buys: the
+** entries of the system keep one order of magnitude. And the recovered traction lambda/kappa at the
+** thinly covered node is the coefficient of a dual shape function over a small support, 34.4,
+** larger than the pressure around it; the force it transmits, 0.555, is what is physical there.
+**
+** The node at x = 1.00 has no material opposite it at any point of its facets. Its weight and its
+** multiplier are exactly zero, not merely small.
+**
+** This deck deliberately puts the LARGER surface on the non-mortar side. That is the unfavourable
+** choice -- with the smaller one there, every non-mortar facet would be fully covered and none of
+** the above would arise -- and it is made here precisely because partial coverage is what this deck
+** is for. See the theory documentation on the choice of sides.
+**
+** Step values are INCREMENTS over the step, not absolute positions, and every boundary condition is
+** restated in every step -- one left out would not hold its value, it would free that degree of
+** freedom for the rest of the run. Step 1 lifts the mortar block clear, so that every node passes
+** through the open state; step 2 presses it down, and that loaded state is the one the reference
+** solution holds. The order matters: with the lift last, the reference would consist of zeros and
+** would check nothing that this deck claims to measure.
+**
+** The reference solution covers both the nodal displacements and, since the multipliers of
+** formulation=lagrange are scalar variables of the global system, the nodal contact pressures.
+
+*material, name=LinearElastic, id=mat, provider=edelweiss
+1000.0, 0.0
+
+*modelGenerator, generator=boxGen, name=lower
+x0=0, y0=0, z0=0
+lX=1.0, lY=1.0, lZ=1.0
+nX=4, nY=1, nZ=2
+elType=C3D8
+elProvider=edelweiss
+
+*modelGenerator, generator=boxGen, name=upper
+x0=0, y0=1.0, z0=0
+lX=0.625, lY=1.0, lZ=1.0
+nX=3, nY=1, nZ=3
+elType=C3D8
+elProvider=edelweiss
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen1
+surface = lower_top
+name    = nonMortarSurf
+facets  = wholeFace
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen2
+surface = upper_bottom
+name    = mortarSurf
+facets  = wholeFace
+
+*section, name=secLower, material=mat, type=solid
+lower_all
+*section, name=secUpper, material=mat, type=solid
+upper_all
+
+*constraint, name=contact, type=mortarcontact
+nonMortarSurface=nonMortarSurf_facets
+mortarSurface=mortarSurf_facets
+field=displacement
+cn=1000.0
+geometryUpdate=incomplete
+
+*job, name=mortarPartialOverlap, domain=3d
+*solver, name=theSolver, solver=NIST
+
+*fieldOutput
+>>perNode, elSet=lower_all, field=displacement, result=U, name=dispLower
+>>perNode, elSet=upper_all, field=displacement, result=U, name=dispUpper
+
+** step 1: lift the mortar block clear -- every node open, including the covered ones
+*step, solver=theSolver
+maxInc=0.5, minInc=1e-4, maxNumInc=100, maxIter=25, stepLength=1
+>>dirichlet, name=fixBottom, nSet=lower_bottom, field=displacement, 2=0.0
+>>dirichlet, name=pushTop,   nSet=upper_top,    field=displacement, 2=0.03
+>>dirichlet, name=symmX_l, nSet=lower_left, field=displacement, 1=0.0
+>>dirichlet, name=symmX_u, nSet=upper_left, field=displacement, 1=0.0
+>>dirichlet, name=symmZ_l, nSet=lower_back, field=displacement, 3=0.0
+>>dirichlet, name=symmZ_u, nSet=upper_back, field=displacement, 3=0.0
+
+** step 2: press it down onto the wider surface -- the state the reference solution holds
+*step, solver=theSolver
+maxInc=0.5, minInc=1e-4, maxNumInc=100, maxIter=25, stepLength=1
+>>dirichlet, name=fixBottom, nSet=lower_bottom, field=displacement, 2=0.0
+>>dirichlet, name=pushTop,   nSet=upper_top,    field=displacement, 2=-0.05
+>>dirichlet, name=symmX_l, nSet=lower_left, field=displacement, 1=0.0
+>>dirichlet, name=symmX_u, nSet=upper_left, field=displacement, 1=0.0
+>>dirichlet, name=symmZ_l, nSet=lower_back, field=displacement, 3=0.0
+>>dirichlet, name=symmZ_u, nSet=upper_back, field=displacement, 3=0.0

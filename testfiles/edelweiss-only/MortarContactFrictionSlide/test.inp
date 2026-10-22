@@ -1,0 +1,82 @@
+** Mortar contact with Coulomb friction (formulation=penalty, mu=0.3), implicit (NIST).
+**
+** A small block is pressed onto a larger one and then dragged across it -- the mortar counterpart
+** of NodeToDeformableSurfaceContactFrictionHexa20. Step 1 closes the initial gap of 0.05 and
+** compresses by another 0.05; step 2 drags the pressed block by 0.4 in x, so that every contact node
+** passes from stick into slip and slides over several facets of the lower block.
+**
+** What is checked beyond the displacements (tests/test_mortarfriction.py): at the end of the drag
+** every active non-mortar node slips, its tangential traction is mu times its contact pressure, and
+** the resultant friction force is mu times the resultant normal force.
+
+*material, name=LinearElastic, id=linearelastic, provider=edelweiss
+1.8e4, 0.3
+
+*job, name=mortarfrictionjob, domain=3d
+*solver, solver=NIST, name=theSolver
+
+*modelGenerator, generator=boxGen, name=lower
+nX=3, nY=3, nZ=1
+x0=0, y0=0, z0=0
+lX=2, lY=2, lZ=1
+elProvider=edelweiss
+elType=C3D8
+
+*modelGenerator, generator=boxGen, name=upper
+nX=2, nY=2, nZ=2
+x0=0.3, y0=0.7, z0=1.05
+lX=0.6, lY=0.6, lZ=1
+elProvider=edelweiss
+elType=C3D8
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen1
+surface = upper_back
+name    = nonMortarSurf
+facets  = wholeFace
+
+*modelGenerator, generator=surfaceElementGenerator, name=gen2
+surface = lower_front
+name    = mortarSurf
+facets  = wholeFace
+
+*section, name=section1, material=linearelastic, type=solid
+lower_all
+upper_all
+
+*constraint, name=contact, type=mortarcontact
+nonMortarSurface=nonMortarSurf_facets
+mortarSurface=mortarSurf_facets
+field=displacement
+formulation=penalty
+penaltyStiffness=1e6
+mu=0.3
+geometryUpdate=incomplete
+
+*fieldOutput
+>>perNode, elSet=lower_all, field=displacement, result=U, name=dispLower
+>>perNode, elSet=upper_all, field=displacement, result=U, name=dispUpper
+>>perNode, name=RFDrag,   nSet=lower_back, field=displacement, result=P, f(x)='sum(x[:,0])', saveHistory=True
+>>perNode, name=RFNormal, nSet=lower_back, field=displacement, result=P, f(x)='sum(x[:,2])', saveHistory=True
+** The constraint's own nodal results, over the node set it publishes (contact_nonMortarNodes):
+** pressure, frictional traction, stick/slip state and opening -- what an Ensight >>perNode export
+** of the contact zone reads. tests/test_mortarfriction.py checks them against the constraint.
+>>fromExpression, name=contactPressure, nSet=contact_nonMortarNodes, expression='model.constraints["contact"].getNormalPressures()'
+>>fromExpression, name=contactTraction, nSet=contact_nonMortarNodes, expression='model.constraints["contact"].getTangentialTractions()'
+>>fromExpression, name=contactSlipState, nSet=contact_nonMortarNodes, expression='model.constraints["contact"].getSlipStates()'
+>>fromExpression, name=contactGap, nSet=contact_nonMortarNodes, expression='model.constraints["contact"].getGaps()'
+
+*output, type=monitor, name=monitor
+fieldOutput=RFDrag
+fieldOutput=RFNormal
+
+*step, solver=theSolver
+maxInc=0.34, minInc=1e-6, maxNumInc=200, maxIter=25, stepLength=1
+>>options, name=theSolver, extrapolation=off
+>>dirichlet, name=fixLower, nSet=lower_back, field=displacement, 1=0.0, 2=0.0, 3=0.0
+>>dirichlet, name=holdUpper, nSet=upper_front, field=displacement, 1=0.0, 2=0.0, 3=-0.1
+
+*step, solver=theSolver
+maxInc=0.1, minInc=1e-6, maxNumInc=200, maxIter=25, stepLength=1
+>>options, name=theSolver, extrapolation=off
+>>dirichlet, name=fixLower, nSet=lower_back, field=displacement, 1=0.0, 2=0.0, 3=0.0
+>>dirichlet, name=holdUpper, nSet=upper_front, field=displacement, 1=0.4, 2=0.0, 3=0.0

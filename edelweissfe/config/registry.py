@@ -184,6 +184,7 @@ _addBuiltins(
     "Constraint",
     [
         "amrtransparencyprobe",
+        "mortarcontact",
         "directionalspringpenalty",
         "equalvaluelagrangian",
         "equalvaluepenalty",

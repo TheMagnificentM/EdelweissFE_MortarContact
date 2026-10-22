@@ -171,3 +171,11 @@ Relevant module ``edelweissfe.generators.surfaceelementgenerator``
 .. literalinclude:: ../../../testfiles/edelweiss-only/NodeToDeformableSurfaceContact/test.inp
     :language: edelweiss
     :caption: Example: ``testfiles/edelweiss-only/NodeToDeformableSurfaceContact/test.inp``
+
+With ``facets = wholeFace`` the same generator emits one curved contact element per source face
+instead of a flat tiling; the mortar contact (:mod:`~edelweissfe.constraints.mortarcontact`) requires
+such surfaces, the node- and segment-based contacts accept them as well:
+
+.. literalinclude:: ../../../testfiles/edelweiss-only/MortarContactPatchHexa20/test.inp
+    :language: edelweiss
+    :caption: Example: ``testfiles/edelweiss-only/MortarContactPatchHexa20/test.inp``

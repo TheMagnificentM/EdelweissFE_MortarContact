@@ -15,6 +15,7 @@ Documentation
    constraints
    rigidbodies
    contacttheory
+   mortartheory
    dofmanager
    assembly
    fieldoutputmanager
