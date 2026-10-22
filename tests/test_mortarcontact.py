@@ -46,7 +46,8 @@ The pieces, in the order the constraint uses them:
 * the semi-smooth active set of the multiplier branch: what decides it, that it is re-decided in
   every Newton iteration, when it stops being re-decided, and that it reads the gap correctly where
   a nodal weight has turned negative
-* the tangent, against finite differences of the residual it claims to differentiate
+* the tangent, against finite differences of the residual it claims to differentiate, under both
+  geometry updates
 
 NOT covered here, and worth naming so the list above is not read as a complete one: whether the
 CONVERGED solution satisfies the Signorini conditions. That is a property of a solved model rather
@@ -540,7 +541,7 @@ class TestPenaltyActivation(unittest.TestCase):
         self.assertGreater(float(np.max(constraint.augmentedMultipliers)), 0.0)
 
 
-class TestConsistentTangent(unittest.TestCase):
+class TestFrozenTangent(unittest.TestCase):
     def test_the_tangent_differentiates_the_residual_it_assembles(self):
         """Central differences of the assembled contact forces against the assembled tangent, with
         the active set and the geometry held fixed.
@@ -590,6 +591,226 @@ class TestConsistentTangent(unittest.TestCase):
         scale = float(np.max(np.abs(K0)))
         self.assertGreater(scale, 0.0)
         np.testing.assert_allclose(K0 / scale, numeric / scale, atol=5e-6)
+
+
+class _FacetPair:
+    """Two contact surfaces built from contact elements directly, facing each other across a small
+    penetration: a non-mortar grid and a finer, shifted mortar grid, every node displaced at random
+    so that the surfaces are tilted and curved and no facet is parallel to another. Small enough
+    that a finite-difference tangent over every degree of freedom stays cheap."""
+
+    @staticmethod
+    def build(elType: str, nNonMortar: int = 1, nMortar: int = 2, perturbation: float = 0.03, seed: int = 0):
+        from edelweissfe.config.elementlibrary import getElementClass
+        from edelweissfe.models.femodel import FEModel
+        from edelweissfe.points.node import Node
+        from edelweissfe.sets.elementset import ElementSet
+        from edelweissfe.variables.fieldvariable import FieldVariable
+
+        dim = 2 if "LINE" in elType else 3
+        model = FEModel(dim)
+        elementClass = getElementClass(elType, "edelweiss")
+        natural = np.array(elementClass(elType, 0).getNodalNaturalCoordinates(), dtype=float)
+
+        def surface(origin, n, height, mortar, firstLabel):
+            pool, facets, size = {}, [], 1.0 / n
+
+            def node(x):
+                key = tuple(np.round(x, 9))
+                if key not in pool:
+                    nd = Node(1000 + len(model.nodes), np.array(x, dtype=float))
+                    nd.fields["displacement"] = FieldVariable(nd, "displacement")
+                    model.nodes[nd.label] = nd
+                    pool[key] = nd
+                return pool[key]
+
+            def add(points):
+                element = elementClass(elType, firstLabel + len(facets))
+                element.setNodes([node(x) for x in points])
+                model.elements[element.elNumber] = element
+                facets.append(element)
+
+            for i in range(n):
+                if dim == 2:
+                    # The non-mortar line runs along -x, so that its normal points up (+y) at the
+                    # mortar line above it, which runs along +x and so faces down.
+                    s = (natural[:, 0] + 1.0) / 2.0
+                    u = s if mortar else 1.0 - s
+                    add([[origin[0] + (i + a) * size, height] for a in u])
+                    continue
+                for j in range(n):
+                    if "TRI" in elType:
+                        cells = [natural, 1.0 - natural]
+                    else:
+                        cells = [(natural + 1.0) / 2.0]
+                    for cell in cells:
+                        # The mortar facets swap the in-plane axes, which turns their normal down.
+                        uv = cell[:, ::-1] if mortar else cell
+                        add([[origin[0] + (i + a) * size, origin[1] + (j + b) * size, height] for a, b in uv])
+            return facets
+
+        nonMortar = surface((0.0, 0.0), nNonMortar, 0.0, False, 1)
+        mortar = surface((0.15, 0.1), nMortar, -0.01, True, 100)
+        rng = np.random.default_rng(seed)
+        for nd in model.nodes.values():
+            nd.coordinates = nd.coordinates + perturbation * rng.standard_normal(dim)
+        model.elementSets["nonMortar_facets"] = ElementSet("nonMortar_facets", nonMortar)
+        model.elementSets["mortar_facets"] = ElementSet("mortar_facets", mortar)
+        return model
+
+    @staticmethod
+    def constraint(model, **options):
+        from edelweissfe.constraints.mortarcontact import Constraint as MortarContact
+        from edelweissfe.journal.journal import Journal
+
+        settings = dict(nonMortarSurface="nonMortar_facets", mortarSurface="mortar_facets")
+        if options.get("formulation", "lagrange") == "lagrange":
+            settings["cn"] = 1000.0
+        else:
+            settings["penaltyStiffness"] = 1000.0
+        settings.update(options)
+        return MortarContact("contact", model, Journal(verbose=False), **settings)
+
+
+def _timeStep():
+    from edelweissfe.timesteppers.timestep import TimeStep
+
+    return TimeStep(
+        number=1, stepProgressIncrement=1.0, stepProgress=1.0, timeIncrement=1.0, stepTime=1.0, totalTime=1.0
+    )
+
+
+ALL_TYPES = ("CONLINE2", "CONLINE3", "CONTRI3", "CONQUAD4", "CONTRI6", "CONQUAD8", "CONQUAD9")
+
+
+def _iterateTimeStep():
+    from edelweissfe.timesteppers.timestep import TimeStep
+
+    return TimeStep(
+        number=1, stepProgressIncrement=1.0, stepProgress=1.0, timeIncrement=1.0, stepTime=1.0, totalTime=1.0
+    )
+
+
+ALL_TYPES = ("CONLINE2", "CONLINE3", "CONTRI3", "CONQUAD4", "CONTRI6", "CONQUAD8", "CONQUAD9")
+
+
+class TestIncompleteTangent(unittest.TestCase):
+    """The tangent of ``geometryUpdate=incomplete``: the geometry is rebuilt at the iterate, and the
+    tangent differentiates the residual with that geometry held fixed (Hartmann 2007, Section 6.2.4).
+
+    Against central differences of the residual with the geometry HELD at the iterate it is exact,
+    and against central differences with the geometry rebuilt at every perturbation it is not: what
+    it omits are the derivatives of the normals and of D and C. The active set is held fixed after
+    one live assembly, since across a change of it there is no derivative."""
+
+    def _assembleAndHold(self, constraint, U, dU):
+        n = constraint.nDof
+        timeStep = _iterateTimeStep()
+        constraint.applyConstraint(U, dU, np.zeros(n), np.zeros((n, n)), timeStep)
+        self.assertGreater(int(np.sum(constraint.activeSet)), 0, "no node is in contact -- test is vacuous")
+        constraint.useActiveSet = False
+        K = np.zeros((n, n))
+        constraint.applyConstraint(U, dU, np.zeros(n), K, timeStep)
+        return K, timeStep
+
+    def _numericTangent(self, constraint, U, dU, timeStep, h=1e-7):
+        n = constraint.nDof
+        numeric = np.zeros((n, n))
+        for j in range(n):
+            step = np.zeros(n)
+            step[j] = h
+            plus, minus = np.zeros(n), np.zeros(n)
+            constraint.applyConstraint(U + step, dU + step, plus, np.zeros((n, n)), timeStep)
+            constraint.applyConstraint(U - step, dU - step, minus, np.zeros((n, n)), timeStep)
+            numeric[:, j] = -(plus - minus) / (2.0 * h)
+        return numeric
+
+    def _check(self, constraint, U, dU, tolerance=1e-6):
+        """The tangent at the iterate against the residual with the geometry of the iterate held."""
+        K, timeStep = self._assembleAndHold(constraint, U, dU)
+        # Under frozen the geometry is not rebuilt within an increment, so switching the mode holds
+        # the geometry just built at the iterate.
+        constraint.geometryUpdate = "frozen"
+        numeric = self._numericTangent(constraint, U, dU, timeStep)
+        scale = float(np.max(np.abs(K)))
+        self.assertGreater(scale, 0.0)
+        self.assertLess(float(np.max(np.abs(K - numeric))) / scale, tolerance)
+        return K
+
+    def test_lagrange(self):
+        for elType in ALL_TYPES:
+            with self.subTest(elType):
+                constraint = _FacetPair.constraint(_FacetPair.build(elType), geometryUpdate="incomplete")
+                U = np.zeros(constraint.nDof)
+                # Non-zero multipliers, so that the forces are exercised as well as the constraint rows.
+                U[constraint.sizeField * len(constraint.nodes) :] = 1.0 + 0.1 * np.arange(constraint.nMultipliers)
+                self._check(constraint, U, U)
+
+    def test_penalty(self):
+        for elType in ALL_TYPES:
+            with self.subTest(elType):
+                constraint = _FacetPair.constraint(
+                    _FacetPair.build(elType), formulation="penalty", geometryUpdate="incomplete"
+                )
+                U = 1e-4 * np.random.default_rng(3).standard_normal(constraint.nDof)
+                self._check(constraint, U, U)
+
+    def test_the_geometry_is_that_of_the_iterate(self):
+        """The rows the tangent is built from belong to the iterate, not to the converged state."""
+        constraint = _FacetPair.constraint(
+            _FacetPair.build("CONQUAD4"), formulation="penalty", geometryUpdate="incomplete"
+        )
+        U = 0.02 * np.random.default_rng(4).standard_normal(constraint.nDof)
+        n = constraint.nDof
+        constraint.applyConstraint(U, U, np.zeros(n), np.zeros((n, n)), _iterateTimeStep())
+        atIterate = [row.copy() for row in constraint.currentDRow]
+        reference = _FacetPair.constraint(_FacetPair.build("CONQUAD4"), formulation="penalty", geometryUpdate="frozen")
+        reference.applyConstraint(U, np.zeros(n), np.zeros(n), np.zeros((n, n)), _iterateTimeStep())
+        for a, b in zip(atIterate, reference.currentDRow):
+            np.testing.assert_allclose(a, b, rtol=0, atol=1e-15)
+
+    def test_the_rebuilt_residual_has_terms_the_tangent_omits(self):
+        """Against the residual with the geometry rebuilt at every perturbation the same tangent fails
+        by orders of magnitude: the omitted derivatives of the normals and of D and C are not
+        round-off."""
+        constraint = _FacetPair.constraint(
+            _FacetPair.build("CONQUAD4"), formulation="penalty", geometryUpdate="incomplete"
+        )
+        U = 1e-4 * np.random.default_rng(3).standard_normal(constraint.nDof)
+        K, timeStep = self._assembleAndHold(constraint, U, U)
+        numeric = self._numericTangent(constraint, U, U, timeStep)
+        self.assertGreater(float(np.max(np.abs(K - numeric))) / float(np.max(np.abs(K))), 1e-3)
+
+    def _frictionCase(self, elType, slide, mu, **options):
+        constraint = _FacetPair.constraint(
+            _FacetPair.build(elType), formulation="penalty", mu=mu, geometryUpdate="incomplete", **options
+        )
+        sf, nSlave = constraint.sizeField, constraint.nNonMortarNodes
+        U = np.zeros(constraint.nDof)
+        for J in range(constraint.nMortarNodes):
+            U[sf * (nSlave + J)] = slide
+            if sf == 3:
+                U[sf * (nSlave + J) + 1] = 0.5 * slide
+        U += 1e-3 * np.random.default_rng(1).standard_normal(len(U))
+        return constraint, U
+
+    def test_friction_slip(self):
+        for elType in ("CONLINE3", "CONQUAD4", "CONQUAD8"):
+            with self.subTest(elType):
+                constraint, U = self._frictionCase(elType, 0.02, 0.3)
+                constraint._friction.tractionConverged[:] = 20.0 * np.random.default_rng(2).standard_normal(
+                    constraint._friction.tractionConverged.shape
+                )
+                self._check(constraint, U, U.copy())
+                self.assertTrue(np.any(constraint.getSlipStates() == 2))
+
+    def test_friction_stick(self):
+        for elType in ("CONLINE2", "CONQUAD4", "CONTRI6"):
+            for options in ({}, {"slipTolerance": 0.01}):
+                with self.subTest(elType, **options):
+                    constraint, U = self._frictionCase(elType, 1e-5, 2.0, **options)
+                    self._check(constraint, U, U.copy())
+                    self.assertTrue(np.any(constraint.getSlipStates() == 1))
 
 
 def _frozenTimeStep(number: int = 1):
@@ -951,7 +1172,7 @@ class TestExplicitDynamics(unittest.TestCase):
         solver ticks every ``contact-update-frequency`` increments, and every increment in between
         has to reuse the geometry it already has -- otherwise the segmentation runs per time step,
         which is what makes an explicit mortar analysis unaffordable. The throttle belongs to the
-        frozen geometry; a consistent one is rebuilt at every iterate by definition.
+        frozen geometry; an incomplete one is rebuilt at every iterate by definition.
         """
 
         model = self._penetratingModel()
@@ -963,9 +1184,9 @@ class TestExplicitDynamics(unittest.TestCase):
         rebuilds = []
         original = constraint._couple
 
-        def counting(U_np, normals, withDerivatives):
+        def counting(U_np, normals):
             rebuilds.append(True)
-            return original(U_np, normals, withDerivatives)
+            return original(U_np, normals)
 
         constraint._couple = counting
 
@@ -1238,11 +1459,9 @@ class TestFriction(unittest.TestCase):
 
     Tests that state an exact property of the slip measure of the frozen geometry -- ``D dU_s - C
     dU_m`` within an increment and its correction at a rebuild -- and the finite-difference checks of
-    its tangent run with ``geometryUpdate=frozen``. The consistent geometry measures the objective slip
-    of Gitterle et al. (2010), Eq. (53), which equals the relative motion only up to second order where
-    the overlap changes, as it does here; and its tangent cannot be checked by finite differences on
-    these blocks, whose facet edges coincide in z, which puts the overlap on a kink. It is checked in
-    ``tests/test_mortarlinearization.py``.
+    its tangent run with ``geometryUpdate=frozen``. The tangent of ``geometryUpdate=incomplete`` is
+    checked in :class:`TestIncompleteTangent`, on facets that are not aligned: on these blocks the
+    facet edges coincide in z, which puts the overlap on a kink.
     """
 
     penaltyStiffness = 1.0e3
