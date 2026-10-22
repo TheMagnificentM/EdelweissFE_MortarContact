@@ -50,7 +50,7 @@ field=displacement
 formulation=penalty
 penaltyStiffness=1e6
 mu=0.3
-geometryUpdate=consistent
+geometryUpdate=incomplete
 
 *fieldOutput
 >>perNode, elSet=lower_all, field=displacement, result=U, name=dispLower

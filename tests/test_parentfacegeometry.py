@@ -34,7 +34,6 @@ import unittest
 import numpy as np
 
 from edelweissfe.elements.contactelement.element import ContactElement
-from edelweissfe.utils.mortarlinearization import shapeFunctionSecondDerivatives
 from edelweissfe.utils.parentfacegeometry import (
     PARENT_FACE_LOCAL_DIMENSION,
     PARENT_FACE_PARAMETRIC_COORDS,
@@ -113,7 +112,6 @@ class TestParentFaceShapeFunctions(unittest.TestCase):
             second = parentFaceShapeFunctionSecondDerivatives(faceType, xi)
             for k, x in enumerate(xi):
                 np.testing.assert_allclose(first[k], element.getShapeFunctionDerivatives(x), atol=1e-14)
-                np.testing.assert_allclose(second[k], shapeFunctionSecondDerivatives(element, x), atol=1e-14)
                 np.testing.assert_allclose(
                     element.getShapeFunctions(x), parentFaceShapeFunctions(faceType, x), atol=1e-15
                 )
@@ -124,6 +122,15 @@ class TestParentFaceShapeFunctions(unittest.TestCase):
                     (parentFaceShapeFunctionsAt(faceType, xi + e) - parentFaceShapeFunctionsAt(faceType, xi - e))
                     / (2 * h),
                     first[:, alpha],
+                    atol=1e-8,
+                )
+                np.testing.assert_allclose(
+                    (
+                        parentFaceShapeFunctionDerivatives(faceType, xi + e)
+                        - parentFaceShapeFunctionDerivatives(faceType, xi - e)
+                    )
+                    / (2 * h),
+                    second[:, :, alpha],
                     atol=1e-8,
                 )
 

@@ -30,7 +30,7 @@ import warnings
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.sparse import coo_matrix, csr_matrix
+from scipy.sparse import csr_matrix
 
 from edelweissfe.config.phenomena import getFieldSize
 from edelweissfe.constraints.base.constraintbase import ConstraintBase
@@ -51,11 +51,6 @@ from edelweissfe.utils.contactfriction import (
 )
 from edelweissfe.utils.mortarcoupling import computeMortarCoupling
 from edelweissfe.utils.mortargeometry import curvedFacetHistoryPatches
-from edelweissfe.utils.mortarlinearization import (
-    elementNormalAtNode,
-    mergeOverNodes,
-    scatterMatrix,
-)
 from edelweissfe.utils.schema import buildSchemaFromOptions, schemaField
 
 """
@@ -139,17 +134,16 @@ nodal normals, and the coupling matrices:
 COULOMB FRICTION (``mu > 0``) is available for ``penalty`` only, with or without the augmentation,
 under the implicit and the explicit solvers: a tangential penalty stick predictor from the converged
 nodal traction and the mortar-weighted slip increment, and a radial return onto ``|t_T| <= mu p``.
-See :meth:`Constraint._assembleFrictionConsistent` for the law with the objective slip on the
-consistent geometry, :meth:`Constraint._assembleFriction` and :meth:`Constraint._carryFrictionHistory`
-for the frozen one with its correction at each geometry rebuild, and
+See :meth:`Constraint._assembleFriction` and :meth:`Constraint._carryFrictionHistory` for the law
+and its correction once per increment, and
 :meth:`~edelweissfe.utils.contactfriction.CoulombFriction.freezeIfChattering` for the anti-chattering
 rule of the implicit iteration.
 
 THE GEOMETRY -- segmentation, coupling matrices, nodal normals -- is frozen at the last converged
 configuration for an increment (``geometryUpdate=frozen``, the default, and always under explicit
-dynamics), or, on request, follows the Newton iterate with its full linearisation
-(``geometryUpdate=consistent``; Popp, Gitterle, Gee & Wall 2010, Appendix A; the derivatives are in
-:mod:`~edelweissfe.utils.mortarlinearization`). See :meth:`Constraint._buildGeometry`.
+dynamics), or, on request, rebuilt at every Newton iterate with a tangent that omits its derivatives
+(``geometryUpdate=incomplete``; Hartmann 2007, Sections 6.1.4 and 6.2.4; the "incomplete
+linearization" of Popp, Gitterle, Gee & Wall 2010, Table I). See :meth:`Constraint._buildGeometry`.
 
 RESULTS PER NON-MORTAR NODE are published for output. The constraint registers the node set
 ``<name>_nonMortarNodes`` (in the order of the contact system), so that the accessors
@@ -257,12 +251,14 @@ class MortarContactSchema:
         description=(
             "How the mortar geometry -- segmentation, coupling matrices D and C, nodal normals -- follows the "
             "deformation in an implicit analysis. 'frozen', the default, builds it once per increment from "
-            "the last converged configuration and holds it fixed, which is cheaper per iteration but "
-            "staggered: the result carries an error of first order in the increment size. 'consistent' "
-            "rebuilds it at every Newton iterate and carries its full linearisation in the tangent (Popp, "
-            "Gitterle, Gee & Wall 2010), so the converged state of an increment satisfies the contact "
-            "conditions in its own configuration. Explicit dynamics always uses the frozen geometry, rebuilt "
-            "every contact-update-frequency increments, since it assembles no tangent."
+            "the last converged configuration and holds it fixed; the tangent is exact for that residual, but "
+            "the scheme is staggered: the result carries an error of first order in the increment size. "
+            "'incomplete' rebuilds it at every Newton iterate, so the converged state of an increment "
+            "satisfies the contact conditions in its own configuration, and holds it fixed within each "
+            "Newton step: the tangent omits the derivatives of the normals and of D and C (Hartmann 2007; "
+            "the incomplete linearization of Popp, Gitterle, Gee & Wall 2010), which costs the quadratic "
+            "convergence of the iteration. Explicit dynamics always uses the frozen geometry, rebuilt every "
+            "contact-update-frequency increments, since it assembles no tangent."
         ),
         dtype=str,
         default="frozen",
@@ -342,26 +338,18 @@ class MortarContactSchema:
     slipTolerance: float = slipToleranceField()
 
 
-def _cooToCsr(vals: list, rows: list, cols: list, shape: tuple) -> csr_matrix:
-    """Build a CSR matrix from lists of per-block triples, summing duplicates."""
-    if not vals:
-        return csr_matrix(shape)
-    return coo_matrix(
-        (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
-        shape=shape,
-    ).tocsr()
-
-
 def _storedRows(A: csr_matrix, n_rows: int, rtol: float = 1e-12) -> tuple[list, list]:
-    """Per-row (column indices, values) of EVERY entry a CSR matrix stores, with the values that
-    :func:`_nonzeroRows` would drop set to exactly zero.
+    """Per-row (column indices, values) of every entry a CSR matrix stores, with the values below
+    a noise floor RELATIVE to max|A| set to exactly zero.
 
-    The counterpart of :func:`_nonzeroRows` for the consistent linearisation. An entry below the
-    noise floor is round-off of zero in THIS configuration, but not necessarily in the next: a
-    coupling that vanishes because the two meshes happen to coincide along one direction does not
-    vanish once they do not, and its derivative is not zero. So the column stays, carrying its
-    derivative, while its value is zero -- which leaves every sum it enters bit-identical to the
-    filtered one, since adding 0.0 changes nothing.
+    The threshold is part of the formulation's arithmetic, not of the storage: it decides which
+    coupling terms enter the weak gap and the stiffness, and a stored CSR entry can be below it
+    (coo -> csr sums duplicates, it does not prune). It is relative because the entries of D and C
+    are integrals int(Phi_I N_K) and carry the unit of a facet AREA, so any absolute bound would be a
+    statement about the model's length unit rather than about the arithmetic. Round-off dust is
+    ~eps*max|A| by construction; rtol = 1e-12 sits four orders above it and twelve below the signal
+    for any length scale. A column below the floor is kept with the value zero, which leaves every
+    sum it enters bit-identical to dropping it.
     """
     tol = rtol * np.max(np.abs(A.data)) if A.data.size else 0.0
     data = np.where(np.abs(A.data) > tol, A.data, 0.0)
@@ -380,42 +368,6 @@ def _storedVectorRows(components: list, n_rows: int, rtol: float = 1e-12) -> lis
         data = np.where(np.abs(A.data) > rtol * scale, A.data, 0.0)
         columns.append([data[A.indptr[I] : A.indptr[I + 1]] for I in range(n_rows)])  # noqa: E741
     return [np.stack([c[I] for c in columns], axis=1) for I in range(n_rows)]  # noqa: E741
-
-
-def _nonzeroRows(A: csr_matrix, n_rows: int, rtol: float = 1e-12) -> tuple[list, list]:
-    """Per-row (column indices, values) of a CSR matrix, filtered RELATIVE to max|A|.
-
-    The threshold is part of the formulation's arithmetic, not of the storage: it
-    decides which coupling terms enter the weak gap and the stiffness, and a stored
-    CSR entry can be below it (coo -> csr sums duplicates, it does not prune).
-
-    It is deliberately a RELATIVE threshold. The entries of D and C are integrals
-    int(Phi_I N_K) and therefore carry the unit of a facet AREA, so any absolute
-    bound is a statement about the model's length unit rather than about the
-    arithmetic. What has to be separated here is round-off dust - which is
-    ~eps*max|A| by construction, independent of the unit - from a genuine coupling
-    term, and rtol*max|A| with rtol = 1e-12 sits four orders above the dust and
-    twelve below the signal for ANY length scale. (The bound this replaces was an
-    absolute 1e-14; on a model of order one it is the same filter to within an order
-    of magnitude, which is why the measured values in the documentation are
-    unchanged.)
-
-    Caching the VALUES next to the indices - rather than re-indexing A[I, nz] on every
-    Newton iteration - is the other half of the point: the pattern and the values are
-    fixed for the whole increment (frozen geometry), while applyConstraint runs once
-    per iteration.
-    """
-    idx_per_row, val_per_row = [], []
-    indptr, indices, data = A.indptr, A.indices, A.data
-    # An empty matrix has no scale; the loop below then keeps nothing, which is right.
-    tol = rtol * np.max(np.abs(data)) if data.size else 0.0
-    for I in range(n_rows):  # noqa: E741 - I is the non-mortar node index of the formulation
-        lo, hi = indptr[I], indptr[I + 1]
-        cols, vals = indices[lo:hi], data[lo:hi]
-        keep = np.abs(vals) > tol
-        idx_per_row.append(cols[keep])
-        val_per_row.append(vals[keep])
-    return idx_per_row, val_per_row
 
 
 class Constraint(ConstraintBase, MeshDependent):
@@ -505,10 +457,10 @@ class Constraint(ConstraintBase, MeshDependent):
                 f"Valid choices are 'lagrange' (default) and 'penalty'."
             )
         self.geometryUpdate = str(kwargs["geometryUpdate"]).strip().lower()
-        if self.geometryUpdate not in ("consistent", "frozen"):
+        if self.geometryUpdate not in ("frozen", "incomplete"):
             raise ValueError(
                 f"MortarContact '{name}': unknown geometryUpdate '{kwargs['geometryUpdate']}'. "
-                f"Valid choices are 'frozen' (default) and 'consistent'."
+                f"Valid choices are 'frozen' (default) and 'incomplete'."
             )
 
         self._updateFootprint()
@@ -548,7 +500,7 @@ class Constraint(ConstraintBase, MeshDependent):
         # (edelweissfe.utils.contactfriction); what is mortar-specific is how a non-mortar node maps
         # onto it (see _assembleFriction) and the objective slip correction at a geometry rebuild
         # (see _carryFrictionHistory). The elastic slip of slipTolerance takes h from the mortar
-        # weights at the first geometry rebuild (see _refreshFrozenGeometry).
+        # weights at the first geometry rebuild (see _refreshGeometry).
         self._friction = CoulombFriction(
             self.nNonMortarNodes,
             model.domainSize,
@@ -1464,15 +1416,15 @@ class Constraint(ConstraintBase, MeshDependent):
         return self._nDof
 
     @property
-    def consistentGeometry(self) -> bool:
-        """Whether the geometry follows the iterate with its full linearisation (``geometryUpdate``),
-        which needs a tangent and therefore an implicit solver."""
-        return self.geometryUpdate == "consistent" and not self._explicit
+    def liveGeometry(self) -> bool:
+        """Whether the geometry is rebuilt at every Newton iterate (``geometryUpdate=incomplete``),
+        which needs an equilibrium iteration and therefore an implicit solver."""
+        return self.geometryUpdate == "incomplete" and not self._explicit
 
     def getNumberOfAdditionalNeededScalarVariables(self) -> int:
         return self.nMultipliers
 
-    def computeNormals(self, U_np: np.ndarray = None, withDerivatives: bool = False) -> np.ndarray:
+    def computeNormals(self, U_np: np.ndarray = None) -> np.ndarray:
         """Averaged outward-pointing unit normal at every non-mortar (slave) node.
 
         The averaged nodal normal: the element normal
@@ -1513,21 +1465,12 @@ class Constraint(ConstraintBase, MeshDependent):
 
         If U_np is provided, the normal vectors are calculated in the deformed
         configuration. Otherwise, they are calculated in the undeformed one.
-
-        With ``withDerivatives`` the derivative of every nodal normal with respect to the
-        coordinates of the nodes of its adjacent facets is stored as well, in
-        :attr:`currentNormalDerivatives`: per node, ``(nodes, dn)`` with the constraint-local node
-        indices and ``dn`` of shape ``(dim, dim * len(nodes))`` -- Popp, Gitterle, Gee & Wall
-        (2010), Eqs. (A1)-(A3), for the unweighted sum of unit element normals used here.
         """
         dim = self.model.domainSize
         normals = np.zeros((self.nNonMortarNodes, dim))
 
         node_to_idx = self.nonMortarNodeToIndex
         current = self._currentCoordinates(U_np)
-
-        # Per node, the derivatives of the unit contributions of its facets, with the facets' nodes.
-        contributions = [[] for _ in range(self.nNonMortarNodes)] if withDerivatives else None
 
         # Iterate over all non-mortar facets
         for el in self.nonMortarFacets:
@@ -1558,32 +1501,16 @@ class Constraint(ConstraintBase, MeshDependent):
                 if len_n <= 1e-14:
                     continue
                 normals[node_to_idx[node]] += n_node / len_n
-                if withDerivatives:
-                    # d(n/|n|) of this facet's contribution, over the facet's nodes (Eq. (A2)).
-                    _, dn_node = elementNormalAtNode(dN_at_nodes[local], coords, dim)
-                    unit = n_node / len_n
-                    contributions[node_to_idx[node]].append(
-                        (facet_ids, (np.eye(dim) - np.outer(unit, unit)) @ dn_node / len_n)
-                    )
 
         # Normalize the normal vectors
         degenerate = []
-        if withDerivatives:
-            self.currentNormalDerivatives = []
         for i in range(self.nNonMortarNodes):
             norm = np.linalg.norm(normals[i])
             if norm > 1e-14:
-                if withDerivatives:
-                    # The sum of the unit contributions, normalised once more (Eq. (A1)).
-                    nodes, dsum = mergeOverNodes(contributions[i], dim)
-                    unit = normals[i] / norm
-                    self.currentNormalDerivatives.append((nodes, (np.eye(dim) - np.outer(unit, unit)) @ dsum / norm))
                 normals[i] /= norm
             else:
                 normals[i] = np.zeros(dim)
                 degenerate.append(i)
-                if withDerivatives:
-                    self.currentNormalDerivatives.append((np.zeros(0, dtype=np.intp), np.zeros((dim, 0))))
 
         if degenerate:
             # A zero normal is not a harmless special case: g_weak and p_n are both
@@ -1603,18 +1530,16 @@ class Constraint(ConstraintBase, MeshDependent):
 
         return normals
 
-    def computeMortarCouplingMatrices(
-        self, U_np: np.ndarray = None, withDerivatives: bool = False
-    ) -> tuple[csr_matrix, csr_matrix]:
+    def computeMortarCouplingMatrices(self, U_np: np.ndarray = None) -> tuple[csr_matrix, csr_matrix]:
         """The mortar matrices D (non-mortar x non-mortar) and C (non-mortar x mortar) at the
         configuration ``U_np``; see :mod:`~edelweissfe.utils.mortarcoupling` for the segmentation and
         integration and the sources they follow. The gap matrices and the nodal scaling factor of the
         same configuration are kept as :attr:`lastCoupling`."""
-        normals = self.computeNormals(U_np, withDerivatives)
-        coupling = self._couple(U_np, normals, withDerivatives)
+        normals = self.computeNormals(U_np)
+        coupling = self._couple(U_np, normals)
         return coupling.D, coupling.M
 
-    def _couple(self, U_np: np.ndarray, normals: np.ndarray, withDerivatives: bool):
+    def _couple(self, U_np: np.ndarray, normals: np.ndarray):
         """Run :func:`~edelweissfe.utils.mortarcoupling.computeMortarCoupling` on the current state and
         report its diagnostics."""
         from edelweissfe.config.elementlibrary import getElementClass
@@ -1623,11 +1548,9 @@ class Constraint(ConstraintBase, MeshDependent):
             self.nonMortarFacets,
             self.mortarFacets,
             dict(zip(self._nodes, self._currentCoordinates(U_np))),
-            self.nodeToGlobalIndex,
             self.nonMortarNodeToIndex,
             self.mortarNodeToIndex,
             normals,
-            self.currentNormalDerivatives if withDerivatives else None,
             self.model.domainSize,
             getElementClass("CONQUAD4", "edelweiss"),
         )
@@ -1654,67 +1577,6 @@ class Constraint(ConstraintBase, MeshDependent):
             )
         self.lastCoupling = coupling
         return coupling
-
-    def _linearisedRows(self) -> list:
-        """The derivatives of every non-mortar node's rows and of its normal and scaling factor, on one
-        local node list per node.
-
-        Returns, per non-mortar node ``I``, a dict with
-
-        ``nodes``
-            the sorted constraint-local node indices the node's coupling depends on;
-        ``dD``, ``dC``
-            ``(len(row), dim * len(nodes))`` derivatives of the entries of row ``I`` of D and C, in the
-            order of :attr:`currentDNonzero` / :attr:`currentCNonzero`;
-        ``dDn``, ``dCn``
-            ``(len(row), dim, dim * len(nodes))`` the same for the gap matrices;
-        ``dn``
-            ``(dim, dim * len(nodes))`` derivative of the nodal normal;
-        ``dkappa``
-            ``(dim * len(nodes),)`` derivative of the nodal scaling factor.
-        """
-        dim = self.model.domainSize
-        nSlave = self.nNonMortarNodes
-        rows = []
-        for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
-            colsD, colsC = self.currentDNonzero[I], self.currentCNonzero[I]
-            normalNodes, dn = self.currentNormalDerivatives[I]
-            contributions = self.lastCoupling.rowContributions[I]
-            nodes = np.unique(
-                np.concatenate(
-                    [np.asarray(colsD, dtype=np.intp), nSlave + np.asarray(colsC, dtype=np.intp), normalNodes]
-                    + [support for *_, support in contributions]
-                )
-            ).astype(np.intp)
-            P = dim * len(nodes)
-            out = {
-                "D": np.zeros((len(colsD), P)),
-                "M": np.zeros((len(colsC), P)),
-                "Dn": np.zeros((len(colsD), dim, P)),
-                "Mn": np.zeros((len(colsC), dim, P)),
-                "kappa": np.zeros(P),
-            }
-            for kind, cols, d, support in contributions:
-                moved = d @ scatterMatrix(support, nodes, dim)
-                if kind == "kappa":
-                    out["kappa"] += moved
-                    continue
-                ownCols = colsD if kind in ("D", "Dn") else colsC
-                # The rows store every column they were assembled from (see _storedRows).
-                sorter = np.argsort(ownCols)
-                np.add.at(out[kind], sorter[np.searchsorted(ownCols, cols, sorter=sorter)], moved)
-            rows.append(
-                {
-                    "nodes": nodes,
-                    "dD": out["D"],
-                    "dC": out["M"],
-                    "dDn": out["Dn"],
-                    "dCn": out["Mn"],
-                    "dn": dn @ scatterMatrix(normalNodes, nodes, dim),
-                    "dkappa": out["kappa"],
-                }
-            )
-        return rows
 
     def requiresCorrectionBeforeConvergence(self) -> bool:
         """True on the first assembly of an increment in the penalty branch.
@@ -1847,14 +1709,16 @@ class Constraint(ConstraintBase, MeshDependent):
         nSlave = self.nNonMortarNodes
 
         # Detect new increment to track iterations and reset currentIteration.
-        # Under geometryUpdate=consistent the normals and coupling matrices are rebuilt at
-        # this iterate and linearised (see _buildGeometry and _geometricTangent), as in the
-        # reference formulations: Popp, Gitterle, Gee & Wall (2010), Section 4.3 and Appendix
-        # A, and Gitterle et al. (2010) for the frictional case.
-        # Under geometryUpdate=frozen they are frozen within each increment (staggered
-        # geometry update), so the assembled stiffness is the exact Jacobian of the residual
-        # equations within the increment; everything from here to the call below is about
-        # that mode, and about the per-increment bookkeeping both modes share.
+        # Under geometryUpdate=frozen the normals and coupling matrices are frozen within each
+        # increment (staggered geometry update), so the assembled stiffness is the exact Jacobian
+        # of the residual equations within the increment.
+        # Under geometryUpdate=incomplete they are rebuilt at this iterate and held fixed within
+        # the Newton step, as in Hartmann (2007), Section 6.2.4, p. 98: D and M "koennen innerhalb
+        # eines Newton-Iterationsschrittes ... als konstant angenommen werden". The assembly below
+        # is the same in both modes and differentiates with the geometry held fixed; under
+        # incomplete that omits the derivatives of the normals and of D and C (Hartmann 2007,
+        # Section 6.1.4 and Eqs. (7.30)-(7.34); the "incomplete linearization" of Popp, Gitterle,
+        # Gee & Wall 2010, Table I), and the Newton rate is what pays for it.
         # A RE-ATTEMPT of an increment after a solver cutback carries the SAME
         # increment number but a smaller time increment, and it restarts the Newton
         # iteration from the last converged state. It must therefore be treated
@@ -1867,14 +1731,11 @@ class Constraint(ConstraintBase, MeshDependent):
         # REFERENCE CONFIGURATION of the frozen geometry: the LAST CONVERGED state,
         # U_n = U_np - dU, not the state handed in as U_np.
         #
-        # Note what the frozen geometry is NOT. Popp et al. measure an "incomplete linearization" in their Table I
-        # -- a LIVE geometry carried with a tangent that omits the linearizations of the nodal
-        # normal and of D and M -- and it costs them 52 Newton steps against 16 for the same
-        # fixed-point active-set strategy with the full linearization. Here the geometry
-        # is FROZEN, so the assembled tangent is exact for the residual that is actually assembled
-        # (measured: max|K - K_FD| / max|K| = 5.3e-10). The Newton rate is therefore not what
-        # suffers; the cost is a consistency error of the increment itself, first order in its
-        # size. Their number must not be quoted against this scheme.
+        # The two modes fail in different places. The frozen geometry keeps the tangent exact for
+        # the residual that is actually assembled, so its Newton rate does not suffer; its cost is
+        # a consistency error of the increment itself, first order in its size. The incomplete
+        # one has no such error, since the converged state satisfies the contact conditions in its
+        # own configuration, and pays with the Newton rate instead.
         #
         # Within a staggered scheme, however, the reference must be the converged
         # state. EdelweissFE's solvers extrapolate the previous increment before the
@@ -1887,7 +1748,7 @@ class Constraint(ConstraintBase, MeshDependent):
         # of the staggered scheme, which is first order in the increment size only
         # with respect to an equilibrated reference configuration.
         step_key = (timeStep.number, timeStep.timeIncrement, timeStep.totalTime)
-        self._refreshFrozenGeometry(step_key, U_np, dU, timeStep)
+        self._refreshGeometry(step_key, U_np, dU, timeStep)
 
         normals = self.currentNormals
 
@@ -1909,7 +1770,6 @@ class Constraint(ConstraintBase, MeshDependent):
         nodalPenalty = self._nodalPenaltyStiffness() if penalty else None
         friction = penalty and self._friction.enabled
         _dim_offsets = np.arange(dim)
-        consistent = self.consistentGeometry
 
         for I in range(nSlave):  # noqa: E741 - I is the non-mortar node index of the formulation
             idx_LM_I = idx_LM_0 + I
@@ -2068,12 +1928,10 @@ class Constraint(ConstraintBase, MeshDependent):
                 #   dg_weak/dx_a = -w_a n_I,    dlambda_I/dx_a = +kappa_I w_a n_I
                 # (the sgn(D_II) cancels), and with v_a = w_a n_I:
                 #   PExt_a -= lambda_I * v_a,     K_ab += kappa_I * v_a v_b.
-                # This is the first term of the linearised penalty force, symmetric
-                # positive semi-definite; the linearizations of the nodal normal, of
-                # the mortar weights and of kappa_I follow in _geometricTangent under
-                # geometryUpdate=consistent and are omitted by the frozen geometry (see
-                # the note on the reference configuration above and the "The tangent"
-                # section of mortartheory.rst).
+                # This is the linearised penalty force with the geometry held fixed; the
+                # linearizations of the nodal normal, of the mortar weights and of kappa_I
+                # are omitted in both modes (see the note on the reference configuration
+                # above and the "The tangent" section of mortartheory.rst).
                 # astype: both index arrays can be empty (a slave node that lost
                 # all coverage while still carrying an augmented pressure), and
                 # concatenating two empty arrays does not reliably keep an integer
@@ -2089,13 +1947,7 @@ class Constraint(ConstraintBase, MeshDependent):
                 vGap = np.concatenate((self.currentDnRow[I], -self.currentCnRow[I])).ravel()
                 PExt[idcs] -= lambda_I * v
                 K[np.ix_(idcs, idcs)] += kappa_I * np.outer(v, vGap)
-                if consistent:
-                    dlambda = self._geometricTangent(I, lambda_I, coords, K, penaltyTerms=(kappa_I, g_pen, sgn_D, D_II))
-                    if friction:
-                        self._assembleFrictionConsistent(
-                            I, max(p_trial, 0.0), dlambda, kappa_I, sgn_D, D_II, coords, PExt, K
-                        )
-                elif friction:
+                if friction:
                     self._assembleFriction(
                         I, w, vGap, idcs, n_I, max(p_trial, 0.0), kappa_I * sgn_D, abs(D_II), dU, PExt, K
                     )
@@ -2183,9 +2035,6 @@ class Constraint(ConstraintBase, MeshDependent):
                     PExt[m_dofs] += lambda_I * C_IJ_n
                     K[m_dofs, idx_LM_I] -= C_IJ_n
                     K[idx_LM_I, m_dofs] -= scale * Cn_IJ
-
-                if consistent:
-                    self._geometricTangent(I, lambda_I, coords, K, multiplierRow=idx_LM_I)
             else:
                 PExt[idx_LM_I] -= lambda_I
                 K[idx_LM_I, idx_LM_I] += 1.0
@@ -2208,209 +2057,6 @@ class Constraint(ConstraintBase, MeshDependent):
             # this only fires on an increment that is genuinely struggling.
             self._friction.freezeIfChattering(self.currentIteration)
         self._reportThinlyCoveredNodes(timeStep)
-
-    def _geometricTangent(
-        self,
-        I: int,  # noqa: E741 - the non-mortar node index of the formulation
-        lambda_I: float,
-        coords: np.ndarray,
-        K: np.ndarray,
-        multiplierRow: int | None = None,
-        penaltyTerms: tuple | None = None,
-    ):
-        """The terms of the tangent of an active non-mortar node that come from the geometry following
-        the deformation, under ``geometryUpdate=consistent``.
-
-        The assembly of :meth:`applyConstraint` differentiates the residual with D, C and n_I held
-        fixed. What the moving geometry adds is, in the constraint row, the geometric part of the
-        derivative of the weighted gap, ``dg_I = -sum_K x_K . dDn_IK + sum_J x_J . dCn_IJ`` with the gap
-        matrices (Popp, Gitterle, Gee & Wall 2010, Eqs. (A8)-(A11); in 2D the nodal gap of Popp, Gee &
-        Wall 2009, Eq. (A36)), and in the forces ``-lambda_I D_IK n_I`` and ``+lambda_I C_IJ n_I`` the
-        derivatives ``lambda_I (n_I dD_IK + D_IK dn_I)`` and their mortar counterparts -- the matrix C~
-        of Popp et al. (2010), Eq. (51). The multiplier row carries the nodal scaling of Popp, Seitz,
-        Gee & Wall (2013), whose derivative enters through their Eqs. (31), (33) and (35).
-
-        For the penalty form the pressure itself moves with the geometry as well: with ``p =
-        z + kappa_I g_pen``, ``kappa_I = eps_N/|D_II|`` and ``g_pen = -sgn(D_II) g_I``, its geometric
-        derivative is ``sgn(D_II) dkappa_I g_pen - kappa_I dg_I`` with ``sgn(D_II) dkappa_I =
-        -kappa_I dD_II / |D_II|``, and it enters every force ``-lambda_I w_a n_I``.
-
-        Parameters
-        ----------
-        I
-            The non-mortar node.
-        lambda_I
-            Its multiplier, in the sign convention of the assembly.
-        coords
-            Current coordinates of all constraint nodes.
-        K
-            The constraint's tangent, ``-dPExt/dU``, added to in place.
-        multiplierRow
-            The row of the multiplier (formulation=lagrange), whose constraint row receives ``-dg_I``.
-        penaltyTerms
-            ``(kappa_I, g_pen, sgn(D_II), D_II)`` for formulation=penalty.
-
-        Returns
-        -------
-        np.ndarray | None
-            For formulation=penalty, the geometric part of ``dlambda_I`` over the coordinates of
-            the node's local nodes (see :meth:`_linearisedRows`), which the friction law needs too.
-        """
-        dim = self.model.domainSize
-        sf = self.sizeField
-        nSlave = self.nNonMortarNodes
-        lin = self._linearisation[I]
-        nodes = lin["nodes"]
-        local = (sf * nodes[:, None] + np.arange(dim)).ravel()
-
-        colsD, colsC = self.currentDNonzero[I], self.currentCNonzero[I]
-        dRow, cRow = self.currentDRow[I], self.currentCRow[I]
-        dD, dC, dn = lin["dD"], lin["dC"], lin["dn"]
-        n_I = self.currentNormals[I]
-        x_s, x_m = coords[colsD], coords[nSlave + np.asarray(colsC, dtype=np.intp)]
-
-        # The geometric part of dg_I with the gap matrices: -sum_K x_K . dDn_IK + sum_J x_J . dCn_IJ,
-        # Popp et al. (2010), Eqs. (A8)-(A11) (in 2D, Popp, Gee & Wall 2009, Eq. (A36)); relative to the
-        # node's position as in _weightedGap, which leaves it unchanged since the two row sums are
-        # equal in every configuration and so are their derivatives.
-        origin = coords[I]
-        dg = -np.einsum("kc,kcz->z", x_s - origin, lin["dDn"]) + np.einsum("lc,lcz->z", x_m - origin, lin["dCn"])
-
-        # Rows of the forces on the coupled nodes, -lambda w_a n_I with w = [D_IK, -C_IJ].
-        rowsD = (sf * np.asarray(colsD, dtype=np.intp)[:, None] + np.arange(dim)).ravel()
-        rowsC = (sf * (nSlave + np.asarray(colsC, dtype=np.intp))[:, None] + np.arange(dim)).ravel()
-        forceD = n_I[None, :, None] * dD[:, None, :] + dRow[:, None, None] * dn[None]
-        forceC = n_I[None, :, None] * dC[:, None, :] + cRow[:, None, None] * dn[None]
-
-        if multiplierRow is not None:
-            # The row scaled by 1/kappa_I: d(g/kappa) = dg/kappa - g dkappa/kappa^2, and the same for the
-            # forces, Popp, Seitz, Gee & Wall (2013), Eqs. (31), (33) and (35).
-            kappa = self.currentNodalScale[I]
-            scale = self._multiplierRowScale(I)
-            dScale = -lin["dkappa"] / kappa**2 if kappa > 1e-12 else np.zeros_like(lin["dkappa"])
-            gap = self.currentWeakGap[I]
-            vD = (dRow[:, None] * n_I[None, :]).ravel()
-            vC = (-cRow[:, None] * n_I[None, :]).ravel()
-            K[multiplierRow, local] -= scale * dg + gap * dScale
-            K[np.ix_(rowsD, local)] += lambda_I * (scale * forceD.reshape(-1, len(local)) + np.outer(vD, dScale))
-            K[np.ix_(rowsC, local)] -= lambda_I * (scale * forceC.reshape(-1, len(local)) - np.outer(vC, dScale))
-            return
-
-        kappa_I, g_pen, sgn_D, D_II = penaltyTerms
-        dD_II = dD.sum(axis=0)
-        dlambda = -kappa_I * g_pen * dD_II / abs(D_II) - kappa_I * dg
-        vD = (dRow[:, None] * n_I[None, :]).ravel()
-        vC = (-cRow[:, None] * n_I[None, :]).ravel()
-        K[np.ix_(rowsD, local)] += np.outer(vD, dlambda) + lambda_I * forceD.reshape(-1, len(local))
-        K[np.ix_(rowsC, local)] += np.outer(vC, dlambda) - lambda_I * forceC.reshape(-1, len(local))
-        return dlambda
-
-    def _assembleFrictionConsistent(
-        self,
-        I: int,  # noqa: E741 - the non-mortar node index of the formulation
-        p: float,
-        dlambdaGeometric: np.ndarray,
-        kappa_I: float,
-        sgn_D: float,
-        D_II: float,
-        coords: np.ndarray,
-        PExt: np.ndarray,
-        K: np.ndarray,
-    ):
-        """Penalty-regularised Coulomb friction at one active non-mortar node, on the geometry of the
-        iterate (``geometryUpdate=consistent``).
-
-        The law and the mapping onto it are those of :meth:`_assembleFriction` -- forces ``w_a t``
-        with ``w = [D_IK, -C_IJ]``, pointwise quantities over ``|D_II|`` -- but the slip is the
-        OBJECTIVE one of Gitterle, Popp, Gee & Wall (2010), Eq. (53),
-
-            u_tau = P_T [ -(D - D_n) x_s + (C - C_n) x_m ]_I / |D_II| ,
-
-        with D_n, C_n the coupling matrices of the last converged configuration and every other
-        quantity at the iterate; Yang, Laursen & Meng (2005), Eq. (47), is the same measure. A rigid
-        rotation leaves D and C unchanged and therefore produces no slip, so no correction of the
-        history is needed between increments. The 3D form -- a tangent plane instead of the single
-        tangent of Gitterle et al., who treat 2D -- is the projected relative velocity of Farah
-        (2018), Eq. (3.43). Its linearisation follows their Eq. (A3), with the normal, the
-        coupling matrices and the pressure all differentiated (see
-        :meth:`~edelweissfe.utils.contactfriction.CoulombFriction.evaluateLinearised`).
-
-        Parameters
-        ----------
-        I
-            The non-mortar node.
-        p
-            The physical contact pressure, >= 0.
-        dlambdaGeometric
-            The geometric part of the derivative of the multiplier (see :meth:`_geometricTangent`).
-        kappa_I, sgn_D, D_II
-            The nodal penalty stiffness, the sign of the nodal weight and the weight itself.
-        coords
-            Current coordinates of all constraint nodes.
-        PExt, K
-            As in :meth:`applyConstraint`.
-        """
-        dim = self.model.domainSize
-        sf = self.sizeField
-        nSlave = self.nNonMortarNodes
-        lin = self._linearisation[I]
-
-        (convergedColsD, convergedD), (convergedColsC, convergedC) = self._convergedRows
-        oldColsD, oldD = convergedColsD[I], convergedD[I]
-        oldColsC, oldC = convergedColsC[I], convergedC[I]
-        nodes = np.unique(np.concatenate((lin["nodes"], oldColsD, nSlave + oldColsC))).astype(np.intp)
-        S = scatterMatrix(lin["nodes"], nodes, dim)
-        dD, dC, dn = lin["dD"] @ S, lin["dC"] @ S, lin["dn"] @ S
-        nZ = dim * len(nodes)
-
-        def weights(colsD, valsD, colsC, valsC):
-            # The coupling of a row over the local nodes: +D_IK on the slave, -C_IJ on the master nodes.
-            w = np.zeros(len(nodes))
-            np.add.at(w, np.searchsorted(nodes, colsD), valsD)
-            np.add.at(w, np.searchsorted(nodes, nSlave + np.asarray(colsC, dtype=np.intp)), -np.asarray(valsC))
-            return w
-
-        colsD, colsC = self.currentDNonzero[I], self.currentCNonzero[I]
-        w = weights(colsD, self.currentDRow[I], colsC, self.currentCRow[I])
-        wOld = weights(oldColsD, oldD, oldColsC, oldC)
-        dw = np.zeros((len(nodes), nZ))
-        np.add.at(dw, np.searchsorted(nodes, colsD), dD)
-        np.add.at(dw, np.searchsorted(nodes, nSlave + np.asarray(colsC, dtype=np.intp)), -dC)
-
-        # The gap vectors with the current and with the converged coupling, both at the iterate.
-        x = coords[nodes]
-        eye = np.eye(dim)
-        G, dG = w @ x, np.kron(w[None, :], eye) + x.T @ dw
-        GOld, dGOld = wOld @ x, np.kron(wOld[None, :], eye)
-        A = abs(D_II)
-        dA = sgn_D * dD.sum(axis=0)
-        relative = (GOld - G) / A
-        dRelative = (dGOld - dG) / A - np.outer(relative, dA) / A
-
-        n_I = self.currentNormals[I]
-        # dp = sgn(D_II) dlambda: the part through the positions -- kappa_I times the rows of the gap
-        # matrices, -dg_I/dx -- and the geometric part.
-        gapGradient = np.zeros((len(nodes), dim))
-        np.add.at(gapGradient, np.searchsorted(nodes, colsD), self.currentDnRow[I])
-        np.add.at(gapGradient, np.searchsorted(nodes, nSlave + np.asarray(colsC, dtype=np.intp)), -self.currentCnRow[I])
-        dp = sgn_D * (kappa_I * gapGradient.ravel() + dlambdaGeometric @ S)
-
-        forces, tangent = self._friction.evaluateLinearised(
-            I,
-            w,
-            dw,
-            n_I,
-            dn,
-            relative,
-            dRelative,
-            p,
-            dp,
-            self.epsN,
-            pressureTolerance=kappa_I * self.currentGapTolerance,
-        )
-        idcs = (sf * nodes[:, None] + np.arange(dim)).ravel()
-        PExt[idcs] += forces
-        K[np.ix_(idcs, idcs)] += tangent
 
     def _freezeActiveSetIfSettled(self, penalty: bool, timeStep: TimeStep):
         """Decide whether the active set may stop being re-evaluated for the rest of this increment.
@@ -2565,9 +2211,9 @@ class Constraint(ConstraintBase, MeshDependent):
         PExt: np.ndarray,
         K: np.ndarray,
     ):
-        """Penalty-regularised Coulomb friction at one active non-mortar node, on the frozen geometry
-        (``geometryUpdate=frozen`` and explicit dynamics; see :meth:`_assembleFrictionConsistent` for
-        the consistent one).
+        """Penalty-regularised Coulomb friction at one active non-mortar node, on the geometry of the
+        assembly: the frozen one (``geometryUpdate=frozen`` and explicit dynamics) or that of the
+        iterate (``geometryUpdate=incomplete``).
 
         The law is the one shared by all contact formulations
         (:class:`~edelweissfe.utils.contactfriction.CoulombFriction`, see there for the sources of the
@@ -2595,6 +2241,15 @@ class Constraint(ConstraintBase, MeshDependent):
         increment are what the next rebuild computes -- so :meth:`_carryFrictionHistory` removes that
         difference from the accepted history there. The error is then that of the frozen normal,
         first order in one increment and not accumulated over many.
+
+        UNDER ``geometryUpdate=incomplete`` the same measure is taken with D, C and n of the iterate,
+        ``D dU_s - C dU_m``, and differentiated with them held fixed, as the normal part is. Its sum
+        over an increment then differs from the objective slip by the change of the gap vector, which
+        :meth:`_carryFrictionHistory` removes as under frozen, and by ``(D_n+1 - D_n) (x_n+1 - x_n)``
+        (likewise for C), which it does not: a remainder of second order in the increment. A rigid
+        rotation leaves D and C unchanged, so it still reads no slip once corrected. The friction
+        law is not part of Hartmann (2007), whose formulation is frictionless; this is the measure of
+        the frozen geometry carried onto the geometry of the iterate.
 
         "No pressure" is the noise floor of the gap the pressure is made from (currentGapTolerance),
         the same band in which the normal law counts a node as closed but unloaded.
@@ -2635,8 +2290,9 @@ class Constraint(ConstraintBase, MeshDependent):
     def _carryFrictionHistory(self, U_ref: np.ndarray, previousNormals: np.ndarray | None):
         """Carry the accepted tangential tractions into a rebuilt geometry, with the objective slip.
 
-        Under ``geometryUpdate=frozen`` only; the consistent geometry measures the objective slip
-        within the increment itself (see :meth:`_assembleFrictionConsistent`).
+        It runs at every rebuild at a converged configuration: once per connectivity tick under
+        ``geometryUpdate=frozen``, once per increment attempt under ``incomplete``, whose rebuilds at
+        the iterates do not carry anything.
 
         Within an increment the slip is measured on the frozen geometry (see
         :meth:`_assembleFriction`). Between two rebuilds that measure sums to
@@ -3050,7 +2706,7 @@ class Constraint(ConstraintBase, MeshDependent):
         self._geometryStale = True
         return False
 
-    def _refreshFrozenGeometry(self, step_key: tuple, U_np: np.ndarray, dU: np.ndarray, timeStep: TimeStep):
+    def _refreshGeometry(self, step_key: tuple, U_np: np.ndarray, dU: np.ndarray, timeStep: TimeStep):
         """Re-freeze the geometry at the start of an increment, or count an iteration within one.
 
         Under ``geometryUpdate=frozen``, everything geometric -- the nodal normals, the segmentation,
@@ -3060,8 +2716,10 @@ class Constraint(ConstraintBase, MeshDependent):
         also resets the active-set bookkeeping, restores the augmented multiplier estimate, and
         derives the relative tolerances that the per-node loop compares against.
 
-        Under ``geometryUpdate=consistent`` the bookkeeping is the same, but the geometry is rebuilt
-        at every call, at the iterate itself and with its linearisation.
+        Under ``geometryUpdate=incomplete`` the bookkeeping is the same, and the geometry is built
+        once at the last converged configuration of a new increment as well -- the configuration
+        the frictional history is carried at (see :meth:`_carryFrictionHistory`) -- but then rebuilt
+        at every call, at the iterate itself.
 
         Parameters
         ----------
@@ -3120,22 +2778,20 @@ class Constraint(ConstraintBase, MeshDependent):
         else:
             self.currentIteration += 1
 
-        if self.consistentGeometry:
-            # The geometry of the ITERATE, rebuilt at every assembly together with its
-            # linearisation (see _buildGeometry). Nothing of it is carried from one iterate to
-            # the next, so the connectivity tick has nothing left to decide.
+        if self.liveGeometry:
+            # The geometry of the ITERATE, rebuilt at every assembly and held fixed within the
+            # Newton step (Hartmann 2007, Section 6.2.4). Nothing of it is carried from one iterate
+            # to the next, so the connectivity tick has nothing left to decide.
             self._geometryStale = False
-            if newIncrement and self._friction.enabled:
-                # The objective slip of Gitterle et al. (2010), Eq. (53), is the change of the
-                # coupling matrices over the increment, so those of its start are kept.
-                convergedD, convergedC = self.computeMortarCouplingMatrices(U_np - dU)
-                # Filtered exactly as the rows of the iterate are (see _buildGeometry), so that an
-                # iterate at the converged configuration reads a slip of exactly zero.
-                self._convergedRows = (
-                    _storedRows(convergedD, self.nNonMortarNodes),
-                    _storedRows(convergedC, self.nNonMortarNodes),
-                )
-            self._buildGeometry(U_np, timeStep, withDerivatives=True)
+            atConverged = not np.any(dU)
+            if newIncrement or rebuildGeometry:
+                # Once per increment attempt at the last converged state, as under frozen: the
+                # frictional history is carried into that configuration, and the quantities derived
+                # once (eps_N, the elastic slip length) are derived from it.
+                self._buildGeometry(U_np - dU, timeStep)
+                if atConverged:
+                    return
+            self._buildGeometry(U_np, timeStep, carryHistory=False)
             return
 
         if not rebuildGeometry:
@@ -3148,14 +2804,13 @@ class Constraint(ConstraintBase, MeshDependent):
         # Last converged state - see the reference-configuration note above.
         self._buildGeometry(U_np - dU, timeStep)
 
-    def _buildGeometry(self, U_ref: np.ndarray, timeStep: TimeStep, withDerivatives: bool = False):
+    def _buildGeometry(self, U_ref: np.ndarray, timeStep: TimeStep, carryHistory: bool = True):
         """Build the geometry -- nodal normals, segmentation, coupling matrices -- at the configuration
         ``U_ref``, and everything derived from it.
 
         Under ``geometryUpdate=frozen`` this runs once per connectivity tick at the last converged
-        configuration. Under ``consistent`` it runs at every iterate, and ``withDerivatives`` then
-        also builds the derivatives of the normals and of every row of D and C with respect to the
-        nodal coordinates (see :meth:`computeNormals`, :meth:`computeMortarCouplingMatrices`).
+        configuration. Under ``incomplete`` it runs there once per increment attempt as well, and
+        then at every iterate, without carrying the frictional history.
 
         Parameters
         ----------
@@ -3163,16 +2818,16 @@ class Constraint(ConstraintBase, MeshDependent):
             The constraint-local solution vector the geometry is built at.
         timeStep
             The current time step, for the increment number in the diagnostics.
-        withDerivatives
-            Whether to build the linearisation as well.
+        carryHistory
+            Whether ``U_ref`` is a converged configuration the frictional history is carried into.
         """
         nSlave = self.nNonMortarNodes
         previousNormals = getattr(self, "currentNormals", None)
         if previousNormals is None:
             # The normals of the last rebuild before a restart, if the checkpoint held them.
             previousNormals = self.__dict__.pop("_restoredFrictionNormals", None)
-        self.currentNormals = self.computeNormals(U_ref, withDerivatives)
-        coupling = self._couple(U_ref, self.currentNormals, withDerivatives)
+        self.currentNormals = self.computeNormals(U_ref)
+        coupling = self._couple(U_ref, self.currentNormals)
         D_full, C_full = coupling.D, coupling.M
         # The FULL (element-locally sparse) D matrix is used for forces,
         # stiffness and weak gap. With the basis transformation T_e the
@@ -3208,7 +2863,7 @@ class Constraint(ConstraintBase, MeshDependent):
         weight_scale = np.max(np.abs(weights)) if len(weights) else 0.0
         # Threshold below which a nodal weight counts as "no weight at all" and
         # the division 1/D_II is suppressed. RELATIVE, for the same reason as in
-        # _nonzeroRows: D_II = int(Phi_I) carries the unit of an area, so an
+        # _storedRows: D_II = int(Phi_I) carries the unit of an area, so an
         # absolute bound only ever fits one system of units. It also has to be
         # generous rather than tiny: at D_II = 1e-25 an absolute bound of 1e-30
         # would still divide, g_sep = g_weak/D_II would explode by 25 orders, and
@@ -3254,8 +2909,6 @@ class Constraint(ConstraintBase, MeshDependent):
         self.currentCNonzero, self.currentCRow = _storedRows(C_full, nSlave)
         self.currentDnRow = _storedVectorRows(coupling.Dn, nSlave)
         self.currentCnRow = _storedVectorRows(coupling.Mn, nSlave)
-        if withDerivatives:
-            self._linearisation = self._linearisedRows()
 
         # The penalty parameter needs the nodal weights, so it is derived here
         # rather than at the top of the assembly like c_n.
@@ -3287,7 +2940,7 @@ class Constraint(ConstraintBase, MeshDependent):
             )
             self._frictionSetup = self._friction.setCharacteristicLength(h)
 
-        if self._friction.enabled and not withDerivatives:
+        if self._friction.enabled and carryHistory:
             self._carryFrictionHistory(U_ref, previousNormals)
 
         self._reportSetupOnce()

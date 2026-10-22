@@ -68,7 +68,7 @@ nonMortarSurface=mortarSurf_facets
 mortarSurface=nonMortarSurf_facets
 field=displacement
 cn=1000.0
-geometryUpdate=consistent
+geometryUpdate=incomplete
 
 *job, name=mortarPunchEdge, domain=3d
 *solver, name=theSolver, solver=NIST
