@@ -4,17 +4,10 @@
 ** SEGMENTATION follows the solver's connectivity tick rather than the increment counter. Rebuilding
 ** it per increment is right under an implicit solver and ruinous here, where every time step IS an
 ** increment -- the segmentation, the coupling matrices and the nodal normals are 93 to 98 % of this
-** constraint's cost.
-**
-** Measured on this deck, before and after that change:
-**
-**   time steps (= applyConstraint calls)        314        314
-**   segmentations                               314         32     <- contact-update-frequency=10
-**   dispLowerMax                          1.20688e-2  1.20520e-2
-**
-** The 0.14 % difference is the staggering the throttle buys: the geometry now belongs to a
-** configuration up to ten steps old. That is an error of the update interval, not of the
-** formulation, and it shrinks with contact-update-frequency.
+** constraint's cost. With contact-update-frequency=10 the 314 time steps of this deck need 32
+** segmentations; the geometry then belongs to a configuration up to ten steps old, which changes
+** dispLowerMax by 0.14 % against a rebuild in every time step. That is an error of the update
+** interval, not of the formulation, and it shrinks with contact-update-frequency.
 **
 ** THE DECISIVE CHECK is dispLowerMax, for the same reason as in NEDContact: nothing but the contact
 ** loads the lower block, so it is identically zero unless the constraint's forces actually reach the
@@ -38,10 +31,7 @@
 **
 ** 2e4 sits a factor of six below the stability limit of this mesh. eps_N is a POINTWISE penalty
 ** modulus -- a pressure per unit opening -- so it is the same quantity as the `penalty` of
-** NEDContact and a value can be carried between the two. It was not always: until the nodal
-** weight was moved out of the gap and into the stiffness, this option multiplied the WEIGHTED
-** gap, and the value that produced the run above was kappa = 5e5 (which is this eps_N divided by
-** the mean nodal weight of this interface, 0.04).
+** NEDContact and a value can be carried between the two.
 
 *material, name=LinearElastic, id=linearelastic, provider=edelweiss
 **E       nu     density

@@ -36,15 +36,10 @@
 ** error: the outer loop drives the gap to a bound instead of enforcing it exactly, which the
 ** saddle-point deck does, reaching 1e-14 on the same model. The pressure survives it unharmed.
 **
-** The deck runs without a single warning, which is worth stating because it did not always. The
-** penalty branch makes its contact pressure out of the weighted gap, so on the load-free increment
-** that precedes the first load step -- where the two surfaces coincide and their weighted gap is the
-** rounding of the arithmetic that produced it -- a stiffness of 1e6 turned 5e-16 of nothing into a
-** pressure of 5e-10, which a bare sign test read as contact. Nodes flickered in and out of the
-** active set and the outer loop compared one rounding error against another until it exhausted its
-** iteration cap. The gap is now measured against a noise floor derived from the interface geometry,
-** the load-free increment activates no node at all, and the loop stops on its first call there.
-** The converged result is unchanged to the last digit.
+** The deck runs without a warning. On the load-free increment that precedes the first load step the
+** two surfaces coincide and their weighted gap is the rounding of the arithmetic that produced it;
+** the gap is measured against a noise floor derived from the interface geometry, so that increment
+** activates no node and the outer loop stops on its first call.
 **
 **
 ** The lateral constraint is deliberately NOT a global u_x = u_z = 0. It fixes the two symmetry
