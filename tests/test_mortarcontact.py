@@ -68,7 +68,6 @@ from edelweissfe.models.femodel import FEModel
 from edelweissfe.points.node import Node
 from edelweissfe.sets.elementset import ElementSet
 from edelweissfe.utils.mortargeometry import (
-    facetNormal,
     isConvexPolygon,
     sutherlandHodgmanClip,
     tangentBasis,
@@ -169,31 +168,6 @@ class TestOverlapGeometry(unittest.TestCase):
         planar = toPlaneCoordinates(points, origin, t1, t2)
         # The plane coordinates have to be the coordinates along t1 and t2, i.e. invert exactly.
         np.testing.assert_allclose(origin + np.outer(planar[:, 0], t1) + np.outer(planar[:, 1], t2), points, atol=1e-13)
-
-
-class TestFacetNormals(unittest.TestCase):
-    def test_the_facet_normal_is_a_unit_vector_along_the_winding(self):
-        """Direction follows the node ordering, so a face and its reverse give opposite normals.
-        The constraint never corrects the sign, it relies on the generator winding faces outward."""
-
-        face = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
-
-        normal = facetNormal(face)
-        self.assertAlmostEqual(float(np.linalg.norm(normal)), 1.0, places=13)
-
-        reversed_normal = facetNormal(face[::-1])
-        np.testing.assert_allclose(reversed_normal, -normal, atol=1e-13)
-
-    def test_the_facet_normal_of_a_tilted_face_is_exact(self):
-        """A face tilted by 45 degrees about the x axis: the normal is known in closed form, and an
-        error in it tilts every projection the overlap is computed in."""
-
-        s = np.sqrt(0.5)
-        face = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, s, s], [0.0, s, s]])
-
-        normal = facetNormal(face)
-        expected = np.array([0.0, -s, s])
-        np.testing.assert_allclose(np.abs(normal), np.abs(expected), atol=1e-13)
 
 
 class _TwoBlockModel:
@@ -519,7 +493,7 @@ class TestPenaltyActivation(unittest.TestCase):
                 if not constraint.augmentConstraint():
                     break
 
-        self.assertEqual(constraint._augmentation_counter, 1, "the loop iterated on an idle interface")
+        self.assertEqual(constraint._augmentationCounter, 1, "the loop iterated on an idle interface")
         self.assertEqual([w for w in caught if "augmented Lagrangian hit its cap" in str(w.message)], [])
 
     def test_a_loaded_interface_still_activates_and_still_augments(self):
@@ -1288,7 +1262,7 @@ class TestExplicitDynamics(unittest.TestCase):
         timeIncrement = 1.0e-6
         model = self._penetratingModel()
         constraint, mass = self._explicitConstraint(model)
-        self.assertTrue(constraint._derive_epsN, "the fixture was expected to leave eps_N underived")
+        self.assertTrue(constraint._deriveEpsN, "the fixture was expected to leave eps_N underived")
 
         self._assembleOnce(constraint, timeIncrement)
 

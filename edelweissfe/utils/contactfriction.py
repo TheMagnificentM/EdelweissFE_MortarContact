@@ -117,6 +117,11 @@ slipStateFreezeIteration = 6
 #: Stick/slip states of a contact point, as reported by :meth:`CoulombFriction.slipStates`.
 OPEN, STICK, SLIP = 0, 1, 2
 
+#: After a mesh refinement, a new contact point farther than this fraction of the characteristic facet
+#: size from every old patch is not interpolated (see :func:`historyInterpolation`) but starts at rest.
+#: Chosen here.
+HISTORY_DISTANCE_FACTOR = 0.1
+
 
 def frictionCoefficientField(remark: str = ""):
     """The schema field ``mu`` every frictional contact constraint declares, documented once."""

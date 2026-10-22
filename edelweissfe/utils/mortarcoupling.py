@@ -26,28 +26,6 @@
 #  the top level directory of EdelweissFE.
 #  ---------------------------------------------------------------------
 
-from dataclasses import dataclass, field
-
-import numpy as np
-from scipy.sparse import coo_matrix, csr_matrix
-
-from edelweissfe.utils.mortargeometry import (
-    buildBoundingVolumeHierarchy,
-    getSubCells,
-    isConvexPolygon,
-    isInsideReferenceElement,
-    lineGaussPoints,
-    lineGaussWeights,
-    mapPlaneToNatural,
-    queryBoundingVolumeHierarchy,
-    sutherlandHodgmanClip,
-    tangentBasis,
-    toPlaneCoordinates,
-    triangleGaussPoints,
-    triangleGaussWeights,
-    triangulatePolygon,
-)
-
 """
 The mortar coupling of a non-mortar (slave) and a mortar (master) contact surface: the matrices D and
 M (called C in the constraint), the gap matrices from which the weighted gap is formed, and the nodal
@@ -61,8 +39,8 @@ Three dimensions -- Popp, Gitterle, Gee & Wall (2010), Section 4 and Appendix A:
 * an auxiliary plane per slave (sub-)segment through its centre ``x0``, with the interpolated nodal
   normal there as its normal ``n0``, Eqs. (A15) and (A18);
 * the orthogonal projection of slave and master (sub-)segments into it, Eq. (A17), clipping by
-  Sutherland & Hodgman, triangulation into integration cells, a 7-point rule per cell (Puso &
-  Laursen 2004, Section 3.1);
+  Sutherland & Hodgman, triangulation into integration cells, a 7-point rule per cell (Dunavant
+  1985; the choice of Puso & Laursen 2004, Section 3.1, for most of their examples);
 * quadratic facets split into linear sub-segments for the clipping, Popp et al. (2010), Section 4.2,
   and Puso, Laursen & Solberg (2008), Fig. 3;
 * the Gauss point mapped back along ``n0``, Eq. (A12), by the inverse of the isoparametric map of
@@ -97,6 +75,39 @@ Both dimensions:
   functions and normalises with their own reference integrals -- again this implementation's
   extension of a first-order definition.
 """
+
+from dataclasses import dataclass, field
+
+import numpy as np
+from scipy.sparse import coo_matrix, csr_matrix
+
+from edelweissfe.elements.contactelement.element import (
+    lineGaussPoints,
+    lineGaussWeights,
+    triangleGaussPoints,
+    triangleGaussWeights,
+)
+from edelweissfe.utils.mortargeometry import (
+    buildBoundingVolumeHierarchy,
+    getSubCells,
+    isConvexPolygon,
+    isInsideReferenceElement,
+    mapPlaneToNatural,
+    queryBoundingVolumeHierarchy,
+    sutherlandHodgmanClip,
+    tangentBasis,
+    toPlaneCoordinates,
+    triangulatePolygon,
+)
+
+
+def _searchBox(coords: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The broadphase box of a facet: its bounding box, widened by 15 % of its largest extent and at
+    least 0.1. A search radius, not a tolerance of the formulation; a facet stays a candidate a little
+    before it touches. Both values are chosen here; the absolute 0.1 is a length."""
+    lo, hi = coords.min(axis=0), coords.max(axis=0)
+    margin = max(0.15 * np.max(hi - lo), 0.1)
+    return lo - margin, hi + margin
 
 
 def _contract(subscripts: str, *operands):
@@ -190,7 +201,6 @@ def computeMortarCoupling(
     normals: np.ndarray,
     dim: int,
     elementClass,
-    warn=None,
 ) -> MortarCoupling:
     """Segment the two surfaces against each other and integrate the coupling.
 
@@ -208,27 +218,21 @@ def computeMortarCoupling(
         2 or 3.
     elementClass
         The contact element class, to evaluate linear sub-segments with.
-    warn
-        ``warn(key, message)`` for one-off diagnostics.
     """
     nSlave, nMaster = len(slaveIndex), len(masterIndex)
     result = MortarCoupling(None, None, [], [], np.zeros(nSlave))
 
-    # Broad phase: a bounding volume hierarchy over the mortar facets (Ericson 2004). The margin
-    # keeps a facet a candidate a little before it touches; it is a search radius, not a tolerance
-    # of the formulation.
+    # Broad phase: a bounding volume hierarchy over the mortar facets (Ericson 2004).
     facetsWithBounds = []
-    for m_el in mortarFacets:
-        m_coords = np.array([coordinates[n] for n in m_el.nodes])
-        lo, hi = m_coords.min(axis=0), m_coords.max(axis=0)
-        margin = max(0.15 * np.max(hi - lo), 0.1)
-        facetsWithBounds.append((m_el, m_coords.mean(axis=0), lo - margin, hi + margin))
+    for mEl in mortarFacets:
+        mCoords = np.array([coordinates[n] for n in mEl.nodes])
+        facetsWithBounds.append((mEl, mCoords.mean(axis=0), *_searchBox(mCoords)))
     bvh = buildBoundingVolumeHierarchy(facetsWithBounds)
 
     # Adjacent slave elements per slave node, the n_j^e of Popp et al. (2013), Eq. (36).
     adjacent = np.zeros(nSlave)
-    for s_el in nonMortarFacets:
-        for nd in s_el.nodes:
+    for sEl in nonMortarFacets:
+        for nd in sEl.nodes:
             adjacent[slaveIndex[nd]] += 1.0
     kappaSum = np.zeros(nSlave)
 
@@ -236,26 +240,23 @@ def computeMortarCoupling(
     blocks["Mn"] = [([], [], []) for _ in range(dim)]
 
     owners = _Owners(nonMortarFacets, coordinates, slaveIndex, normals, dim)
-    for s_el in nonMortarFacets:
-        s_coords = np.array([coordinates[nd] for nd in s_el.nodes])
-        lo, hi = s_coords.min(axis=0), s_coords.max(axis=0)
-        margin = max(0.15 * np.max(hi - lo), 0.1)
+    for sEl in nonMortarFacets:
         candidates = []
-        queryBoundingVolumeHierarchy(bvh, lo - margin, hi + margin, candidates)
+        queryBoundingVolumeHierarchy(bvh, *_searchBox(np.array([coordinates[nd] for nd in sEl.nodes])), candidates)
         if not candidates:
             continue
         if dim == 3:
-            _segment3D(owners.context(s_el), candidates, owners, coordinates, elementClass, result)
+            _segment3D(owners.context(sEl), candidates, owners, coordinates, elementClass, result)
         else:
-            _segment2D(owners.context(s_el), candidates, coordinates, owners.records(s_el), result)
+            _segment2D(owners.context(sEl), candidates, coordinates, owners.records(sEl), result)
 
     # A Gauss point may belong to another slave element than the one that produced it, so the
     # elements are assembled once the whole surface is segmented.
-    for s_el in nonMortarFacets:
-        records = owners.recordsIfAny(s_el)
+    for sEl in nonMortarFacets:
+        records = owners.recordsIfAny(sEl)
         if records is None or not len(records):
             continue
-        _assembleSlaveElement(owners.context(s_el), records, masterIndex, blocks, kappaSum, result, warn)
+        _assembleSlaveElement(owners.context(sEl), records, masterIndex, blocks, kappaSum, result)
 
     def toCsr(triple, shape):
         rows, cols, vals = triple
@@ -305,11 +306,11 @@ class _Owners:
 class _SlaveContext:
     """What every Gauss point of one slave element needs: its nodes, coordinates and normals."""
 
-    def __init__(self, s_el, coordinates, slaveIndex, normals, dim):
-        self.el = s_el
+    def __init__(self, sEl, coordinates, slaveIndex, normals, dim):
+        self.el = sEl
         self.dim = dim
-        self.coords = np.array([coordinates[nd] for nd in s_el.nodes])
-        self.slaveRows = np.array([slaveIndex[nd] for nd in s_el.nodes])
+        self.coords = np.array([coordinates[nd] for nd in sEl.nodes])
+        self.slaveRows = np.array([slaveIndex[nd] for nd in sEl.nodes])
         self.normals = normals[self.slaveRows]
 
 
@@ -353,9 +354,9 @@ def _locate(el, q, x, alternatives, plane):
     for other in alternatives:
         if other is el:
             continue
-        xi_o, ok_o = mapPlaneToNatural(other, plane.of(other), x)
-        if ok_o and isInsideReferenceElement(other, xi_o):
-            return other, xi_o, True
+        xiOther, okOther = mapPlaneToNatural(other, plane.of(other), x)
+        if okOther and isInsideReferenceElement(other, xiOther):
+            return other, xiOther, True
     if not ok:
         return el, xi, False
     return None, None, True
@@ -365,31 +366,31 @@ def _segment3D(context, candidates, owners, coordinates, elementClass, result):
     """The 3D segmentation of one slave element, Popp et al. (2010), Section 4.1 and Algorithm 1, on the
     linear sub-segments of Section 4.2, with every Gauss point attributed to the slave and master
     facets that contain it (see :func:`_locate`)."""
-    s_el = context.el
-    neighbours = owners.neighbours[s_el.elNumber]
-    for s_sub in getSubCells(s_el):
-        subEl = _subCellElement(len(s_sub), elementClass)
-        N0 = subEl.getShapeFunctions(_subCellCentre(len(s_sub)))
+    sEl = context.el
+    neighbours = owners.neighbours[sEl.elNumber]
+    for sSub in getSubCells(sEl):
+        subEl = _subCellElement(len(sSub), elementClass)
+        N0 = subEl.getShapeFunctions(_subCellCentre(len(sSub)))
         # Auxiliary plane: centre x0 and interpolated nodal normal n0 there, Eqs. (A18) and (A15).
-        x0 = N0 @ context.coords[s_sub]
-        n0raw = N0 @ context.normals[s_sub]
+        x0 = N0 @ context.coords[sSub]
+        n0raw = N0 @ context.normals[sSub]
         if np.linalg.norm(n0raw) < 1e-14:
             continue
         n0 = n0raw / np.linalg.norm(n0raw)
         t1, t2 = tangentBasis(n0)
         plane = _AuxiliaryPlane(x0, n0, t1, t2, coordinates)
-        q_sFull = plane.of(s_el)
-        q_s = q_sFull[s_sub]
-        if not isConvexPolygon(q_s):
-            result.nonConvex.append(("non-mortar", s_el.elNumber))
+        qSFull = plane.of(sEl)
+        qS = qSFull[sSub]
+        if not isConvexPolygon(qS):
+            result.nonConvex.append(("non-mortar", sEl.elNumber))
 
-        for m_el in candidates:
-            q_mFull = plane.of(m_el)
-            for m_sub in getSubCells(m_el):
-                q_m = q_mFull[m_sub]
-                if not isConvexPolygon(q_m):
-                    result.nonConvex.append(("mortar", m_el.elNumber))
-                polygon = sutherlandHodgmanClip(q_m, q_s)
+        for mEl in candidates:
+            qMFull = plane.of(mEl)
+            for mSub in getSubCells(mEl):
+                qM = qMFull[mSub]
+                if not isConvexPolygon(qM):
+                    result.nonConvex.append(("mortar", mEl.elNumber))
+                polygon = sutherlandHodgmanClip(qM, qS)
                 if len(polygon) < 3:
                     continue
 
@@ -401,16 +402,16 @@ def _segment3D(context, candidates, owners, coordinates, elementClass, result):
                     # The points of the cell, grouped by the pair of facets they are attributed to.
                     groups = {}
                     for g, (L1, L2) in enumerate(triangleGaussPoints):
-                        x_gp = (1.0 - L1 - L2) * v0 + L1 * v1 + L2 * v2
+                        xGp = (1.0 - L1 - L2) * v0 + L1 * v1 + L2 * v2
                         # Back onto both surfaces along n0, Eq. (A12).
-                        own_s, xi_s, ok_s = _locate(s_el, q_sFull, x_gp, neighbours, plane)
-                        own_m, xi_m, ok_m = _locate(m_el, q_mFull, x_gp, candidates, plane)
-                        if own_s is None or own_m is None:
+                        ownS, xiS, okS = _locate(sEl, qSFull, xGp, neighbours, plane)
+                        ownM, xiM, okM = _locate(mEl, qMFull, xGp, candidates, plane)
+                        if ownS is None or ownM is None:
                             result.droppedGaussPoints += 1
                             continue
-                        if own_s is not s_el or own_m is not m_el:
+                        if ownS is not sEl or ownM is not mEl:
                             result.reattributedGaussPoints += 1
-                        for ok, side, el in ((ok_s, "slave", own_s), (ok_m, "master", own_m)):
+                        for ok, side, el in ((okS, "slave", ownS), (okM, "master", ownM)):
                             if not ok:
                                 result.projectionFailures += 1
                                 result.firstProjectionFailure = result.firstProjectionFailure or (
@@ -418,23 +419,23 @@ def _segment3D(context, candidates, owners, coordinates, elementClass, result):
                                     el.elNumber,
                                     el.elType,
                                 )
-                        key = (own_s.elNumber, own_m.elNumber)
-                        groups.setdefault(key, (own_s, own_m, []))[2].append((g, xi_s, xi_m))
+                        key = (ownS.elNumber, ownM.elNumber)
+                        groups.setdefault(key, (ownS, ownM, []))[2].append((g, xiS, xiM))
 
-                    for own_s, own_m, points in groups.values():
-                        owner = owners.context(own_s)
-                        records = owners.records(own_s)
+                    for ownS, ownM, points in groups.values():
+                        owner = owners.context(ownS)
+                        records = owners.records(ownS)
                         weights = triangleGaussWeights[[p[0] for p in points]]
-                        N_s = np.array([own_s.getShapeFunctions(p[1]) for p in points])
-                        dNdxi_s = np.array([own_s.getShapeFunctionDerivatives(p[1]) for p in points])
-                        normal_raw = N_s @ owner.normals
+                        N_s = np.array([ownS.getShapeFunctions(p[1]) for p in points])
+                        dNdxiS = np.array([ownS.getShapeFunctionDerivatives(p[1]) for p in points])
+                        normalRaw = N_s @ owner.normals
                         records.N_s.extend(N_s)
-                        records.master.extend([own_m] * len(points))
-                        records.N_m.extend(own_m.getShapeFunctions(p[2]) for p in points)
+                        records.master.extend([ownM] * len(points))
+                        records.N_m.extend(ownM.getShapeFunctions(p[2]) for p in points)
                         records.dG.extend(area * weights)
-                        records.normal.extend(normal_raw / np.linalg.norm(normal_raw, axis=1)[:, None])
+                        records.normal.extend(normalRaw / np.linalg.norm(normalRaw, axis=1)[:, None])
                         # The element Jacobian |x,xi x x,eta| (cf. ContactElement.getJacobianAndAreaWeight).
-                        tangents = np.einsum("gak,ki->gai", dNdxi_s, owner.coords)
+                        tangents = np.einsum("gak,ki->gai", dNdxiS, owner.coords)
                         records.Je.extend(np.linalg.norm(np.cross(tangents[:, 0], tangents[:, 1]), axis=1))
 
 
@@ -486,14 +487,14 @@ def _cross2(a, b):
 def _segment2D(context, candidates, coordinates, records, result):
     """The 2D segmentation of one slave element along the continuous normal field, Popp et al. (2009),
     Section 4, Eqs. (44)-(48)."""
-    s_el = context.el
-    s_end = [0, 1]  # end nodes; of a quadratic element only these are projected (Popp et al. 2009)
-    for m_el in candidates:
-        m_coords = np.array([coordinates[nd] for nd in m_el.nodes])
+    sEl = context.el
+    sEnds = [0, 1]  # end nodes; of a quadratic element only these are projected (Popp et al. 2009)
+    for mEl in candidates:
+        mCoords = np.array([coordinates[nd] for nd in mEl.nodes])
         # Slave end nodes onto the master element along their nodal normals, Eq. (44).
-        onMaster = [_projectAlongNormal2D(m_el, m_coords, context.coords[k], context.normals[k]) for k in s_end]
+        onMaster = [_projectAlongNormal2D(mEl, mCoords, context.coords[k], context.normals[k]) for k in sEnds]
         # Master end nodes onto the slave element along the interpolated normal field, Eq. (45).
-        onSlave = [_projectOntoSlave2D(s_el, context.coords, context.normals, m_coords[node]) for node in (0, 1)]
+        onSlave = [_projectOntoSlave2D(sEl, context.coords, context.normals, mCoords[node]) for node in (0, 1)]
         if not all(ok for _, ok in onMaster + onSlave):
             # A projection without solution cannot bound a segment; the pair does not overlap there.
             continue
@@ -520,23 +521,23 @@ def _segment2D(context, candidates, coordinates, records, result):
             # Eq. (46): both sides linear in the segment coordinate.
             xi1 = 0.5 * (1.0 - gp) * a1 + 0.5 * (1.0 + gp) * b1
             xi2 = 0.5 * (1.0 - gp) * a2 + 0.5 * (1.0 + gp) * b2
-            Je = s_el.getJacobianAndAreaWeight(np.array([xi1]), context.coords)
-            records.N_s.append(s_el.getShapeFunctions(np.array([xi1])))
-            records.master.append(m_el)
-            records.N_m.append(m_el.getShapeFunctions(np.array([xi2])))
+            Je = sEl.getJacobianAndAreaWeight(np.array([xi1]), context.coords)
+            records.N_s.append(sEl.getShapeFunctions(np.array([xi1])))
+            records.master.append(mEl)
+            records.N_m.append(mEl.getShapeFunctions(np.array([xi2])))
             # Eq. (48): J_seg = J(xi1) (b1 - a1)/2.
             records.dG.append(w * Je * 0.5 * (b1 - a1))
             records.normal.append(None)
             records.Je.append(Je)
 
 
-def _assembleSlaveElement(context, records, masterIndex, blocks, kappaSum, result, warn):
+def _assembleSlaveElement(context, records, masterIndex, blocks, kappaSum, result):
     """D, M, the gap matrices and the scaling contributions of one slave element from its Gauss point
     records."""
-    s_el = context.el
+    sEl = context.el
     dim = context.dim
     rows = context.slaveRows
-    T = s_el.getBasisTransformation()
+    T = sEl.getBasisTransformation()
     N_s = np.array(records.N_s)
     dG = np.array(records.dG)
     N_t = N_s @ T.T
@@ -548,13 +549,13 @@ def _assembleSlaveElement(context, records, masterIndex, blocks, kappaSum, resul
     if regular:
         A_e = D_t[:, None] * (np.linalg.inv(M_t) @ T)
     else:
-        result.slivers.append(s_el.elNumber)
-        _, _, A_e = s_el.computeLocalMassMatrices(context.coords)
+        result.slivers.append(sEl.elNumber)
+        _, _, A_e = sEl.computeLocalMassMatrices(context.coords)
 
     Phi = N_s @ A_e.T
     masters = {}
-    for r, m_el in enumerate(records.master):
-        masters.setdefault(m_el.elNumber, (m_el, []))[1].append(r)
+    for r, mEl in enumerate(records.master):
+        masters.setdefault(mEl.elNumber, (mEl, []))[1].append(r)
 
     def addBlock(target, rowIdx, colIdx, values):
         rr, cc = np.meshgrid(rowIdx, colIdx, indexing="ij")
@@ -562,20 +563,20 @@ def _assembleSlaveElement(context, records, masterIndex, blocks, kappaSum, resul
         target[1].append(cc.ravel())
         target[2].append(values.ravel())
 
-    D_blk = _contract("ra,rb,r->ab", Phi, N_s, dG)
-    addBlock(blocks["D"], rows, rows, D_blk)
-    for m_num, (m_el, idx) in masters.items():
-        cols = np.array([masterIndex[nd] for nd in m_el.nodes])
+    DBlock = _contract("ra,rb,r->ab", Phi, N_s, dG)
+    addBlock(blocks["D"], rows, rows, DBlock)
+    for mEl, idx in masters.values():
+        cols = np.array([masterIndex[nd] for nd in mEl.nodes])
         N_m = np.array([records.N_m[r] for r in idx])
-        M_blk = _contract("ra,rb,r->ab", Phi[idx], N_m, dG[idx])
-        addBlock(blocks["M"], rows, cols, M_blk)
+        MBlock = _contract("ra,rb,r->ab", Phi[idx], N_m, dG[idx])
+        addBlock(blocks["M"], rows, cols, MBlock)
         if dim == 2:
             # The nodal form of the weighted gap, Popp et al. (2009), Eq. (50): M[j,l] n_j.
             for c in range(2):
-                addBlock(blocks["Mn"][c], rows, cols, M_blk * context.normals[:, c][:, None])
+                addBlock(blocks["Mn"][c], rows, cols, MBlock * context.normals[:, c][:, None])
     if dim == 2:
         for c in range(2):
-            addBlock(blocks["Dn"][c], rows, rows, D_blk * context.normals[:, c][:, None])
+            addBlock(blocks["Dn"][c], rows, rows, DBlock * context.normals[:, c][:, None])
     if dim == 3:
         # Weighted gap at the Gauss points, Popp et al. (2010), Eq. (41), with the interpolated normal
         # of Eq. (A11): g_j = sum int Phi_j n . (x2 - x1).
@@ -583,15 +584,15 @@ def _assembleSlaveElement(context, records, masterIndex, blocks, kappaSum, resul
         Dn = _contract("ra,rb,rc,r->abc", Phi, N_s, normal, dG)
         for c in range(3):
             addBlock(blocks["Dn"][c], rows, rows, Dn[:, :, c])
-        for m_num, (m_el, idx) in masters.items():
-            cols = np.array([masterIndex[nd] for nd in m_el.nodes])
+        for mEl, idx in masters.values():
+            cols = np.array([masterIndex[nd] for nd in mEl.nodes])
             N_m = np.array([records.N_m[r] for r in idx])
             Mn = _contract("ra,rb,rc,r->abc", Phi[idx], N_m, normal[idx], dG[idx])
             for c in range(3):
                 addBlock(blocks["Mn"][c], rows, cols, Mn[:, :, c])
 
     # Nodal scaling, Popp et al. (2013), Eq. (37): (1/alpha) sum w N~_j J_c/J_e over the cells.
-    alpha = _referenceIntegrals(s_el)
+    alpha = _referenceIntegrals(sEl)
     Je = np.array(records.Je)
     kappaElement = (N_t.T @ (dG / Je)) / alpha
     kappaSum[rows] += kappaElement

@@ -25,27 +25,68 @@
 #  The full text of the license can be found in the file LICENSE.md at
 #  the top level directory of EdelweissFE.
 #  ---------------------------------------------------------------------
+"""
+Geometry-only contact elements (``CONLINE2``, ``CONLINE3``, ``CONQUAD4``, ``CONQUAD8``, ``CONQUAD9``,
+``CONTRI3``, ``CONTRI6``): whole element faces of a solid, carrying neither degrees of freedom nor
+stiffness of their own. They describe the contact surfaces of
+:mod:`~edelweissfe.constraints.mortarcontact` and, as whole faces, may also be given to the node- and
+segment-based contact constraints. Besides the topology they provide the face's shape functions,
+quadrature rules and, for the mortar method, the basis transformation and the reference-element
+dual basis.
+"""
 
 import numpy as np
 
 from edelweissfe.elements.base.baseelement import BaseElement
 from edelweissfe.elements.library import elLibrary
 from edelweissfe.points.node import Node
-from edelweissfe.utils.mortargeometry import (
-    lineGaussPoints,
-    lineGaussWeights,
-    triangleGaussPoints,
-    triangleGaussWeights,
+
+#: 3-point Gauss-Legendre rule on [-1, 1] (exact to degree 5).
+lineGaussPoints = np.array(
+    [
+        [-np.sqrt(0.6)],
+        [0.0],
+        [np.sqrt(0.6)],
+    ]
+)
+lineGaussWeights = np.array([5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0])
+
+# 7-point symmetric rule on the reference triangle (exact to degree 5), Dunavant (1985), p = 5,
+# n_g = 7, in closed form. Weights sum to 1/2, the area of the reference triangle.
+_triangleGaussA = (6.0 - np.sqrt(15.0)) / 21.0
+_triangleGaussB = (6.0 + np.sqrt(15.0)) / 21.0
+#: The points of the 7-point triangle rule, in the natural coordinates (r, s).
+triangleGaussPoints = np.array(
+    [
+        [1.0 / 3.0, 1.0 / 3.0],
+        [_triangleGaussA, _triangleGaussA],
+        [_triangleGaussA, 1.0 - 2.0 * _triangleGaussA],
+        [1.0 - 2.0 * _triangleGaussA, _triangleGaussA],
+        [_triangleGaussB, _triangleGaussB],
+        [_triangleGaussB, 1.0 - 2.0 * _triangleGaussB],
+        [1.0 - 2.0 * _triangleGaussB, _triangleGaussB],
+    ]
+)
+#: The weights of the 7-point triangle rule.
+triangleGaussWeights = np.array(
+    [
+        9.0 / 80.0,
+        (155.0 - np.sqrt(15.0)) / 2400.0,
+        (155.0 - np.sqrt(15.0)) / 2400.0,
+        (155.0 - np.sqrt(15.0)) / 2400.0,
+        (155.0 + np.sqrt(15.0)) / 2400.0,
+        (155.0 + np.sqrt(15.0)) / 2400.0,
+        (155.0 + np.sqrt(15.0)) / 2400.0,
+    ]
 )
 
-# Shape function derivatives at the element's own nodes, per element TYPE. They do
-# not depend on the geometry, so one table per type serves every facet in the model;
-# see getShapeFunctionDerivativesAtNodes.
-_DN_AT_NODES: dict[str, np.ndarray] = {}
+# Shape function derivatives at the element's own nodes, per element type: they do not depend on the
+# geometry, so one table per type serves every element (see getShapeFunctionDerivativesAtNodes).
+_shapeFunctionDerivativesAtNodes: dict[str, np.ndarray] = {}
 
 
 class ContactElement(BaseElement):
-    """A geometric placeholder element for contact boundary surfaces."""
+    """A geometry-only element for a whole face of a contact surface."""
 
     def __init__(self, elementType: str, elNumber: int):
         self._elType = elementType
@@ -85,6 +126,7 @@ class ContactElement(BaseElement):
 
     @property
     def hasMaterial(self) -> bool:
+        # The model requires every element to report a material; this one needs none.
         return True
 
     @property
@@ -178,8 +220,9 @@ class ContactElement(BaseElement):
     def computeBodyForce(self, P, load, U, time, dT):
         pass
 
-    def computeCriticalTimeStepForExplicitDynamics(self, U, time=None):
-        return 1.0e10
+    def computeCriticalTimeStepForExplicitDynamics(self, Q):
+        # No stiffness, no stability limit.
+        return np.inf
 
     def computeInternalEnergy(self, U=None, dU=None):
         return 0.0
@@ -197,36 +240,39 @@ class ContactElement(BaseElement):
         return np.mean(coords, axis=0)
 
     def getQuadraturePoints(self) -> tuple[list[np.ndarray], list[float]]:
-        """Return the local coordinates and weights of the quadrature points."""
-        el_type = self._elType.upper()
-        if el_type == "CONLINE2":
+        """The natural coordinates and weights of the element's quadrature rule: Gauss-Legendre with 2
+        (linear) or 3 (quadratic) points per direction, and on triangles the 3-point rule (linear) or
+        the 7-point rule (quadratic)."""
+
+        elType = self._elType.upper()
+        if elType == "CONLINE2":
             points = [np.array([-1.0 / np.sqrt(3.0)]), np.array([1.0 / np.sqrt(3.0)])]
             weights = [1.0, 1.0]
-        elif el_type == "CONLINE3":
+        elif elType == "CONLINE3":
             points, weights = list(lineGaussPoints), list(lineGaussWeights)
-        elif el_type == "CONQUAD4":
+        elif elType == "CONQUAD4":
             gp = 1.0 / np.sqrt(3.0)
             points = [np.array([-gp, -gp]), np.array([gp, -gp]), np.array([gp, gp]), np.array([-gp, gp])]
             weights = [1.0, 1.0, 1.0, 1.0]
-        elif el_type in ("CONQUAD8", "CONQUAD9"):
-            g_pts, g_w = lineGaussPoints[:, 0], lineGaussWeights
+        elif elType in ("CONQUAD8", "CONQUAD9"):
+            linePoints, lineWeights = lineGaussPoints[:, 0], lineGaussWeights
             points = []
             weights = []
             for i in range(3):
                 for j in range(3):
-                    points.append(np.array([g_pts[i], g_pts[j]]))
-                    weights.append(g_w[i] * g_w[j])
-        elif el_type == "CONTRI3":
+                    points.append(np.array([linePoints[i], linePoints[j]]))
+                    weights.append(lineWeights[i] * lineWeights[j])
+        elif elType == "CONTRI3":
             points = [
                 np.array([1.0 / 6.0, 1.0 / 6.0]),
                 np.array([2.0 / 3.0, 1.0 / 6.0]),
                 np.array([1.0 / 6.0, 2.0 / 3.0]),
             ]
             weights = [1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0]
-        elif el_type == "CONTRI6":
+        elif elType == "CONTRI6":
             points, weights = list(triangleGaussPoints), list(triangleGaussWeights)
         else:
-            raise NotImplementedError(f"Quadrature points not defined for element type '{el_type}'")
+            raise NotImplementedError(f"Quadrature points not defined for element type '{elType}'")
         return points, weights
 
     def getCoordinatesAtQuadraturePoints(self, coords: np.ndarray = None) -> np.ndarray:
@@ -235,77 +281,61 @@ class ContactElement(BaseElement):
                 return np.array([])
             coords = np.array([node.coordinates for node in self._nodes])
         points, _ = self.getQuadraturePoints()
-        quad_coords = []
-        for local_coords in points:
-            N = self.getShapeFunctions(local_coords)
-            quad_coords.append(N @ coords)
-        return np.array(quad_coords)
+        return np.array([self.getShapeFunctions(xi) @ coords for xi in points])
 
     def getNumberOfQuadraturePoints(self) -> int:
         points, _ = self.getQuadraturePoints()
         return len(points)
 
     def getShapeFunctionDerivativesAtNodes(self) -> np.ndarray:
-        """Shape function derivatives evaluated at the element's own nodes.
+        """The shape function derivatives at the element's own nodes, shape (nNodes, nLocalDim,
+        nNodes): entry [a] is ``getShapeFunctionDerivatives(getNodalNaturalCoordinates()[a])``.
+        They depend on the element type only and are computed once per type."""
 
-        Shape (nNodes, nLocalDim, nNodes), so that entry [a] is
-        getShapeFunctionDerivatives(getNodalNaturalCoordinates()[a]).
-
-        These depend on the element TYPE only - the natural coordinates of the nodes
-        are fixed - so they are computed once per type and shared. compute_normals
-        needs them for every node of every slave facet, once per increment.
-        """
-        cached = _DN_AT_NODES.get(self._elType.upper())
+        cached = _shapeFunctionDerivativesAtNodes.get(self._elType.upper())
         if cached is None:
             cached = np.array([self.getShapeFunctionDerivatives(xi) for xi in self.getNodalNaturalCoordinates()])
             cached.flags.writeable = False
-            _DN_AT_NODES[self._elType.upper()] = cached
+            _shapeFunctionDerivativesAtNodes[self._elType.upper()] = cached
         return cached
 
     def getNodalNaturalCoordinates(self) -> np.ndarray:
-        """Natural coordinates of the element's own nodes, in node order.
+        """The natural coordinates of the element's own nodes, in node order, shape (nNodes,
+        nLocalDim). The order is that of :meth:`getShapeFunctions`: ``N_a`` at the coordinate of node
+        ``b`` is ``delta_ab``."""
 
-        Shape (nNodes, nLocalDim). Needed wherever a quantity has to be evaluated AT
-        a node rather than averaged over the facet - specifically the surface normal
-        at a node, which is the element normal x,xi cross x,eta evaluated at the
-        node's own coordinate.
-
-        The order follows getShapeFunctions of the same element: N_a evaluated at the
-        coordinate of node b must be delta_ab. That is checked for all seven types in
-        test_element.py, and it is the only property that ties the shape functions to
-        the node ORDER rather than merely to the node set.
-        """
-        el_type = self._elType.upper()
-        if el_type == "CONLINE2":
+        elType = self._elType.upper()
+        if elType == "CONLINE2":
             return np.array([[-1.0], [1.0]])
-        if el_type == "CONLINE3":
+        if elType == "CONLINE3":
             # node order is [end, end, mid]
             return np.array([[-1.0], [1.0], [0.0]])
         corners = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]
         mids = [[0.0, -1.0], [1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]
-        if el_type == "CONQUAD4":
+        if elType == "CONQUAD4":
             return np.array(corners)
-        if el_type == "CONQUAD8":
+        if elType == "CONQUAD8":
             return np.array(corners + mids)
-        if el_type == "CONQUAD9":
+        if elType == "CONQUAD9":
             return np.array(corners + mids + [[0.0, 0.0]])
-        if el_type == "CONTRI3":
+        if elType == "CONTRI3":
             return np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
-        if el_type == "CONTRI6":
+        if elType == "CONTRI6":
             return np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]])
-        raise NotImplementedError(f"Nodal natural coordinates not defined for element type '{el_type}'")
+        raise NotImplementedError(f"Nodal natural coordinates not defined for element type '{elType}'")
 
-    def getShapeFunctions(self, local_coords: np.ndarray) -> np.ndarray:
-        """Evaluate standard shape functions at the given local coordinates."""
-        el_type = self._elType.upper()
-        if el_type == "CONLINE2":
-            xi = local_coords[0]
+    def getShapeFunctions(self, localCoords: np.ndarray) -> np.ndarray:
+        """The standard shape functions at the natural coordinates ``localCoords``."""
+
+        elType = self._elType.upper()
+        if elType == "CONLINE2":
+            xi = localCoords[0]
             return np.array([0.5 * (1.0 - xi), 0.5 * (1.0 + xi)])
-        elif el_type == "CONLINE3":
-            xi = local_coords[0]
+        elif elType == "CONLINE3":
+            xi = localCoords[0]
             return np.array([0.5 * xi * (xi - 1.0), 0.5 * xi * (xi + 1.0), 1.0 - xi * xi])
-        elif el_type == "CONQUAD4":
-            xi, eta = local_coords[0], local_coords[1]
+        elif elType == "CONQUAD4":
+            xi, eta = localCoords[0], localCoords[1]
             return np.array(
                 [
                     0.25 * (1.0 - xi) * (1.0 - eta),
@@ -314,8 +344,8 @@ class ContactElement(BaseElement):
                     0.25 * (1.0 - xi) * (1.0 + eta),
                 ]
             )
-        elif el_type == "CONQUAD8":
-            xi, eta = local_coords[0], local_coords[1]
+        elif elType == "CONQUAD8":
+            xi, eta = localCoords[0], localCoords[1]
             return np.array(
                 [
                     0.25 * (1.0 - xi) * (1.0 - eta) * (-xi - eta - 1.0),
@@ -328,8 +358,8 @@ class ContactElement(BaseElement):
                     0.5 * (1.0 - xi) * (1.0 - eta * eta),
                 ]
             )
-        elif el_type == "CONQUAD9":
-            xi, eta = local_coords[0], local_coords[1]
+        elif elType == "CONQUAD9":
+            xi, eta = localCoords[0], localCoords[1]
             l0_xi, l1_xi, l2_xi = 0.5 * xi * (xi - 1.0), 1.0 - xi * xi, 0.5 * xi * (xi + 1.0)
             l0_eta, l1_eta, l2_eta = 0.5 * eta * (eta - 1.0), 1.0 - eta * eta, 0.5 * eta * (eta + 1.0)
             return np.array(
@@ -345,11 +375,11 @@ class ContactElement(BaseElement):
                     l1_xi * l1_eta,
                 ]
             )
-        elif el_type == "CONTRI3":
-            r, s = local_coords[0], local_coords[1]
+        elif elType == "CONTRI3":
+            r, s = localCoords[0], localCoords[1]
             return np.array([1.0 - r - s, r, s])
-        elif el_type == "CONTRI6":
-            r, s = local_coords[0], local_coords[1]
+        elif elType == "CONTRI6":
+            r, s = localCoords[0], localCoords[1]
             L1 = 1.0 - r - s
             return np.array(
                 [
@@ -362,26 +392,28 @@ class ContactElement(BaseElement):
                 ]
             )
         else:
-            raise NotImplementedError(f"Shape functions not defined for element type '{el_type}'")
+            raise NotImplementedError(f"Shape functions not defined for element type '{elType}'")
 
-    def getShapeFunctionDerivatives(self, local_coords: np.ndarray) -> np.ndarray:
-        """Evaluate local derivatives of standard shape functions at the given local coordinates."""
-        el_type = self._elType.upper()
-        if el_type == "CONLINE2":
+    def getShapeFunctionDerivatives(self, localCoords: np.ndarray) -> np.ndarray:
+        """The derivatives of the standard shape functions with respect to the natural coordinates at
+        ``localCoords``, shape (nLocalDim, nNodes)."""
+
+        elType = self._elType.upper()
+        if elType == "CONLINE2":
             return np.array([[-0.5, 0.5]])
-        elif el_type == "CONLINE3":
-            xi = local_coords[0]
+        elif elType == "CONLINE3":
+            xi = localCoords[0]
             return np.array([[xi - 0.5, xi + 0.5, -2.0 * xi]])
-        elif el_type == "CONQUAD4":
-            xi, eta = local_coords[0], local_coords[1]
+        elif elType == "CONQUAD4":
+            xi, eta = localCoords[0], localCoords[1]
             return np.array(
                 [
                     [-0.25 * (1.0 - eta), 0.25 * (1.0 - eta), 0.25 * (1.0 + eta), -0.25 * (1.0 + eta)],
                     [-0.25 * (1.0 - xi), -0.25 * (1.0 + xi), 0.25 * (1.0 + xi), 0.25 * (1.0 - xi)],
                 ]
             )
-        elif el_type == "CONQUAD8":
-            xi, eta = local_coords[0], local_coords[1]
+        elif elType == "CONQUAD8":
+            xi, eta = localCoords[0], localCoords[1]
             return np.array(
                 [
                     [
@@ -406,8 +438,8 @@ class ContactElement(BaseElement):
                     ],
                 ]
             )
-        elif el_type == "CONQUAD9":
-            xi, eta = local_coords[0], local_coords[1]
+        elif elType == "CONQUAD9":
+            xi, eta = localCoords[0], localCoords[1]
             l0_xi, l1_xi, l2_xi = 0.5 * xi * (xi - 1.0), 1.0 - xi * xi, 0.5 * xi * (xi + 1.0)
             l0_eta, l1_eta, l2_eta = 0.5 * eta * (eta - 1.0), 1.0 - eta * eta, 0.5 * eta * (eta + 1.0)
             dl0_xi, dl1_xi, dl2_xi = xi - 0.5, -2.0 * xi, xi + 0.5
@@ -438,10 +470,10 @@ class ContactElement(BaseElement):
                     ],
                 ]
             )
-        elif el_type == "CONTRI3":
+        elif elType == "CONTRI3":
             return np.array([[-1.0, 1.0, 0.0], [-1.0, 0.0, 1.0]])
-        elif el_type == "CONTRI6":
-            r, s = local_coords[0], local_coords[1]
+        elif elType == "CONTRI6":
+            r, s = localCoords[0], localCoords[1]
             return np.array(
                 [
                     [4.0 * (r + s) - 3.0, 4.0 * r - 1.0, 0.0, 4.0 * (1.0 - 2.0 * r - s), 4.0 * s, -4.0 * s],
@@ -449,127 +481,70 @@ class ContactElement(BaseElement):
                 ]
             )
         else:
-            raise NotImplementedError(f"Shape function derivatives not defined for element type '{el_type}'")
+            raise NotImplementedError(f"Shape function derivatives not defined for element type '{elType}'")
 
-    def getJacobianAndAreaWeight(self, local_coords: np.ndarray, coords: np.ndarray) -> float:
-        """Compute the Jacobian determinant for the area mapping at a given local coordinate.
+    def getJacobianAndAreaWeight(self, localCoords: np.ndarray, coords: np.ndarray) -> float:
+        """The surface Jacobian ``|x,xi x x,eta|`` (3D) or the length element ``|x,xi|`` (2D) at
+        ``localCoords``, with the node coordinates ``coords`` of shape (nNodes, dim)."""
 
-        coords: numpy array of shape (nNodes, dim) containing the current coordinates of the element's nodes.
-        """
-        dN = self.getShapeFunctionDerivatives(local_coords)
-        t = dN @ coords  # shape: (nLocalDim, dim)
-
+        t = self.getShapeFunctionDerivatives(localCoords) @ coords
         if self.nLocalDim == 1:
-            # 1D line in 2D space
             return float(np.linalg.norm(t[0]))
-        else:
-            # 2D surface (triangle or quad) in 3D space
-            t1 = t[0]
-            t2 = t[1]
-            J = np.cross(t1, t2)
-            return float(np.linalg.norm(J))
+        return float(np.linalg.norm(np.cross(t[0], t[1])))
 
     def getBasisTransformation(self) -> np.ndarray:
-        """Return the basis transformation matrix T_e for the construction of dual
-        shape functions on second-order elements.
+        """The basis transformation T_e for the dual basis of second-order elements, ``N~ = T_e N``.
 
-        The transformation serves two distinct purposes, and which one applies
-        depends on the element type - the corner-node integrals int(N_a) dGamma are
-        NOT negative for every quadratic type:
+        The contributions of the mid-side nodes are shifted to their adjacent corner nodes,
 
-            CONQUAD8   -1/12 * A  (undistorted)   -> integral positivity violated
-            CONTRI6     0                          -> integral positivity violated
-            CONLINE3   +1/3 (on [-1,1])            -> integral positivity holds
-            CONQUAD9   +1/9 (reference square)     -> integral positivity holds
+            N~_corner = N_corner + alpha * (N of the adjacent mid-side nodes)
+            N~_mid    = (1 - 2 alpha) * N_mid ,
 
-        For CONQUAD8 and CONTRI6 the transformation is what makes the dual weights
-        D_II positive area weights at all. For CONLINE3 the full-element integral is
-        already
-        positive; there the transformation buys the STRONGER property that matters
-        in a segment-based formulation, namely pointwise non-negativity of the
-        transformed basis - without it, N_corner = 1/2*xi*(xi-1) changes sign inside
-        the element and a partially covered facet can still produce a negative
-        nodal weight.
+        which keeps the partition of unity and makes the integrals of the corner functions positive,
+        as the dual basis requires (Popp, Wohlmuth, Gee & Wall 2012, Section 4.4.1, Eqs. (4.6), (4.9)).
+        Without it the corner integrals are ``-A/12`` (CONQUAD8) and 0 (CONTRI6). CONLINE3 has positive
+        integrals already; the transformation makes its corner functions pointwise non-negative, which
+        matters where a facet is covered only in part.
 
-        Shape function contributions of the mid-side nodes are shifted to their
-        adjacent corner nodes with the factor alpha = 1/3:
+        alpha = 1/3, the value of Farah (2018), Section 6.2.3.2, Eq. (6.20), for the same transformation
+        (admissible for alpha < 1/2), where Popp et al. (2012) suggest 1/5. Both satisfy the
+        conditions alpha > 0 (tri6) and alpha > 1/8 (quad8); 1/3 is taken because the minimum of the
+        transformed quad8 corner function over the element is -1/324 at alpha = 1/3 against -0.0706
+        at alpha = 1/5, which matters for partially covered facets.
 
-            N_tilde_corner = N_corner + alpha * (N_adjacent mid-side nodes)
-            N_tilde_mid    = (1 - 2*alpha) * N_mid
-
-        This guarantees strictly positive integrals int(N_tilde_a) dGamma while
-        preserving the partition of unity. For linear element types the identity
-        matrix is returned.
-
-        WHERE alpha = 1/3 COMES FROM, since two published values exist for this same
-        transformation and they differ. The form above is that of Popp, Wohlmuth, Gee &
-        Wall (2012), Section 4.4.1, Eqs. (4.6)/(4.9); the value is that of Farah (2018),
-        Section 6.2.3.2, Eq. (6.20), who uses the identical transformation matrix for
-        tet10 and writes: "the transformation parameter has to be chosen large enough to
-        guarantee integral positivity of the edge node shape functions, but is obviously
-        limited by alpha < 1/2 ... the transformation parameter is defined as alpha =
-        1/3". Popp et al. instead "suggest choosing the scalar alpha = 1/5".
-
-        Both are admissible - the requirement both derive is alpha > 0 for tri6 and
-        alpha > 1/8 for quad8 - and 1/3 is the better of the two here, because this
-        formulation integrates over PARTS of a facet. Recomputed independently for the
-        quad8 corner function: the integral is int(N_tilde_corner) = 8*alpha/3 - 1/3,
-        positive from alpha > 1/8 as stated, but its pointwise minimum over the
-        reference square is -0.0706 at alpha = 1/5 against -1/324 = -0.00309 at
-        alpha = 1/3, and reaches zero only at alpha = 3/8. A facet covered only where
-        the function is negative is what turns a nodal weight negative, so the deeper
-        dip of 1/5 is the more exposed choice. (CONLINE3 crosses into pointwise
-        non-negativity already at alpha = 1/4, which is why 1/3 buys it there.)
-
-        CONQUAD9 (full-Lagrangian, from hex27) is deliberately excluded, and this is the
-        one point the source states outright: "no basis transformation is needed in the
-        case of quad9 surfaces, because the corresponding shape functions N_j already
-        satisfy (4.2)" (Popp et al. 2012). Its
-        corner-node integrals are already strictly positive (1/9 on the reference
-        square), so no basis transformation is needed for it at all, and the
-        serendipity mid-to-corner recipe does not even address its central node.
-        The identity is returned for it, as for all linear element types. The
-        price is that CONQUAD9 keeps no pointwise non-negativity either, so its
-        nodal weights CAN turn negative under partial coverage - that is the case
-        the sgn(D_II) handling in mortarcontact.py exists for.
+        CONQUAD9 and the linear types get the identity: the quad9 shape functions already satisfy the
+        positivity condition (Popp et al. 2012). Under partial coverage the nodal weights of CONQUAD9
+        can still turn negative, which the mortar constraint handles through ``sgn(D_II)``.
         """
+
         n = self._nNodes
         T_e = np.eye(n)
         alpha = 1.0 / 3.0
 
-        el_type = self._elType.upper()
-        if el_type == "CONQUAD8":
-            mid_to_corners = {4: (0, 1), 5: (1, 2), 6: (2, 3), 7: (3, 0)}
-        elif el_type == "CONTRI6":
-            mid_to_corners = {3: (0, 1), 4: (1, 2), 5: (2, 0)}
-        elif el_type == "CONLINE3":
-            mid_to_corners = {2: (0, 1)}
+        elType = self._elType.upper()
+        if elType == "CONQUAD8":
+            midToCorners = {4: (0, 1), 5: (1, 2), 6: (2, 3), 7: (3, 0)}
+        elif elType == "CONTRI6":
+            midToCorners = {3: (0, 1), 4: (1, 2), 5: (2, 0)}
+        elif elType == "CONLINE3":
+            midToCorners = {2: (0, 1)}
         else:
-            # linear types, plus full-Lagrangian CONQUAD9: no transformation
             return T_e
 
-        for mid, (c1, c2) in mid_to_corners.items():
+        for mid, (c1, c2) in midToCorners.items():
             T_e[mid, mid] = 1.0 - 2.0 * alpha
             T_e[c1, mid] = alpha
             T_e[c2, mid] = alpha
         return T_e
 
     def computeLocalMassMatrices(self, coords: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Compute the transformed local mass matrix M_e, the diagonal D_e, and the dual
-        coefficient matrix A_e, such that the dual shape functions are Phi = A_e * N.
+        """The transformed mass matrix ``M_e[a,b] = int N~_a N~_b``, the diagonal ``D_e[a,a] = int N~_a``
+        and the dual coefficients ``A_e = D_e M_e^-1 T_e`` over the whole element, with the node
+        coordinates ``coords`` of shape (nNodes, dim). The dual shape functions ``Phi = A_e N`` are
+        biorthogonal to the transformed basis, ``int Phi_a N~_b = delta_ab int N~_a`` (Wohlmuth 2000;
+        Popp, Wohlmuth, Gee & Wall 2012, Section 4). The mortar coupling uses it where the system
+        of the integrated part of an element is singular."""
 
-        The biorthogonality is enforced with respect to the transformed basis
-        N_tilde = T_e * N (identity transformation for linear elements):
-
-            int(Phi_a * N_tilde_b) dGamma = delta_ab * int(N_tilde_a) dGamma
-
-        with M_e[a,b] = int(N_tilde_a * N_tilde_b) dGamma and
-        D_e[a,a] = int(N_tilde_a) dGamma > 0, so that
-        A_e = D_e * inv(M_e) * T_e maps STANDARD shape function values N to the
-        dual shape function values Phi.
-
-        coords: numpy array of shape (nNodes, dim) containing the current coordinates of the element's nodes.
-        """
         n = self._nNodes
         M_e = np.zeros((n, n))
         D_e = np.zeros((n, n))
@@ -577,21 +552,20 @@ class ContactElement(BaseElement):
         T_e = self.getBasisTransformation()
         points, weights = self.getQuadraturePoints()
 
-        for local_coords, w in zip(points, weights):
-            N_t = T_e @ self.getShapeFunctions(local_coords)
-            jac = self.getJacobianAndAreaWeight(local_coords, coords)
-            dGamma = jac * w
+        for localCoords, w in zip(points, weights):
+            N_t = T_e @ self.getShapeFunctions(localCoords)
+            dGamma = self.getJacobianAndAreaWeight(localCoords, coords) * w
 
             M_e += np.outer(N_t, N_t) * dGamma
             for i in range(n):
                 D_e[i, i] += N_t[i] * dGamma
 
         try:
-            inv_M_e = np.linalg.inv(M_e)
+            invM = np.linalg.inv(M_e)
         except np.linalg.LinAlgError:
-            inv_M_e = np.linalg.pinv(M_e)
+            invM = np.linalg.pinv(M_e)
 
-        A_e = D_e @ inv_M_e @ T_e
+        A_e = D_e @ invM @ T_e
         return M_e, D_e, A_e
 
     def getResultArray(self, name: str, U: np.ndarray) -> np.ndarray:

@@ -25,40 +25,30 @@
 #  The full text of the license can be found in the file LICENSE.md at
 #  the top level directory of EdelweissFE.
 #  ---------------------------------------------------------------------
+"""
+The geometry of the segment-to-segment mortar method (:mod:`~edelweissfe.constraints.mortarcontact`):
+the broadphase that pairs the two surfaces, and the steps that turn a pair of facets into the polygon
+they share. The counterpart of the node- and segment-based constraints, which need a closest point
+rather than an overlap, is :mod:`~edelweissfe.utils.facetcontactgeometry`.
+
+Two facets are compared in an auxiliary plane: both are projected into the plane of the non-mortar
+sub-cell, clipped against each other there, and the overlap is triangulated for the integration. The
+curvature of the facets enters only through the shape functions at the Gauss points mapped back onto
+the elements.
+
+The clipping is that of Sutherland & Hodgman (1974). The clip window has to be convex; the subject
+may be any polygon (p. 33). Concave polygons are not decomposed (their Appendix B) but reported by
+the caller, since a contact facet that is concave in the auxiliary plane is a mesh problem.
+
+The second half maps the integration points back: the decomposition of a curved facet into the
+straight sub-cells the clipping runs on, the inverse isoparametric map from the auxiliary plane into
+a facet's natural coordinates, and the interpolation patches for a frictional history after a mesh
+refinement.
+"""
 
 import math
 
 import numpy as np
-
-"""
-The geometry a segment-to-segment mortar method needs and a node-to-surface one does not: the
-broadphase that pairs two surfaces, and the machinery that turns a pair of facets into the polygon
-they actually share.
-
-Used by :mod:`~edelweissfe.constraints.mortarcontact`. The counterpart for the node-to-surface
-constraints, which need a closest point rather than an overlap, is
-:mod:`~edelweissfe.utils.facetcontactgeometry`.
-
-Two facets that face each other are compared in an AUXILIARY PLANE rather than in space: both are
-projected into the plane of the non-mortar sub-cell, clipped against each other there, and the
-resulting polygon is triangulated so it can be integrated. The curvature of either facet never
-enters this step -- it enters only later, when the shape functions are evaluated at the Gauss points
-mapped back onto the parent elements.
-
-The clipping is Sutherland & Hodgman (1974). Its restriction is on the CLIP WINDOW, which has to be
-convex ("clipping against irregular convex windows"); the subject may be anything, since the
-algorithm is "applicable to any polygon, convex or concave, planar or not" (p. 33). Note that
-"reentrant" in that paper's title describes the reentrant CODE -- one clipping stage called
-repeatedly -- and not a reentrant polygon. Their Appendix B gives a way of decomposing a concave
-polygon into convex pieces, which is deliberately not implemented here: the caller checks convexity
-and reports a violation instead, because a contact facet that is concave in the auxiliary plane is a
-mesh problem worth seeing rather than a case worth accommodating.
-
-The second half of this module maps the integration points back: the decomposition of a curved
-facet into the straight sub-cells the clipping runs on, the inverse isoparametric map from the
-auxiliary plane into a facet's natural coordinates, the segment quadrature rules, and the
-interpolation patches for a frictional history after a mesh refinement.
-"""
 
 
 class BVHNode:
@@ -243,14 +233,12 @@ def sutherlandHodgmanClip(subjectPolygon, clipPolygon):
     def intersection(cp1, cp2, s, e):
         # The crossing of the subject edge s -> e with the line of the clip edge, written along the
         # subject edge: x = s + t (e - s) with t = d_s / (d_s - d_e) from the signed distances (times
-        # the clip edge length) of s and e to the clip line. This is the same point as the
-        # intersection of the two lines (Popp et al. 2010, Eq. (A19), case 3), but t is CLAMPED to
-        # [0, 1] - not from a source. Where a subject edge lies on a clip edge, as it does wherever
-        # the two meshes are conforming, the inclusive tolerance of `inside` can still put s and e on
-        # different sides from round-off alone, and the intersection of two nearly parallel lines
-        # then lands anywhere along them: on POT_Dejori a perturbation of 1e-13 produced a vertex
-        # four element lengths outside both facets. Clamped, the vertex stays on the subject edge and
-        # the sliver it bounds has (almost) no area.
+        # the clip edge length) of s and e to the clip line. This is the intersection of the two lines
+        # (Popp et al. 2010, Eq. (A19), case 3), with t clamped to [0, 1] -- this implementation's
+        # step. Where a subject edge lies on a clip edge (conforming meshes), round-off can still put
+        # s and e on different sides, and the intersection of two nearly parallel lines can then lie
+        # far outside both facets; clamped, the vertex stays on the subject edge and the sliver it
+        # bounds has (almost) no area.
         d_s = (cp2[0] - cp1[0]) * (s[1] - cp1[1]) - (cp2[1] - cp1[1]) * (s[0] - cp1[0])
         d_e = (cp2[0] - cp1[0]) * (e[1] - cp1[1]) - (cp2[1] - cp1[1]) * (e[0] - cp1[0])
         if d_s == d_e:
@@ -299,158 +287,115 @@ def triangulatePolygon(polygonCoordinates):
     np.ndarray
         One triangle per entry, each three ``[x, y]`` vertices. Empty for fewer than three vertices.
     """
-    triangles = []
     if len(polygonCoordinates) < 3:
-        return triangles
+        return np.zeros((0, 3, 2))
+    triangles = []
     for i in range(1, len(polygonCoordinates) - 1):
         triangles.append([polygonCoordinates[0], polygonCoordinates[i], polygonCoordinates[i + 1]])
     return np.array(triangles)
 
 
-def mapPlaneToNatural(el, coords_2d, point_2d, max_iter=10, tol=1e-12):
-    """Map a 2D local plane coordinate point_2d to the element's natural space.
+def mapPlaneToNatural(el, planeCoords, planePoint, maxIterations=10, tol=1e-12):
+    """Map a point of the auxiliary plane into the natural coordinates of a facet, by the inverse of
+    the facet's isoparametric map in the plane (Newton's method).
 
-    Returns (local_coords, converged).
+    Parameters
+    ----------
+    el
+        The contact element.
+    planeCoords
+        The plane (2D) coordinates of its nodes.
+    planePoint
+        The plane point.
+    maxIterations, tol
+        The iteration limit, and the tolerance on the residual and on the update.
 
-    Termination. This is a (Gauss-)Newton solve for the natural coordinate, so the
-    quantity it actually drives to zero is the UPDATE, not the residual. For 2D
-    surface elements the two coincide as long as the point lies in the element's
-    plane - which it does, since both facets are projected into the same auxiliary
-    plane. For 1D line elements in 2D space they do NOT: the Gauss point is
-    generated on the SLAVE line and then mapped into the MASTER element, so with an
-    open contact gap g the smallest attainable residual is exactly g and a residual
-    test can never be satisfied. The least-squares step nevertheless returns the
-    exact orthogonal projection after the first pass; without an update-based test
-    the loop just burns all max_iter passes to return it. Measured on the test
-    suite with a residual criterion instead: 189 of 780476 calls "failed" this way,
-    every one of them a 2D call at an open gap, every returned coordinate exact.
+    Returns
+    -------
+    tuple
+        ``(natural coordinates, converged)``. ``converged`` is False if the iteration ran out of
+        passes or met a singular Jacobian; the caller reports such points.
 
-    The update test is also the scale-invariant one - the natural coordinate is
-    dimensionless, whereas the residual carries the model's length unit.
-
-    `converged` is True when either criterion was met. It is False only when the
-    iteration ran out of passes or hit a singular Jacobian - i.e. when the returned
-    coordinate is the last iterate rather than a solution. Nothing downstream can
-    tell those apart on its own (the value looks like any other), so the caller
-    counts them and reports them; see the `gp_projection_failed` diagnostic in
-    computeMortarCouplingMatrices. That the closest-point projection need not be
-    solvable at all, and under which conditions it fails, is the subject of
-    Konyukhov & Schweizerhof (2008); the local Newton used here is the standard one
-    of the surrounding solids.
-
-    Implementation note. The linear algebra is written out in scalars instead of
-    calling np.linalg.norm / np.linalg.solve. Those are 2x2 and 2-vector operations
-    called several hundred thousand times per increment, where the numpy dispatch
-    overhead is many times the arithmetic (measured on hertz_hex20_fine: 5.0 s in
-    np.linalg.solve and 3.3 s in np.linalg.norm out of 31 s of segmentation).
-
-    This is NOT bit-identical to what it replaces, and the difference was measured
-    rather than assumed. The 2x2 solve follows LAPACK dgesv's operation order -
-    partial pivoting with IDAMAX tie-breaking towards the first row, the reciprocal
-    of the pivot formed once as dgetf2 does, then forward/back substitution - and
-    still differs from np.linalg.solve for 39 % of random 2x2 systems, by up to
-    5.5e-15 relative (dividing instead of using the reciprocal is worse: 9.9e-12).
-    math.sqrt(r0*r0 + r1*r1) differs from np.linalg.norm for 8 % of random 2-vectors,
-    by 1 ulp. Propagated through the Newton iteration and the segment quadrature,
-    that shows up as ~1e-12 relative in D and C and ~2e-10 in the converged
-    multipliers, with the active set unchanged (hertz_hex20_medium). The whole
-    verification suite passes with unchanged tolerances, but this is a deliberate
-    trade of exact reproducibility against roughly 10 % wall clock - if the
-    reproducibility matters more, this function is the single place to revert.
+    For a line element the residual of a point off the line cannot vanish, so the iteration stops on
+    the (dimensionless) update, which also makes the test independent of the length unit. The 2x2
+    solve is written out in scalars, with partial pivoting in the operation order of LAPACK's dgesv,
+    since this function is called several hundred thousand times per segmentation and the dispatch
+    of ``np.linalg.solve`` would cost more than the arithmetic.
     """
-    el_type = el.elType.upper()
+    elType = el.elType.upper()
 
-    # 1D line elements
-    if "LINE" in el_type:
+    if "LINE" in elType:
         xi = 0.0
-        local_coords = np.zeros(1)
-        for _ in range(max_iter):
-            local_coords[0] = xi
-            N = el.getShapeFunctions(local_coords)
-            x_mapped = N @ coords_2d
-            r0 = x_mapped[0] - point_2d[0]
-            r1 = x_mapped[1] - point_2d[1]
+        localCoords = np.zeros(1)
+        for _ in range(maxIterations):
+            localCoords[0] = xi
+            N = el.getShapeFunctions(localCoords)
+            xMapped = N @ planeCoords
+            r0 = xMapped[0] - planePoint[0]
+            r1 = xMapped[1] - planePoint[1]
             if math.sqrt(r0 * r0 + r1 * r1) < tol:
-                return local_coords, True
-            dN = el.getShapeFunctionDerivatives(local_coords)  # shape (1, n_nodes)
-            J = dN @ coords_2d  # shape (1, dim_of_coords_2d)
+                return localCoords, True
+            J = el.getShapeFunctionDerivatives(localCoords) @ planeCoords  # (1, 2)
             j0, j1 = J[0, 0], J[0, 1]
-            J_norm = j0 * j0 + j1 * j1
-            if J_norm < 1e-14:
-                return local_coords, False
-            delta = (j0 * r0 + j1 * r1) / J_norm
+            jSquared = j0 * j0 + j1 * j1
+            if jSquared < 1e-14:
+                return localCoords, False
+            delta = (j0 * r0 + j1 * r1) / jSquared
             xi -= delta
-            local_coords[0] = xi
+            localCoords[0] = xi
             if abs(delta) < tol:
-                return local_coords, True
-        return local_coords, False
+                return localCoords, True
+        return localCoords, False
 
-    # 2D surface elements (Quads and Triangles)
-    if "TRI" in el_type:
+    if "TRI" in elType:
         xi = eta = 1.0 / 3.0
     else:
         xi = eta = 0.0
-    local_coords = np.array([xi, eta])
+    localCoords = np.array([xi, eta])
 
-    for _ in range(max_iter):
-        local_coords[0] = xi
-        local_coords[1] = eta
-        N = el.getShapeFunctions(local_coords)
-        x_mapped = N @ coords_2d
-        r0 = x_mapped[0] - point_2d[0]
-        r1 = x_mapped[1] - point_2d[1]
+    for _ in range(maxIterations):
+        localCoords[0] = xi
+        localCoords[1] = eta
+        N = el.getShapeFunctions(localCoords)
+        xMapped = N @ planeCoords
+        r0 = xMapped[0] - planePoint[0]
+        r1 = xMapped[1] - planePoint[1]
         if math.sqrt(r0 * r0 + r1 * r1) < tol:
-            return local_coords, True
-        dN = el.getShapeFunctionDerivatives(local_coords)  # shape (2, n_nodes)
-        Jm = dN @ coords_2d  # (2, 2); the Jacobian is its transpose
+            return localCoords, True
+        Jm = el.getShapeFunctionDerivatives(localCoords) @ planeCoords  # (2, 2); the Jacobian is its transpose
         a00, a01 = Jm[0, 0], Jm[1, 0]
         a10, a11 = Jm[0, 1], Jm[1, 1]
 
-        # 2x2 LU with partial pivoting, in LAPACK dgesv's operation order.
-        if abs(a10) > abs(a00):  # IDAMAX picks the first maximum, so ties keep row 0
+        # 2x2 LU with partial pivoting (ties keep row 0); the reciprocal of the pivot is formed once.
+        if abs(a10) > abs(a00):
             a00, a01, a10, a11 = a10, a11, a00, a01
             b0, b1 = r1, r0
         else:
             b0, b1 = r0, r1
         if a00 == 0.0:
-            return local_coords, False  # singular column: np.linalg.solve would raise
-        # dgetf2 forms the RECIPROCAL of the pivot once and multiplies by it; that is
-        # not the same in floating point as dividing, so dividing here would already
-        # cost bit-identity with np.linalg.solve.
+            return localCoords, False
         m = a10 * (1.0 / a00)
         u11 = a11 - m * a01
         if u11 == 0.0:
-            return local_coords, False
+            return localCoords, False
         y1 = b1 - m * b0
         d1 = y1 / u11
         d0 = (b0 - a01 * d1) / a00
 
         xi -= d0
         eta -= d1
-        local_coords[0] = xi
-        local_coords[1] = eta
+        localCoords[0] = xi
+        localCoords[1] = eta
         if math.sqrt(d0 * d0 + d1 * d1) < tol:
-            return local_coords, True
-    return local_coords, False
+            return localCoords, True
+    return localCoords, False
 
 
-# Decomposition of contact facets into linear sub-cells for the mortar
-# segmentation (polygon clipping). The clip polygons must be simple convex
-# polygons, so curved (quadratic) facets are subdivided into linear cells
-# using their mid-side nodes before the clipping, which is what the segment-based
-# integration needs. The curvature of the facet enters only
-# through the shape function evaluation at the mapped Gauss points, never
-# through the clipping geometry itself.
-#
-# The three quadratic decompositions below are those of Puso, Laursen & Solberg
-# (2008), Fig. 3: the nine-node patch into four quadrilaterals (b), the six-node
-# patch into four linear triangles (d), and the serendipity eight-node patch into
-# "four linear triangle sub-segments and one quadrilateral segment" (f). They note
-# what this costs and why it is acceptable: the geometrically exact description of
-# the quadratic surface is given up for the integration, but "through consideration
-# of simple affine maps between the parameterizations for these linear sub-segments
-# and their parent quadratic elements, we retain the ability to easily integrate
-# inner products of higher order shape functions".
+# The decomposition of contact facets into linear sub-cells for the clipping, which needs convex
+# polygons. The quadratic decompositions are those of Puso, Laursen & Solberg (2008), Fig. 3: the
+# nine-node patch into four quadrilaterals, the six-node patch into four triangles, and the eight-node
+# patch into four triangles and one quadrilateral. The curvature of the facet enters only through the
+# shape functions at the mapped Gauss points.
 subCellMap = {
     "CONLINE2": [[0, 1]],
     "CONLINE3": [[0, 2], [2, 1]],
@@ -462,35 +407,22 @@ subCellMap = {
 }
 
 
-def isConvexPolygon(poly_2d, tol: float = 1e-14) -> bool:
+def isConvexPolygon(polygon, tol: float = 1e-14) -> bool:
     """Whether a planar polygon given in order is convex.
 
-    BOTH sub-cells of a segmentation pair have to be convex, for two different
-    reasons:
-
-    slave (clip window)   Sutherland-Hodgman clips against the half-plane of each
-        clip edge, and the intersection of those half-planes is the polygon itself
-        only if the polygon is convex. A reflex vertex therefore removes area that
-        genuinely belongs to the facet, silently (measured: -2/3 of the area for a
-        constructed reflex quad, see 02_polygon_clipping).
-
-    master (subject)      Sutherland-Hodgman itself accepts any subject polygon
-        ("applicable to any polygon, convex or concave", Sutherland & Hodgman 1974,
-        p. 33), but the overlap it returns inherits the subject's reflex vertices,
-        and `triangulatePolygon` fans from vertex 0 with a per-triangle absolute area.
-        For a non-convex overlap those fan triangles reach outside the polygon and
-        the area is OVER-counted (measured: 0.375 instead of 0.125, i.e. +200 %).
-
-    Triangles cannot be non-convex, so the requirement only bites on the middle
-    quad of a CONQUAD8 and the four quads of a CONQUAD9.
+    Both sub-cells of a segmentation pair have to be: the clip window, because the clipping cuts
+    with the half-plane of each of its edges, which gives the window itself only if it is convex (a
+    reflex vertex silently removes area); the subject, because the overlap inherits its reflex
+    vertices and the fan triangulation of :func:`triangulatePolygon` then counts area outside the
+    polygon. Only the quadrilateral sub-cells of CONQUAD4, CONQUAD8 and CONQUAD9 can be non-convex.
     """
-    n = len(poly_2d)
+    n = len(polygon)
     if n < 4:
         return True
     sign = 0.0
     for i in range(n):
-        a = poly_2d[(i + 1) % n] - poly_2d[i]
-        b = poly_2d[(i + 2) % n] - poly_2d[(i + 1) % n]
+        a = polygon[(i + 1) % n] - polygon[i]
+        b = polygon[(i + 2) % n] - polygon[(i + 1) % n]
         cross = a[0] * b[1] - a[1] * b[0]
         if abs(cross) < tol:
             continue  # collinear vertex: neither convex nor reflex
@@ -535,91 +467,24 @@ def curvedFacetHistoryPatches(facets: list, dim: int) -> list:
     return patches
 
 
-def isInsideReferenceElement(el, local_coords, tol: float = 1e-10) -> bool:
+def isInsideReferenceElement(el, localCoords, tol: float = 1e-10) -> bool:
     """Whether a natural coordinate lies in the element's reference domain (up to ``tol``).
 
-    Used to catch a Gauss point that the segmentation attributed to a facet which does not
-    contain it. The clipping works on the straight sub-cells of a facet (see subCellMap), so
-    wherever a quadratic facet has a CURVED edge the region between the chord and the true edge
-    belongs to one facet geometrically and to its neighbour in the clipping. Mapped back into the
-    wrong facet, such a point lands outside the reference domain and its shape functions are
-    extrapolated rather than interpolated.
+    Catches a Gauss point attributed to a facet that does not contain it: the clipping works on the
+    straight sub-cells, so where a quadratic facet has a curved edge, the region between chord and
+    edge belongs to the facet geometrically and to its neighbour in the clipping. Mapped back into
+    the wrong facet, the point lands outside the reference domain.
     """
-    el_type = el.elType.upper()
-    if "TRI" in el_type:
-        xi, eta = local_coords[0], local_coords[1]
+    elType = el.elType.upper()
+    if "TRI" in elType:
+        xi, eta = localCoords[0], localCoords[1]
         return xi >= -tol and eta >= -tol and xi + eta <= 1.0 + tol
-    return bool(np.all(np.abs(local_coords) <= 1.0 + tol))
+    return bool(np.all(np.abs(localCoords) <= 1.0 + tol))
 
 
 def getSubCells(el) -> list[list[int]]:
-    """Return the linear sub-cell decomposition (local node indices) of a contact facet."""
-    el_type = el.elType.upper()
-    if el_type not in subCellMap:
-        raise NotImplementedError(f"No linear sub-cell decomposition defined for element type '{el_type}'.")
-    return subCellMap[el_type]
-
-
-def facetNormal(coords: np.ndarray) -> np.ndarray:
-    """Unnormalized area-weighted normal of a flat linear facet (3 or 4 corner nodes).
-
-    Used for the AUXILIARY PLANE of the segmentation only - one plane per slave
-    sub-cell, and the sub-cells are linear by construction, so this is the exact
-    normal of their plane rather than an approximation.
-
-    It is deliberately NOT what computeNormals builds the nodal normal n_I from:
-    one constant direction per facet cannot distinguish a mid-side node from its
-    corners, which costs an order of convergence on a curved slave surface. Note
-    also that its length is the facet AREA, whereas computeNormals sums unit
-    normals and so carries no area weighting at all. See computeNormals.
-    """
-    if len(coords) == 3:
-        return 0.5 * np.cross(coords[1] - coords[0], coords[2] - coords[0])
-    return 0.5 * np.cross(coords[2] - coords[0], coords[3] - coords[1])
-
-
-# 3-point Gauss-Legendre rule (degree 5) on [-1, 1] for 1D line segments
-lineGaussPoints = np.array(
-    [
-        [-np.sqrt(0.6)],
-        [0.0],
-        [np.sqrt(0.6)],
-    ]
-)
-lineGaussWeights = np.array([5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0])
-
-
-# 7-point symmetric Gauss rule (degree 5) on the reference triangle, the rule
-# tabulated by Dunavant (1985) for p = 5, n_g = 7, written here in closed form.
-# 7 points per integration cell are enough here,
-# since the nonlinear projection between the auxiliary plane and the curved
-# element surfaces raises the polynomial degree of the integrand. That is also the
-# experience of Puso & Laursen (2004), Section 3.1, who report that "seven point
-# integration was used for most example problems and appears to be more than
-# sufficient when compared to higher order nine and thirteen point schemes" -- with
-# the caveat, which holds here too, that "the choice of integration rule is somewhat
-# problem dependent".
-_triangleGaussA = (6.0 - np.sqrt(15.0)) / 21.0
-_triangleGaussB = (6.0 + np.sqrt(15.0)) / 21.0
-triangleGaussPoints = np.array(
-    [
-        [1.0 / 3.0, 1.0 / 3.0],
-        [_triangleGaussA, _triangleGaussA],
-        [_triangleGaussA, 1.0 - 2.0 * _triangleGaussA],
-        [1.0 - 2.0 * _triangleGaussA, _triangleGaussA],
-        [_triangleGaussB, _triangleGaussB],
-        [_triangleGaussB, 1.0 - 2.0 * _triangleGaussB],
-        [1.0 - 2.0 * _triangleGaussB, _triangleGaussB],
-    ]
-)
-triangleGaussWeights = np.array(
-    [
-        9.0 / 80.0,
-        (155.0 - np.sqrt(15.0)) / 2400.0,
-        (155.0 - np.sqrt(15.0)) / 2400.0,
-        (155.0 - np.sqrt(15.0)) / 2400.0,
-        (155.0 + np.sqrt(15.0)) / 2400.0,
-        (155.0 + np.sqrt(15.0)) / 2400.0,
-        (155.0 + np.sqrt(15.0)) / 2400.0,
-    ]
-)
+    """The linear sub-cell decomposition (local node indices) of a contact facet."""
+    elType = el.elType.upper()
+    if elType not in subCellMap:
+        raise NotImplementedError(f"No linear sub-cell decomposition defined for element type '{elType}'.")
+    return subCellMap[elType]
