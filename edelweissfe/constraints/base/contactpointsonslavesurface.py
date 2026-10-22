@@ -37,6 +37,7 @@ distributed with the *parent* face's shape functions.
 
 import numpy as np
 
+from edelweissfe.generators.surfaceelementgenerator import asFacets, isWholeFaceElement
 from edelweissfe.models.femodel import FEModel
 from edelweissfe.models.modelchange import ModelChange
 from edelweissfe.sets.elementset import ElementSet
@@ -95,13 +96,6 @@ def checkFacetsCarryParentFaces(facets: list, side: str, setName: str, constrain
             "to begin with. Generate these facets with the default "
             "nodalWeights='facetConsistent'."
         )
-
-
-def isWholeFaceElement(element) -> bool:
-    """Whether a surface element is a whole element face (a curved ``CON*`` contact element of
-    ``facets=wholeFace``) rather than a flat facet cut from one (``facets=triangulated``)."""
-
-    return not hasattr(element, "parentFaceType") and getattr(element, "elType", None) in PARENT_FACE_OF_CONTACT_ELEMENT
 
 
 def surfaceFaceType(element) -> str:
@@ -171,6 +165,17 @@ def groupFacetsByParentFace(facets: list) -> dict[tuple, list]:
     return groups
 
 
+def parametricMeasure(vertexParametricCoords) -> float:
+    """The area (a triangle facet) or length (a line facet) of a facet in the parametric space of its
+    parent face, from the parametric coordinates of its vertices."""
+
+    Xi = np.asarray(vertexParametricCoords, dtype=float)
+    if Xi.shape[1] == 2:
+        e1, e2 = Xi[1] - Xi[0], Xi[2] - Xi[0]
+        return 0.5 * abs(e1[0] * e2[1] - e1[1] * e2[0])
+    return abs(Xi[1, 0] - Xi[0, 0])
+
+
 def checkFacetsTileParentFace(faceFacets: list, setName: str, constraintName: str):
     """Reject a parent face that the facets of a surface cover only in part, for an integration over
     whole faces. The check is made in the face's parametric domain, where the facets' parametric
@@ -190,12 +195,7 @@ def checkFacetsTileParentFace(faceFacets: list, setName: str, constraintName: st
     localDimension = PARENT_FACE_LOCAL_DIMENSION[face.parentFaceType]
     covered = 0.0
     for facet in faceFacets:
-        Xi = np.asarray(facet.vertexParametricCoords, dtype=float)
-        if localDimension == 2:
-            e1, e2 = Xi[1] - Xi[0], Xi[2] - Xi[0]
-            covered += 0.5 * abs(e1[0] * e2[1] - e1[1] * e2[0])
-        else:
-            covered += abs(Xi[1, 0] - Xi[0, 0])
+        covered += parametricMeasure(facet.vertexParametricCoords)
     domain = 2.0**localDimension
     if abs(covered - domain) > 1e-10 * domain:
         raise ValueError(
@@ -302,8 +302,6 @@ class ContactPointsOnSlaveSurface:
         integration: str = "triangles",
         gaussPointsPerDirection: int = 3,
     ):
-        from edelweissfe.generators.surfaceelementgenerator import asFacets
-
         self.setName = slaveSurface.name
         elements = list(slaveSurface)
         surfaceKind(elements, "slave", self.setName, constraintName)
@@ -311,6 +309,8 @@ class ContactPointsOnSlaveSurface:
             raise ValueError(
                 f"Constraint '{constraintName}': unknown integration '{integration}'; choose one of {INTEGRATIONS}."
             )
+        if not 1 <= gaussPointsPerDirection <= 4:
+            raise ValueError(f"gaussPointsPerDirection must be 1 to 4, got {gaussPointsPerDirection}.")
         self.integration = integration
         # Integrated over triangles, a whole-face surface is cut into the facets the surface element
         # generator would cut from the same faces; integrated over whole faces, the given elements are
@@ -343,7 +343,7 @@ class ContactPointsOnSlaveSurface:
                     facet,
                     parametric,
                     np.array([parentFaceShapeFunctions(facet.parentFaceType, xi) for xi in parametric]),
-                    self._subcellWeights(facet, parametric, weights),
+                    self._facetCellWeights(facet, parametric, weights),
                 )
         else:
             self.pointsPerCell = 0
@@ -373,20 +373,14 @@ class ContactPointsOnSlaveSurface:
         self.surfaceNodes = list(dict.fromkeys(node for facet in self.facets for node in facet.nodes))
 
     @staticmethod
-    def _subcellWeights(facet, parametric: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    def _facetCellWeights(facet, parametric: np.ndarray, weights: np.ndarray) -> np.ndarray:
         """The weights of a facet's points as a sub-cell of its parent face: the rule's weights times the
         facet's measure in the parent face's parametric space times the parent face's surface Jacobian
         at each point, in the reference configuration."""
 
-        Xi = np.asarray(facet.vertexParametricCoords, dtype=float)
-        if Xi.shape[1] == 2:
-            e1, e2 = Xi[1] - Xi[0], Xi[2] - Xi[0]
-            parametricMeasure = 0.5 * abs(e1[0] * e2[1] - e1[1] * e2[0])
-        else:
-            parametricMeasure = abs(Xi[1, 0] - Xi[0, 0])
         referenceCoordinates = np.array([n.coordinates for n in facet.parentFaceNodes])
         tangents = parentFaceTangents(facet.parentFaceType, parametric, referenceCoordinates)
-        return parametricMeasure * weights * parentFaceAreaElement(tangents)
+        return parametricMeasure(facet.vertexParametricCoords) * weights * parentFaceAreaElement(tangents)
 
     def _addCell(self, key: tuple, element, parametric: np.ndarray, shapeFunctions: np.ndarray, weights: np.ndarray):
         """Append one integration cell, whose parent face is that of ``element``."""

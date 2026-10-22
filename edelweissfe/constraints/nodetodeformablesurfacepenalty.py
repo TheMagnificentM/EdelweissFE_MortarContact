@@ -25,61 +25,11 @@
 #  The full text of the license can be found in the file LICENSE.md at
 #  the top level directory of EdelweissFE.
 #  ---------------------------------------------------------------------
-
-from dataclasses import dataclass
-
-import numpy as np
-
-from edelweissfe.constraints.base.constraintbase import ConstraintBase
-from edelweissfe.constraints.base.forcesonlyexplicitevaluation import (
-    ForcesOnlyExplicitEvaluation,
-)
-from edelweissfe.constraints.base.frictionalcontact import FrictionalContact
-from edelweissfe.constraints.base.frozencontactsearch import (
-    FrozenContactSearch,
-    packAssignment,
-    packPerPointArrays,
-    unpackAssignment,
-    unpackPerPointArrays,
-)
-from edelweissfe.constraints.base.penaltylaw import (
-    normalPenaltyForce,
-    validatedContactType,
-)
-from edelweissfe.generators.surfaceelementgenerator import asFacets
-from edelweissfe.journal.journal import Journal
-from edelweissfe.models.femodel import FEModel
-from edelweissfe.models.meshdependent import MeshDependent
-from edelweissfe.sets.elementset import ElementSet
-from edelweissfe.timesteppers.timestep import TimeStep
-from edelweissfe.utils.contactfriction import (
-    CoulombFriction,
-    characteristicFacetSize,
-    frictionCoefficientField,
-    historyInterpolation,
-    slipToleranceField,
-    tangentPenaltyField,
-)
-from edelweissfe.utils.facetcontactgeometry import (
-    closestFacetCandidates,
-    closestFacetsWithTies,
-    edgeOrVertexNormal,
-    facetHistoryPatches,
-    facetNormalAndMeasure,
-    facetSurfaceBoundary,
-    liesOnSurfaceBoundary,
-    line2GapGradientHessian,
-    line2Projection,
-    tria3GapGradientHessian,
-    tria3Projection,
-)
-from edelweissfe.utils.meshtools import currentNodeCoordinates
-from edelweissfe.utils.schema import buildSchemaFromOptions, schemaField
-
 """
 A penalty based unilateral contact constraint between a deformable slave surface and a deformable
 master surface, both represented by flat contact facet elements (:mod:`~edelweissfe.elements.
-contactsurfaceelement`, typically created via :mod:`~edelweissfe.generators.surfaceelementgenerator`).
+contactsurfaceelement`, typically created via :mod:`~edelweissfe.generators.surfaceelementgenerator`)
+or by whole element faces, which are cut into the facets the generator would cut from them.
 The slave surface's nodes act as the contact points; each slave node's penalty force is weighted by
 its tributary area (the sum of ``measure / nFacetNodes`` over its incident slave facets, evaluated
 in the reference configuration), so ``penalty`` has the meaning of an interface stiffness modulus
@@ -94,6 +44,53 @@ identity) keeps its frictional history and augmented-Lagrange multiplier; a new 
 frictional history interpolated from the old slave facet it lies on, with the parent face's shape
 functions (Wriggers 2006, Eq. 14.86), and starts without multiplier.
 """
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from edelweissfe.constraints.base.constraintbase import ConstraintBase
+from edelweissfe.constraints.base.forcesonlyexplicitevaluation import ForcesOnlyExplicitEvaluation
+from edelweissfe.constraints.base.frictionalcontact import FrictionalContact
+from edelweissfe.constraints.base.frozencontactsearch import (
+    FrozenContactSearch,
+    packAssignment,
+    packPerPointArrays,
+    unpackAssignment,
+    unpackPerPointArrays,
+)
+from edelweissfe.constraints.base.penaltylaw import normalPenaltyForce, validatedContactType
+from edelweissfe.generators.surfaceelementgenerator import asFacets
+from edelweissfe.journal.journal import Journal
+from edelweissfe.models.femodel import FEModel
+from edelweissfe.models.meshdependent import MeshDependent
+from edelweissfe.sets.elementset import ElementSet
+from edelweissfe.timesteppers.timestep import TimeStep
+from edelweissfe.utils.contactfriction import (
+    HISTORY_DISTANCE_FACTOR,
+    CoulombFriction,
+    characteristicFacetSize,
+    frictionCoefficientField,
+    historyInterpolation,
+    slipToleranceField,
+    tangentPenaltyField,
+)
+from edelweissfe.utils.facetcontactgeometry import (
+    TIE_TOLERANCE_FACTOR,
+    closestFacetCandidates,
+    closestFacetsWithTies,
+    edgeOrVertexNormal,
+    facetHistoryPatches,
+    facetNormalAndMeasure,
+    facetSurfaceBoundary,
+    liesOnSurfaceBoundary,
+    line2GapGradientHessian,
+    line2Projection,
+    tria3GapGradientHessian,
+    tria3Projection,
+)
+from edelweissfe.utils.meshtools import currentNodeCoordinates
+from edelweissfe.utils.schema import buildSchemaFromOptions, schemaField
 
 
 @dataclass(frozen=True)
@@ -166,9 +163,10 @@ class NodeToDeformableSurfacePenaltySchema:
     augmentedLagrange: bool = schemaField(
         description="Augment the penalty force with a per-slave normal traction multiplier, "
         "updated once per increment on acceptance (incremental Uzawa: lambda <- min(0, lambda + "
-        "penalty * A * g)). The multiplier is constant within an increment (zero tangent "
-        "contribution), drives the penetration toward zero over the increments at a fixed "
-        "penalty, and sharpens the friction cone mu * N. Requires sliding=small.",
+        "f_pen), with f_pen the converged penalty force of the node). The multiplier is constant "
+        "within an increment (zero tangent contribution), drives the penetration toward zero over "
+        "the increments at a fixed penalty, and sharpens the friction cone mu * N. Requires "
+        "sliding=small.",
         dtype=bool,
         default=False,
     )
@@ -478,9 +476,9 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
             newNormals = np.full((self.nSlaves, self.nDim), np.nan)
             candidatesPerSlave = closestFacetCandidates(slaveCoords, facetCoords, self.searchDistance)
             # The first facet of exactly the smallest distance; whether another one is equally close
-            # decides the normal below. (The facet itself is not chosen by the lowest index on a tie:
-            # with nodalWeights=serendipityOptimal the facet sets the distribution of the force, and
-            # NodeToDeformableSurfaceContactPatchHexa20 pins the established one.)
+            # decides the normal below. The facet is not chosen by the lowest index on a tie: with
+            # nodalWeights=serendipityOptimal the facet sets the distribution of the force, which is
+            # kept that of the plain closest-facet search.
             closestFacet, closestWeights, closestDistance, closestTied = closestFacetsWithTies(
                 slaveCoords, facetCoords, candidatesPerSlave, self._tieTolerance, lowestIndexOnTie=False
             )
@@ -636,7 +634,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
         self._facetSize = characteristicFacetSize(
             float(np.sum(self.tributaryAreas)), max(len(self.slaveFacetElements), 1), self.nDim
         )
-        self._tieTolerance = 1e-10 * self._facetSize
+        self._tieTolerance = TIE_TOLERANCE_FACTOR * self._facetSize
 
     def _bindSlaveSurface(self, slaveFacetElements: list) -> None:
         """Bind the slave facets: the contact points are the unique nodes of the slave surface, each
@@ -685,7 +683,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
                 self.slaveNodes,
                 oldSlaveNodes,
                 facetHistoryPatches(oldSlaveFacets),
-                0.1 * self._facetSize,
+                HISTORY_DISTANCE_FACTOR * self._facetSize,
             )
             if self._friction.enabled
             else None
@@ -779,8 +777,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
 
         self.totalNormalForce = 0.0
         friction = self._friction.enabled
-        if friction:
-            self._friction.beginEvaluation(timeStep)
+        self._beginFriction(timeStep)
 
         localOffset = 0
         activeIdx = 0
@@ -869,18 +866,9 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
 
             area = self.tributaryAreas[s]
             if friction and area > 0.0:
-                # The slave node as a contact point of the shared law: coefficients c, measure A, the
-                # frozen normal, and the pressure p = -f_n / A with dp/dU = -stiffness * w / A.
-                PFriction, KFriction = self._friction.evaluatePoint(
-                    s,
-                    c,
-                    area,
-                    nBar,
-                    -f_n / area,
-                    (-stiffness / area) * w,
-                    dU[globalIdcs],
-                    self.penalty,
-                    computeTangent=(KLocal is not None),
+                # The slave node as a contact point of the shared law, with its tributary area.
+                PFriction, KFriction = self._pointFriction(
+                    s, c, area, nBar, f_n, stiffness, w, dU[globalIdcs], KLocal is not None
                 )
                 PLocal += PFriction
                 if KLocal is not None:
@@ -898,8 +886,7 @@ class Constraint(FrictionalContact, FrozenContactSearch, ForcesOnlyExplicitEvalu
             self.totalNormalForce += f_n
             activeIdx += 1
 
-        if friction:
-            self._friction.freezeIfChattering(self._friction.iteration)
+        self._endFriction()
 
     def getNormalPressures(self) -> np.ndarray:
         """The current per-slave normal contact pressures (positive in compression), ordered like

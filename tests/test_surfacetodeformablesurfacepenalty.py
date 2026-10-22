@@ -341,7 +341,7 @@ class TestIntegratedSurfaceContact(unittest.TestCase):
             masterCoords = currentNodeCoordinates(
                 surfaceFaceNodes(constraint.facetElements[facetIdx]),
                 model,
-                constraint._masterParentRefCoords[facetIdx],
+                constraint._masterFaceRefCoords[constraint._facetMasterFace[facetIdx]],
             )
             masterPoint = constraint._frozenMasterShapeFunctions[p] @ masterCoords
             gaps[p] = constraint._frozenNormals[p] @ (slavePoints[p] - masterPoint)

@@ -50,7 +50,20 @@ import itertools
 import numpy as np
 from scipy.spatial import cKDTree
 
+from edelweissfe.utils.parentfacegeometry import facetQuadratureRule, parentFaceClosestPoints, parentFaceShapeFunctions
 from edelweissfe.utils.rotations import skewMatrix
+
+#: Two facets whose distances from a point differ by less than this fraction of the characteristic
+#: facet size count as equally close (see :func:`closestFacetsWithTies`). A relative tolerance far
+#: above round-off, chosen here.
+TIE_TOLERANCE_FACTOR = 1e-10
+
+
+def firstOfEachGroup(groups: np.ndarray, members: np.ndarray) -> np.ndarray:
+    """Of ``members`` (indices into ``groups``, ordered so that equal groups are contiguous), the first
+    member of each group."""
+
+    return members[np.r_[True, groups[members[1:]] != groups[members[:-1]]]]
 
 
 def tria3GapGradientHessian(
@@ -688,7 +701,7 @@ def closestFacetsWithTies(
     else:
         pairs = acceptable[distances[acceptable] == smallest[pointIndices[acceptable]]]
     # Pairs are ordered by point, and per point in ascending candidate order: keep each point's first.
-    pairs = pairs[np.r_[True, pointIndices[pairs[1:]] != pointIndices[pairs[:-1]]]]
+    pairs = firstOfEachGroup(pointIndices, pairs)
 
     closestFacet[pointIndices[pairs]] = facetIndices[pairs]
     closestWeights[pointIndices[pairs]] = weights[pairs]
@@ -775,8 +788,6 @@ def facetHistoryPatches(facets: list) -> list:
     the parent face's shape functions at that location (Wriggers 2006, Eq. 14.86) -- from the facet's
     own nodes with its barycentric weights where the facet carries no parent face."""
 
-    from edelweissfe.utils.parentfacegeometry import parentFaceShapeFunctions
-
     patches = []
     for facet in facets:
         coordinates = np.array([node.coordinates for node in facet.nodes])
@@ -801,8 +812,6 @@ def facetQuadraturePointPatches(facets: list, nQuadraturePoints: int, pointKey) 
     Eqs. 14.32-14.33, with the facet as the patch; a constant one for a single point), and evaluated
     where the new point lies on the facet. ``pointKey(facet, q)`` gives the key of quadrature point
     ``q`` of an old facet."""
-
-    from edelweissfe.utils.parentfacegeometry import facetQuadratureRule
 
     patches = []
     for facet in facets:
@@ -837,8 +846,6 @@ def parentFaceQuadraturePointPatches(slavePoints, pointKey) -> list:
     pointKey
         ``pointKey(c, q)`` gives the key of quadrature point ``q`` of old cell ``c``.
     """
-
-    from edelweissfe.utils.parentfacegeometry import parentFaceClosestPoints
 
     patches = []
     for c in range(slavePoints.nCells):

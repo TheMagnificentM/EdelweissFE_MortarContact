@@ -87,9 +87,9 @@ or, with ``slipTolerance``, proportional to the pressure, ``eps_T = mu p / (slip
 ``h`` the characteristic facet size of the slave surface: a sticking point then always slips
 elastically by up to ``slipTolerance * h``, however lightly it is loaded. This is the SLIP
 TOLERANCE of Abaqus/Standard, "the ratio of allowable maximum elastic slip to characteristic contact
-surface face dimension", default 0.005 (Abaqus Keywords Reference, *FRICTION,
-https://abaqus-docs.mit.edu/2017/English/SIMACAEKEYRefMap/simakey-r-friction.htm). A pressure-proportional tangential stiffness is the form of Wriggers 2006, Eq. 5.54, p. 92,
-with exponent one; the definition of ``h`` is this implementation's.
+surface face dimension", default 0.005 (Abaqus Keywords Reference, *FRICTION). A
+pressure-proportional tangential stiffness is the form of Wriggers 2006, Eq. 5.54, p. 92, with
+exponent one; the definition of ``h`` is this implementation's.
 
 A point without pressure carries no friction (Simo & Laursen 1992, p. 104: the algorithm requires
 ``t_T = 0`` if ``t_N = 0``) and contributes nothing to the tangent; it is reported as slipping (it
@@ -306,12 +306,12 @@ class CoulombFriction:
         nPoints: int,
         nDim: int,
         mu: float,
-        tangentPenalty: float | None = 0.0,
+        tangentPenalty: float = 0.0,
         slipTolerance: float = 0.0,
         owner: str = "",
     ):
         self.mu = float(mu)
-        self.tangentPenalty = 0.0 if tangentPenalty is None else float(tangentPenalty)
+        self.tangentPenalty = float(tangentPenalty)
         self.slipTolerance = float(slipTolerance)
         self.nDim = nDim
         self._owner = owner
@@ -715,6 +715,7 @@ class CoulombFriction:
         if not self.slipStateFrozen:
             return 0, 0
         held = self.frozenSlip & (self.slipState == SLIP) & (self.slipLimit > 0.0)
+        # Diagnostic bounds only: 0.1 % inside the cone, and the 30 degrees of the crease test.
         insideCone = held & (self.trialMagnitude < (1.0 - 1e-3) * self.slipLimit)
         turnedAway = held & (self.trialAlignment < cosOfSmoothNormalChangeLimit)
         return int(np.sum(insideCone)), int(np.sum(turnedAway))

@@ -265,9 +265,8 @@ class ConstraintBase(OptionSchemaProvider, ABC, VIJEntityBase):
         leaves the stability limit. This hook is how a constraint reports the bound it imposes,
         so that the solver can take it into account.
 
-        The default is ``inf``: a constraint that adds no stiffness, or one that has not been
-        taught to estimate its own bound, constrains nothing and leaves the mesh's limit intact.
-        That keeps every existing constraint behaving exactly as before.
+        The default is ``inf``: a constraint that adds no stiffness, or one that does not estimate
+        its own bound, leaves the mesh's limit intact.
 
         Parameters
         ----------

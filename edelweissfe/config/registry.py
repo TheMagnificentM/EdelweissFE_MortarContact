@@ -355,9 +355,8 @@ for _elementTypeName in [
         "edelweissfe.elements.displacementtlelement.element:DisplacementTLElement"
     )
 
-# Contact facets of the mortar contact. They carry neither degrees of freedom nor stiffness of
-# their own and describe only the topology of the contact surfaces; the formulation itself lives in
-# the `mortarcontact` constraint.
+# Geometry-only contact elements, whole faces of a contact surface (facets=wholeFace of the surface
+# element generator). They carry neither degrees of freedom nor stiffness of their own.
 for _elementTypeName in [
     "CONLINE2",
     "CONLINE3",

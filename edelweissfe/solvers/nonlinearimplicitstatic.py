@@ -52,12 +52,7 @@ from edelweissfe.solvers.base.dirichlet import applyDirichletToStiffness
 from edelweissfe.solvers.base.nonlinearsolverbase import NonlinearSolverBase
 from edelweissfe.stepactions.base.stepactionbase import StepActionBase
 from edelweissfe.timesteppers.timestep import TimeStep
-from edelweissfe.utils.exceptions import (
-    CutbackRequest,
-    DivergingSolution,
-    IncrementFailed,
-    ReachedMaxIterations,
-)
+from edelweissfe.utils.exceptions import CutbackRequest, DivergingSolution, IncrementFailed, ReachedMaxIterations
 from edelweissfe.utils.fieldoutput import FieldOutputController
 from edelweissfe.utils.schema import schemaField
 
@@ -745,9 +740,8 @@ class NIST(NonlinearSolverBase):
         """
 
         iterationCounter = 0
-        # Newton iterations already spent when the CURRENT augmentation round
-        # started. Without an augmenting constraint it stays 0 and every check
-        # below is bit-identical to the un-augmented solver.
+        # Newton iterations already spent when the current augmentation round
+        # started; 0 without an augmenting constraint.
         iterationsAtAugmentationStart = 0
         # Set right after an augmentation: the constraint forces changed, so the
         # state is no longer equilibrated and a correction MUST be taken before the
@@ -828,10 +822,9 @@ class NIST(NonlinearSolverBase):
                 for dirichlet in dirichlets:
                     R[dirichlet.constrainedDofIndices] = 0.0
 
-                # Iterations spent in the CURRENT augmentation round. Without an
-                # augmenting constraint this equals iterationCounter and nothing
-                # changes; with one, every round is a Newton solve in its own right
-                # and must not inherit the relaxed late-iteration tolerance set of
+                # Iterations spent in the current augmentation round (iterationCounter
+                # without an augmenting constraint): every round is a Newton solve in its
+                # own right and must not inherit the relaxed late-iteration tolerances of
                 # its predecessors.
                 roundIterations = iterationCounter - iterationsAtAugmentationStart
 
@@ -839,8 +832,7 @@ class NIST(NonlinearSolverBase):
                 # correction - the warm-started multiplier estimate of a nested scheme at the
                 # beginning of an increment is the typical case. The equilibrium that would be
                 # accepted here is then not the one the assembled forces belong to, and a correction
-                # has to be taken first. With no augmenting constraint present the query is always
-                # False and this loop behaves bit for bit as it did before.
+                # has to be taken first.
                 stateChanged = justAugmented or any(
                     c.requiresCorrectionBeforeConvergence() for c in constraints.values()
                 )
@@ -855,11 +847,10 @@ class NIST(NonlinearSolverBase):
                 if converged:
                     # Outer (augmentation) loop. A constraint enforced by a nested
                     # scheme, such as an augmented Lagrangian, advances its multiplier
-                    # estimate only NOW, once the Newton-Raphson loop has converged and
-                    # not inside it, and equilibrium then has to be re-established with
-                    # the updated multipliers. Every other constraint inherits the no-op default
-                    # of ConstraintBase.augmentConstraint and breaks out here as
-                    # before.
+                    # estimate only once the Newton-Raphson loop has converged, and
+                    # equilibrium is then re-established with the updated multipliers.
+                    # Every other constraint inherits the no-op default of
+                    # ConstraintBase.augmentConstraint.
                     if not self.augmentConstraints(constraints):
                         break
 

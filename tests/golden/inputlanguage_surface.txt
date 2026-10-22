@@ -276,6 +276,23 @@ The theory, the sources and the deviations from them are documented on
     [tangentPenalty] The tangential penalty modulus eps_T of the stick predictor, used only for mu > 0: a traction per unit tangential slip, in the same unit as penaltyStiffness. It sets the elastic slip a sticking point accumulates, mu*p/eps_T at most. 0, the default, takes penaltyStiffness. The default follows eps_N as resolved, including its derivation from the stability limit under explicit dynamics. (<class 'float'>, default = 0.0)
     [slipTolerance] The elastic slip of the stick predictor as a fraction of the characteristic facet size h of the slave surface, used only for mu > 0 under the implicit solvers. A positive value replaces the constant tangentPenalty by the pressure-proportional eps_T = mu * p / (slipTolerance * h), so that a sticking point always slips elastically by up to slipTolerance * h, whatever its pressure -- Abaqus' penalty friction, whose default is 0.005. Recommended for real interfaces: with a constant eps_T the elastic range mu*p/eps_T of a lightly loaded point is far below one Newton correction, and the stick/slip state then chatters. 0, the default, keeps the constant modulus. (<class 'float'>, default = 0.0)
 ===== module documentation: edelweissfe.constraints.nodetodeformablesurfacepenalty =====
+A penalty based unilateral contact constraint between a deformable slave surface and a deformable
+master surface, both represented by flat contact facet elements (:mod:`~edelweissfe.elements.
+contactsurfaceelement`, typically created via :mod:`~edelweissfe.generators.surfaceelementgenerator`)
+or by whole element faces, which are cut into the facets the generator would cut from them.
+The slave surface's nodes act as the contact points; each slave node's penalty force is weighted by
+its tributary area (the sum of ``measure / nFacetNodes`` over its incident slave facets, evaluated
+in the reference configuration), so ``penalty`` has the meaning of an interface stiffness modulus
+per unit area, and the contact response converges under slave surface refinement.
+
+This constraint is a :class:`~edelweissfe.models.meshdependent.MeshDependent`: if either surface's
+source solid elements are refined mid-run (e.g. by :mod:`~edelweissfe.modelmodifiers.adaptivity.
+hadaptivity`), it regenerates that side's facets from the current (refined) ``*surface`` definition
+and rebinds its cached facet list/reference coordinates at its own next :meth:`updateConnectivity`
+tick -- no separate wiring needed. A retained slave node (same across the rebuild, by ``Node``
+identity) keeps its frictional history and augmented-Lagrange multiplier; a new one takes the
+frictional history interpolated from the old slave facet it lies on, with the parent face's shape
+functions (Wriggers 2006, Eq. 14.86), and starts without multiplier.
 [nodeToDeformableSurfacePenalty] A penalty based unilateral contact constraint preventing the nodes of a slave surface from penetrating a deformable master surface, both represented by contact facet elements.
   required arguments
     [slaveSurface] The element set forming the slave surface: contact facets from the surface element generator (Tria3ContactFacet/Line2ContactFacet) or whole element faces (CONQUAD4/CONQUAD8/CONLINE2/CONLINE3, e.g. from a mesh generator), which are cut into the facets the generator would cut from them; its nodes act as the contact points, penalty-weighted by their tributary areas. (<class 'str'>)
@@ -288,7 +305,7 @@ The theory, the sources and the deviations from them are documented on
     [mu] The Coulomb friction coefficient. 0, the default, is frictionless. A positive value adds the penalty-regularised Coulomb law shared by all contact formulations (see edelweissfe.utils.contactfriction): an elastic (stick) predictor from the converged tangential traction and the tangential slip increment, and a radial return onto the cone |t_T| <= mu * p. The implicit tangent is non-symmetric on slip, which is inherent to Coulomb friction. Requires sliding=small. Strongly recommended in combination with type=quadratic: the quadratic law's contact stiffness vanishes continuously at gap activation, keeping the frictional tangent continuous for slave nodes lifting off/touching down -- with type=linear, the activation stiffness jump scaled by mu makes Newton prone to limit-cycling at such events. (<class 'float'>, default = 0.0)
     [tangentPenalty] The tangential penalty modulus eps_T of the stick predictor, used only for mu > 0: a traction per unit tangential slip, in the same unit as penalty. It sets the elastic slip a sticking point accumulates, mu*p/eps_T at most. 0, the default, takes penalty. (<class 'float'>, default = 0.0)
     [slipTolerance] The elastic slip of the stick predictor as a fraction of the characteristic facet size h of the slave surface, used only for mu > 0 under the implicit solvers. A positive value replaces the constant tangentPenalty by the pressure-proportional eps_T = mu * p / (slipTolerance * h), so that a sticking point always slips elastically by up to slipTolerance * h, whatever its pressure -- Abaqus' penalty friction, whose default is 0.005. Recommended for real interfaces: with a constant eps_T the elastic range mu*p/eps_T of a lightly loaded point is far below one Newton correction, and the stick/slip state then chatters. 0, the default, keeps the constant modulus. (<class 'float'>, default = 0.0)
-    [augmentedLagrange] Augment the penalty force with a per-slave normal traction multiplier, updated once per increment on acceptance (incremental Uzawa: lambda <- min(0, lambda + penalty * A * g)). The multiplier is constant within an increment (zero tangent contribution), drives the penetration toward zero over the increments at a fixed penalty, and sharpens the friction cone mu * N. Requires sliding=small. (<class 'bool'>, default = False)
+    [augmentedLagrange] Augment the penalty force with a per-slave normal traction multiplier, updated once per increment on acceptance (incremental Uzawa: lambda <- min(0, lambda + f_pen), with f_pen the converged penalty force of the node). The multiplier is constant within an increment (zero tangent contribution), drives the penetration toward zero over the increments at a fixed penalty, and sharpens the friction cone mu * N. Requires sliding=small. (<class 'bool'>, default = False)
 ===== module documentation: edelweissfe.constraints.nodetodiscreterigidbodypenalty =====
 [nodeToDiscreteRigidBodyPenalty] A penalty based unilateral contact constraint preventing nodes of a node set from penetrating the surface of a discrete rigid body.
   required arguments
@@ -607,17 +624,13 @@ face-consistent per-node tributary area shares for the pressure-weighted contact
 weighting that best approximates a *serendipity* face's consistent nodal loads. See the
 :doc:`contact theory documentation </documentation/contacttheory>` for the full background.
 
-``facets=wholeFace`` selects the other consumer of these surfaces: instead of tiling each source
-face into flat triangles, it emits the face itself as a single curved, geometry-only contact
-element (:class:`~edelweissfe.elements.contactelement.element.ContactElement`, ``CONQUAD4`` /
-``CONQUAD8`` / ``CONLINE2`` / ``CONLINE3``), for use as the non-mortar or mortar side of
-segment-to-segment mortar contact. A segment-to-segment method integrates the contact condition
-over the overlap of two curved faces using each face's own shape functions, so splitting a face
-into flat pieces beforehand would discard exactly the geometry it integrates over, and the
-tributary-area weighting the triangulated path assigns would be unused: the mortar weights follow
-from that integration instead. Faces are emitted in the canonical parent-face node ordering, whose
-winding is the source element's own outward one, so the resulting element normals need no
-orientation correction.
+``facets=wholeFace`` emits instead each source face itself as a single curved, geometry-only
+contact element (:class:`~edelweissfe.elements.contactelement.element.ContactElement`, ``CONQUAD4`` /
+``CONQUAD8`` / ``CONLINE2`` / ``CONLINE3``). The mortar contact requires such surfaces, since it
+integrates over the overlap of two curved faces with their own shape functions; the node- and
+segment-based contacts accept them as well and cut them into the facets this generator would cut
+(:func:`asFacets`). Faces are emitted in the canonical parent-face node ordering, whose winding is the
+source element's own outward one, so the element normals need no orientation correction.
 
 The underlying :func:`buildContactFacets` is idempotent and re-runnable, so a
 :class:`~edelweissfe.models.meshdependent.MeshDependent` consumer of these facets (e.g.
@@ -638,7 +651,7 @@ refinement) as well as at setup time; the recipe is recorded in ``model.contactF
   optional arguments
     [triangulation] The facet triangulation of higher-order element faces: 'corner' (linear corner-node subset only; exact for straight-edged meshes) or 'midside' (triangulation of the full face boundary including midside nodes; strictly more accurate for curved faces). Linear element faces are unaffected by this option. (<class 'str'>, default = corner)
     [nodalWeights] The per-node contact weighting of the generated facets: 'facetConsistent' (the consistent nodal loads of the flat facet tiling itself) or 'serendipityOptimal' (the resultant-exact, non-negative weighting that minimises the mismatch against a quadratic face's own consistent nodal loads, by reassigning each corner node's share to its two adjacent midside nodes -- the modified shape functions of Puso, Laursen & Solberg, CMAME 2008). Reduces the spurious corner/midside load pattern on hexa20 contact surfaces by a third, at the price of corner nodes ceasing to be contact points -- but NO measured benefit has been demonstrated, because a quadratic face under near-uniform pressure lifts its corner nodes off anyway, which makes their weight moot; see the contact theory documentation. Requires triangulation='midside'; linear element faces are unaffected by this option. (<class 'str'>, default = facetConsistent)
-    [facets] What to emit per source face: 'triangulated' (flat Tria3/Line2 facets tiling the face, for node-to-surface penalty contact) or 'wholeFace' (the face itself as one curved CONQUAD4/CONQUAD8/CONLINE2/CONLINE3 contact element, for segment-to-segment mortar contact, which integrates over the overlap of two curved faces using their own shape functions and would lose that geometry to a flat tiling). 'wholeFace' accepts neither triangulation nor nodalWeights: a face kept whole is not tiled, and its contact weights follow from the integration rather than from a tiling. (<class 'str'>, default = triangulated)
+    [facets] What to emit per source face: 'triangulated' (flat Tria3/Line2 facets tiling the face) or 'wholeFace' (the face itself as one curved CONQUAD4/CONQUAD8/CONLINE2/CONLINE3 contact element). The mortar contact needs 'wholeFace'; the node- and segment-based contacts accept both. 'wholeFace' accepts neither triangulation nor nodalWeights: a face kept whole is not tiled. (<class 'str'>, default = triangulated)
 ===== module documentation: edelweissfe.modelmodifiers.adaptivity.hadaptivity =====
 Dynamic h-adaptivity model modifier for HEX20 hanging-node AMR.
 [hadaptivity] Dynamic hanging-node h-adaptivity model modifier for HEX20 elements.

@@ -520,8 +520,8 @@ elLibrary.update(
     }
 )
 
-# Geometry-only contact elements of the mortar contact (elements.contactelement): no integration
-# points, no material; only the node count, the spatial dimension and the Ensight type differ.
+# Geometry-only contact elements (elements.contactelement), whole faces of a contact surface: no
+# integration points, no material; only the node count, the spatial dimension and the Ensight type differ.
 elLibrary.update(
     {
         elementType: dict(

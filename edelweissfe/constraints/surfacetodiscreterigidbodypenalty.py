@@ -31,37 +31,23 @@ from dataclasses import dataclass
 import numpy as np
 
 from edelweissfe.constraints.base.constraintbase import ConstraintBase
-from edelweissfe.constraints.base.contactpointsonslavesurface import (
-    ContactPointsOnSlaveSurface,
-)
-from edelweissfe.constraints.base.forcesonlyexplicitevaluation import (
-    ForcesOnlyExplicitEvaluation,
-)
+from edelweissfe.constraints.base.contactpointsonslavesurface import ContactPointsOnSlaveSurface
+from edelweissfe.constraints.base.forcesonlyexplicitevaluation import ForcesOnlyExplicitEvaluation
 from edelweissfe.constraints.base.frozencontactsearch import FrozenContactSearch
-from edelweissfe.constraints.base.penaltylaw import (
-    normalPenaltyForce,
-    validatedContactType,
-)
+from edelweissfe.constraints.base.penaltylaw import normalPenaltyForce, validatedContactType
 from edelweissfe.constraints.base.rigidbodycontactstiffness import (
     RigidBodyContactStiffnessView,
     fillRigidBodyContactIndices,
     rigidBodyContactContributionSize,
 )
-from edelweissfe.constraints.base.surfacecontactpenaltyschema import (
-    SurfaceContactPenaltySchema,
-)
+from edelweissfe.constraints.base.surfacecontactpenaltyschema import SurfaceContactPenaltySchema
 from edelweissfe.journal.journal import Journal
 from edelweissfe.models.femodel import FEModel
 from edelweissfe.models.meshdependent import MeshDependent
 from edelweissfe.rigidbodies.discreterigidbody import DiscreteRigidBody
 from edelweissfe.sets.elementset import ElementSet
 from edelweissfe.timesteppers.timestep import TimeStep
-from edelweissfe.utils.facetcontactgeometry import (
-    candidatePairs,
-    closestFacetCandidates,
-    facetClosestPoints,
-    rowDot,
-)
+from edelweissfe.utils.facetcontactgeometry import candidatePairs, closestFacetCandidates, facetClosestPoints, rowDot
 from edelweissfe.utils.rotations import skewMatrix
 from edelweissfe.utils.schema import buildSchemaFromOptions, schemaField
 
@@ -241,8 +227,6 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         self.searchDistance = configuration.searchDistance
         self.integration = configuration.integration
         self.gaussPointsPerDirection = configuration.gaussPointsPerDirection
-        if not 1 <= self.gaussPointsPerDirection <= 4:
-            raise ValueError(f"gaussPointsPerDirection must be 1 to 4, got {self.gaussPointsPerDirection}.")
 
         # Validates the rigid surface (closed, triangles only, no zero-area triangles) right away,
         # rather than at the first contact search.
@@ -251,8 +235,9 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
         self._buildFromSlaveSurface(slaveSurface)
 
         self.journal.message(
-            f"contact '{self.name}': {self.nPoints} points ({self.slave.nCells} slave cells, integration={self.integration}, x "
-            f"{self.slave.pointsPerCell} quadrature points) against rigid body '{rigidBody.name}' "
+            f"contact '{self.name}': {self.nPoints} points ({self.slave.nCells} slave cells, "
+            f"integration={self.integration}, x {self.slave.pointsPerCell} quadrature points) against rigid body "
+            f"'{rigidBody.name}' "
             f"({len(self._rigidTriangles)} triangles), type={self.type}",
             self.identification,
         )
@@ -438,8 +423,8 @@ class Constraint(FrozenContactSearch, ForcesOnlyExplicitEvaluation, ConstraintBa
             "slaveFacets": np.array([facet.elNumber for facet in self.slave.facets], dtype=np.int64),
             "nQuadraturePoints": np.array([self.nQuadraturePoints], dtype=np.int64),
             "nRigidTriangles": np.array([len(self._rigidTriangles)], dtype=np.int64),
-            # The points of a triangulated slave surface are weighted with the parent face's surface
-            # Jacobian, which a checkpoint written before does not reflect.
+            # Marks the points of a triangulated slave surface as weighted with the parent face's surface
+            # Jacobian, so that a checkpoint with the flat facet weights is refused.
             "subcellWeights": np.array([1], dtype=np.int64),
         } | (
             {"gaussPointsPerDirection": np.array([self.gaussPointsPerDirection], dtype=np.int64)}

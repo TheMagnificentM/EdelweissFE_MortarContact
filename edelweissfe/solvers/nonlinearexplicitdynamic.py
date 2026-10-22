@@ -2077,18 +2077,14 @@ class NED(NonlinearSolverBase):
             1,
         )
 
-    def getCriticalTimeStepForExplicitDynamics(
-        self, model: FEModel, U: DofVector, lumpedMass: DofVector = None
-    ) -> float:
+    def getCriticalTimeStepForExplicitDynamics(self, model: FEModel, U: DofVector, lumpedMass: DofVector) -> float:
         """Compute the critical time step for explicit dynamics.
 
-        The minimum over the elements AND over the constraints. The element bound is the CFL
+        The minimum over the elements and over the constraints. The element bound is the CFL
         condition of the mesh; the constraint bound is what a constraint acting through a
-        stiffness -- a penalty contact -- adds on top of it. Every constraint that does not
-        estimate its own bound inherits ``inf`` from
-        :meth:`~edelweissfe.constraints.base.constraintbase.ConstraintBase.computeCriticalTimeStepForExplicitDynamics`
-        and therefore leaves this unchanged, so the element bound alone remains the answer for
-        every model that had one before.
+        stiffness -- a penalty contact -- adds on top of it. A constraint that does not estimate its
+        own bound inherits ``inf`` from
+        :meth:`~edelweissfe.constraints.base.constraintbase.ConstraintBase.computeCriticalTimeStepForExplicitDynamics`.
 
         Parameters
         ----------
@@ -2098,7 +2094,7 @@ class NED(NonlinearSolverBase):
             The current solution.
         lumpedMass
             The unfolded lumped mass, handed to the constraints so they can weigh their own
-            stiffness against the inertia it acts on. Omitted, the constraints are not asked.
+            stiffness against the inertia it acts on.
 
         Returns
         -------
@@ -2112,9 +2108,6 @@ class NED(NonlinearSolverBase):
             elementTimeStep = element.computeCriticalTimeStepForExplicitDynamics(U[element])
             if elementTimeStep < minTimeStep:
                 minTimeStep = elementTimeStep
-
-        if lumpedMass is None:
-            return minTimeStep
 
         elementTimeStep = minTimeStep
         for name, constraint in model.constraints.items():

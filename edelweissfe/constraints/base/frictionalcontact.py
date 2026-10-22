@@ -25,19 +25,19 @@
 #  The full text of the license can be found in the file LICENSE.md at
 #  the top level directory of EdelweissFE.
 #  ---------------------------------------------------------------------
-
-import numpy as np
-
-from edelweissfe.timesteppers.timestep import TimeStep
-
 """
 The plumbing a penalty contact constraint between facet surfaces needs around the Coulomb law it
 shares with all contact formulations (:class:`~edelweissfe.utils.contactfriction.CoulombFriction`):
-refusing an explicit integration the law cannot honour, carrying the history into the new frozen
+refusing an explicit integration the law cannot honour, counting the Newton iterations of the
+anti-chattering rule, evaluating the law at a contact point, carrying the history into the new frozen
 tangent planes at a connectivity update, promoting it on acceptance, and the per-point results.
 The law itself and its state live in ``self._friction``; this mixin only connects it to the
 constraint and to its journal.
 """
+
+import numpy as np
+
+from edelweissfe.timesteppers.timestep import TimeStep
 
 
 class FrictionalContact:
@@ -69,6 +69,49 @@ class FrictionalContact:
 
         self._friction.checkExplicitIntegrability()
         super().applyConstraintExplicit(U_np, dU, PExt, timeStep)
+
+    def _beginFriction(self, timeStep: TimeStep):
+        """Count the Newton iteration of the current increment attempt, at the start of an assembly
+        (see :meth:`~edelweissfe.utils.contactfriction.CoulombFriction.beginEvaluation`)."""
+
+        if self._friction.enabled:
+            self._friction.beginEvaluation(timeStep)
+
+    def _endFriction(self):
+        """Apply the anti-chattering rule of the shared law, once all points of an assembly were
+        evaluated (see :meth:`~edelweissfe.utils.contactfriction.CoulombFriction.freezeIfChattering`)."""
+
+        if self._friction.enabled:
+            self._friction.freezeIfChattering(self._friction.iteration)
+
+    def _pointFriction(
+        self,
+        k: int,
+        c: np.ndarray,
+        area: float,
+        normal: np.ndarray,
+        normalForce: float,
+        stiffness: float,
+        w: np.ndarray,
+        dU: np.ndarray,
+        computeTangent: bool,
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """Friction at the contact point ``k`` of a penalty constraint: the point with the coefficients
+        ``c``, the measure ``area`` and the frozen ``normal``, carrying the normal force ``normalForce``
+        (negative in contact) with ``d normalForce / dg = stiffness`` along the gap gradient ``w``. Its
+        pressure is ``p = -normalForce / area`` with ``dp/dU = -stiffness * w / area``."""
+
+        return self._friction.evaluatePoint(
+            k,
+            c,
+            area,
+            normal,
+            -normalForce / area,
+            (-stiffness / area) * w,
+            dU,
+            self.penalty,
+            computeTangent=computeTangent,
+        )
 
     def _setFrictionCharacteristicLength(self, h: float):
         """Fix the elastic slip of ``slipTolerance`` from the characteristic facet size ``h``."""

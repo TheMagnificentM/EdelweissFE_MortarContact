@@ -509,7 +509,7 @@ def parentFaceClosestPoints(
         xiNew = np.clip(xi + step, -1.0, 1.0)
         small = np.linalg.norm(xiNew - xi, axis=1) <= tolerance
         xi = xiNew
-        converged |= small & ~converged & (np.linalg.norm(step, axis=1) <= tolerance)
+        converged |= small & (np.linalg.norm(step, axis=1) <= tolerance)
 
     N = parentFaceShapeFunctionsAt(faceType, xi)
     return xi, np.einsum("pk,pkj->pj", N, nodeCoords), converged

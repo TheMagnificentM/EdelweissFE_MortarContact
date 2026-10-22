@@ -39,17 +39,13 @@ face-consistent per-node tributary area shares for the pressure-weighted contact
 weighting that best approximates a *serendipity* face's consistent nodal loads. See the
 :doc:`contact theory documentation </documentation/contacttheory>` for the full background.
 
-``facets=wholeFace`` selects the other consumer of these surfaces: instead of tiling each source
-face into flat triangles, it emits the face itself as a single curved, geometry-only contact
-element (:class:`~edelweissfe.elements.contactelement.element.ContactElement`, ``CONQUAD4`` /
-``CONQUAD8`` / ``CONLINE2`` / ``CONLINE3``), for use as the non-mortar or mortar side of
-segment-to-segment mortar contact. A segment-to-segment method integrates the contact condition
-over the overlap of two curved faces using each face's own shape functions, so splitting a face
-into flat pieces beforehand would discard exactly the geometry it integrates over, and the
-tributary-area weighting the triangulated path assigns would be unused: the mortar weights follow
-from that integration instead. Faces are emitted in the canonical parent-face node ordering, whose
-winding is the source element's own outward one, so the resulting element normals need no
-orientation correction.
+``facets=wholeFace`` emits instead each source face itself as a single curved, geometry-only
+contact element (:class:`~edelweissfe.elements.contactelement.element.ContactElement`, ``CONQUAD4`` /
+``CONQUAD8`` / ``CONLINE2`` / ``CONLINE3``). The mortar contact requires such surfaces, since it
+integrates over the overlap of two curved faces with their own shape functions; the node- and
+segment-based contacts accept them as well and cut them into the facets this generator would cut
+(:func:`asFacets`). Faces are emitted in the canonical parent-face node ordering, whose winding is the
+source element's own outward one, so the element normals need no orientation correction.
 
 The underlying :func:`buildContactFacets` is idempotent and re-runnable, so a
 :class:`~edelweissfe.models.meshdependent.MeshDependent` consumer of these facets (e.g.
@@ -70,19 +66,13 @@ from dataclasses import dataclass
 import numpy as np
 
 from edelweissfe.config.elementlibrary import getElementClass
-from edelweissfe.elements.contactsurfaceelement import (
-    Line2ContactFacet,
-    Tria3ContactFacet,
-)
+from edelweissfe.elements.contactsurfaceelement import Line2ContactFacet, Tria3ContactFacet
 from edelweissfe.generators.base.generatorbase import GeneratorBase
 from edelweissfe.journal.journal import Journal
 from edelweissfe.models.femodel import FEModel
 from edelweissfe.sets.elementset import ElementSet
 from edelweissfe.sets.nodeset import NodeSet
-from edelweissfe.utils.parentfacegeometry import (
-    PARENT_FACE_OF_CONTACT_ELEMENT,
-    PARENT_FACE_PARAMETRIC_COORDS,
-)
+from edelweissfe.utils.parentfacegeometry import PARENT_FACE_OF_CONTACT_ELEMENT, PARENT_FACE_PARAMETRIC_COORDS
 from edelweissfe.utils.schema import schemaField
 
 # Face-node-ordering tables, 0-indexed, reduced to each element type's linear corner nodes. Each
@@ -179,19 +169,12 @@ _MIDSIDE_FACE_TABLES = {
 }
 
 
-# Contact element type emitted per canonical parent face under facets='wholeFace'. Keyed by the
-# parent face type rather than by the source element's ensight type, because that is the property
-# the emitted element actually has to match: a face's node count and shape functions are a property
-# of the face, and two different solid types can present the same one. The ordering canonicalParentFace
-# returns -- corner cycle first, then the midside node of each corner-to-corner edge in the same
-# cycle order -- is the node ordering these element types themselves use, so the indices can be
-# applied directly with no permutation.
-# One contact element type per parent face type. The table is shorter than the set of contact
-# element types the mortar constraint supports, and deliberately so: a whole-face contact element is
-# a face of a solid element, so only the faces EdelweissFE's solid elements actually have can appear
-# here. CONQUAD9, CONTRI3 and CONTRI6 would need a 27-node hexahedron and tetrahedra, which the
-# element library does not have; the constraint supports them so that it need not be revisited when
-# one is added, and until then they are reachable only from a hand-written element set.
+# Contact element type emitted per canonical parent face under facets='wholeFace'. The ordering
+# canonicalParentFace returns -- corner cycle first, then the midside node of each corner-to-corner
+# edge in the same cycle order -- is the node ordering of these element types, so the indices apply
+# without permutation. Only the faces of EdelweissFE's solid elements appear here: CONQUAD9, CONTRI3
+# and CONTRI6, which the mortar contact supports, would need 27-node hexahedra and tetrahedra and are
+# reachable only from a hand-written element set.
 _WHOLE_FACE_ELEMENT_TYPES = {
     "line2": "CONLINE2",
     "line3": "CONLINE3",
@@ -314,6 +297,13 @@ def facetsOfWholeFace(contactElement) -> list:
     return facets
 
 
+def isWholeFaceElement(element) -> bool:
+    """Whether a surface element is a whole element face (a curved ``CON*`` contact element of
+    ``facets=wholeFace``) rather than a flat facet cut from one (``facets=triangulated``)."""
+
+    return not hasattr(element, "parentFaceType") and getattr(element, "elType", None) in PARENT_FACE_OF_CONTACT_ELEMENT
+
+
 def asFacets(elements: list, setName: str) -> list:
     """The elements of a contact surface as flat facets: facets as they are, whole-face contact
     elements cut by :func:`facetsOfWholeFace`. A surface mixing both is rejected.
@@ -326,7 +316,7 @@ def asFacets(elements: list, setName: str) -> list:
         The name of their element set, for the error message.
     """
 
-    wholeFace = [getattr(el, "elType", None) in PARENT_FACE_OF_CONTACT_ELEMENT for el in elements]
+    wholeFace = [isWholeFaceElement(el) for el in elements]
     if not any(wholeFace):
         return elements
     if not all(wholeFace):
@@ -540,10 +530,8 @@ def buildContactFacets(
         )
 
     if facets == "wholeFace":
-        # Both remaining options describe how a face is cut up and how the resulting pieces share
-        # the face's area between their nodes. Neither question arises when the face is kept whole,
-        # and its weights come from the contact integration rather than from a tiling. Accepting
-        # them silently would leave the user believing a setting took effect that cannot.
+        # triangulation and nodalWeights describe how a face is cut up and how the pieces share its
+        # area; a face kept whole is neither, so a non-default value is refused rather than ignored.
         inapplicable = [
             name
             for name, value, default in (
@@ -640,9 +628,8 @@ def buildContactFacets(
     for faceNumber, elementSet in surfaceDef.items():
         for sourceElement in elementSet:
             if facets == "wholeFace":
-                # canonicalParentFace already raises for an unknown element type or face number,
-                # and already returns the face in the node ordering the contact element expects,
-                # so there is nothing left to do but instantiate it.
+                # canonicalParentFace raises for an unknown element type or face number and returns the
+                # face in the node ordering of the contact element.
                 parentFaceType, parentFaceIndices = canonicalParentFace(sourceElement.ensightType, faceNumber)
                 contactElementType = _WHOLE_FACE_ELEMENT_TYPES.get(parentFaceType)
                 if contactElementType is None:
@@ -789,12 +776,10 @@ class SurfaceElementGeneratorSchema:
     )
     facets: str = schemaField(
         description="What to emit per source face: 'triangulated' (flat Tria3/Line2 facets tiling "
-        "the face, for node-to-surface penalty contact) or 'wholeFace' (the face itself as one "
-        "curved CONQUAD4/CONQUAD8/CONLINE2/CONLINE3 contact element, for segment-to-segment mortar "
-        "contact, which integrates over the overlap of two curved faces using their own shape "
-        "functions and would lose that geometry to a flat tiling). 'wholeFace' accepts neither "
-        "triangulation nor nodalWeights: a face kept whole is not tiled, and its contact weights "
-        "follow from the integration rather than from a tiling.",
+        "the face) or 'wholeFace' (the face itself as one curved CONQUAD4/CONQUAD8/CONLINE2/CONLINE3 "
+        "contact element). The mortar contact needs 'wholeFace'; the node- and segment-based contacts "
+        "accept both. 'wholeFace' accepts neither triangulation nor nodalWeights: a face kept whole is "
+        "not tiled.",
         dtype=str,
         default="triangulated",
     )
