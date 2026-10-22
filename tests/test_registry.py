@@ -218,11 +218,10 @@ def test_element_category_covers_every_element_type_exactly():
 
     assert registeredTypes - libraryTypes == set(), "registered element types absent from elLibrary"
     assert libraryTypes - registeredTypes == set(), "elLibrary element types absent from the registry"
-    # 42 Formulierungselemente von upstream plus die sieben Kontaktfacetten dieses
-    # Branches (CONLINE2/3, CONQUAD4/8/9, CONTRI3/6). Letztere tragen weder
-    # Freiheitsgrade noch Quadratur (nInt = 0) und beschreiben allein die Topologie
-    # der Kontaktflaechen; sie stehen trotzdem in beiden Tabellen, weil sie ueber
-    # dieselbe *element-Anweisung der Eingabedatei erzeugt werden.
+    # 42 formulation elements plus the seven geometry-only contact elements (CONLINE2/3,
+    # CONQUAD4/8/9, CONTRI3/6). These carry neither degrees of freedom nor quadrature (nInt = 0)
+    # and describe the topology of contact surfaces only; they are in both tables because they are
+    # created through the same *element keyword.
     assert len(registeredTypes) == 42 + 7
 
 
