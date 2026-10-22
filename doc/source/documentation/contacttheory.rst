@@ -1,13 +1,18 @@
 Contact mechanics: theory
 =========================
 
-This page documents the theory of the node-to-deformable-surface contact stack implemented in
-EdelweissFE: the discretization of contact surfaces into flat facets
+This page documents the theory of the penalty contacts between a slave surface and a deformable or
+rigid master surface implemented in EdelweissFE: the node-to-surface contact
+(:mod:`~edelweissfe.constraints.nodetodeformablesurfacepenalty`), the integrated
+(Gauss-point-to-surface) contact (:mod:`~edelweissfe.constraints.surfacetodeformablesurfacepenalty`)
+and its rigid-body variant (:mod:`~edelweissfe.constraints.surfacetodiscreterigidbodypenalty`). It
+covers the discretization of contact surfaces into flat facets
 (:mod:`~edelweissfe.elements.contactsurfaceelement`,
-:mod:`~edelweissfe.generators.surfaceelementgenerator`), the gap kinematics in their finite-sliding
-and small-sliding variants (:mod:`~edelweissfe.utils.facetcontactgeometry`,
-:mod:`~edelweissfe.constraints.nodetodeformablesurfacepenalty`), the penalty and augmented-Lagrange
-normal contact laws, Coulomb friction, and the integration into the implicit solver. Every formula
+:mod:`~edelweissfe.generators.surfaceelementgenerator`) or whole element faces, the gap kinematics
+in their finite-sliding and small-sliding variants (:mod:`~edelweissfe.utils.facetcontactgeometry`),
+the penalty and augmented-Lagrange normal contact laws, the Coulomb friction law shared with the
+mortar contact (:doc:`mortartheory`), and the integration into the implicit and explicit solvers.
+Every formula
 stated here is implemented literally in the referenced modules and has been verified against
 independent finite differences, symbolic differentiation, or analytic benchmark solutions; the
 verification methodology is summarized at the end.
@@ -104,14 +109,32 @@ the master surface is computed once per increment from the last converged config
 **frozen for all Newton iterations of that increment**:
 
 1. For every master facet, the true closest point of the *closed* facet domain is computed --
-   interior, edge, or vertex -- via the barycentric region classification (Ericson's real-time
+   interior, edge, or vertex -- via the classification into the triangle's Voronoi feature regions (Ericson's real-time
    collision detection test), yielding clamped, non-negative weights
    :math:`\bar{N}_a \geq 0,\; \sum_a \bar{N}_a = 1`. The facet with the smallest true distance is
    assigned. Because the *closed* domain is used, there is no dead zone at facet seams: a node
    beyond a facet's edge clamps to that edge or vertex and remains loadable.
 
-2. The assigned facet's unit normal :math:`\bar{\boldsymbol{n}}` and the clamped weights
-   :math:`\bar{N}_a` are frozen. The gap of the current iterate is then
+2. The clamped weights :math:`\bar{N}_a` and a unit normal :math:`\bar{\boldsymbol{n}}` are
+   frozen. The normal is the assigned facet's, except where the closest point lies on an edge or
+   vertex in the interior of the master surface, shared by several facets. There every one of them
+   returns the same closest point at the same distance, so the projection is not unique, and each
+   facet normal would give a gap of its own (Wriggers 2006, Remark 4.1, p. 60, and Fig. 10.8,
+   p. 319). For a surface that is only :math:`C^0`, the projection has to include edges and corner
+   points (Konyukhov & Schweizerhof 2008). The normal is then taken along the distance vector, as
+   for a node-to-edge or node-to-vertex contact element (Wriggers 2006, Eqs. 9.123 and 9.131),
+
+   .. math::
+
+      \bar{\boldsymbol{n}} = \pm \frac{\boldsymbol{x}_s - \bar{\boldsymbol{x}}}{\| \boldsymbol{x}_s -
+      \bar{\boldsymbol{x}} \|},
+
+   oriented like the facet normal, so that the gap is the signed distance to the surface whichever
+   of the facets is assigned, and continuous across the edge. Facets within :math:`10^{-10} h` of
+   the smallest distance count as equally close (:math:`h` the mean slave facet size). On the
+   boundary of the master surface, where a point is beside the surface rather than over it, the
+   facet normal is kept, and so it is with ``nodalWeights=serendipityOptimal``, whose transformed
+   weights move the point within the facet plane. The gap of the current iterate is then
 
    .. math::
 
@@ -246,96 +269,171 @@ estimate.
 Coulomb friction
 ~~~~~~~~~~~~~~~~
 
+All contact formulations of EdelweissFE -- node-to-surface, integrated (Gauss-point-to-surface) and
+mortar (:doc:`mortartheory`) -- use **one** friction law, implemented once in
+:mod:`~edelweissfe.utils.contactfriction`. A friction law is a statement about a *point* of the
+interface: given its tangential relative displacement in the increment, its normal pressure and its
+frictional history, it returns a tangential traction. How the point is chosen and how its pressure is
+enforced does not enter. The formulations differ only in what a point is and how it is coupled to the
+nodes.
+
 Interface plasticity and the necessity of state
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Coulomb friction is rate-independent plasticity on the interface: yield function
-:math:`\phi = \lVert \boldsymbol{t}_T \rVert - \mu N \leq 0`, slip as the plastic flow, and the
-tangential force as the stress-like internal variable. The interface force is *not* a function of
-the current configuration -- two loading histories ending at the identical displacement field
-carry different locked-in tangential forces (hysteresis is precisely this memory). The converged
-tangential force :math:`\boldsymbol{t}_T^{(n)}` per slave is the minimal state that makes the
-incremental problem well-posed. A stateless incremental law (:math:`\boldsymbol{t}_T = k_T \Delta
-\boldsymbol{u}_T`, reset each increment) would make a stuck block creep by :math:`\tau / k_T`
-*per increment* under constant sub-limit shear -- a response proportional to the number of
-increments, never converging under time-step refinement.
+:math:`\phi = \lVert \boldsymbol{t}_T \rVert - \mu p \leq 0`, slip as the plastic flow, and the
+tangential traction as the stress-like internal variable. The interface traction is *not* a function
+of the current configuration -- two loading histories ending at the identical displacement field
+carry different locked-in tangential tractions (hysteresis is precisely this memory). The converged
+traction :math:`\boldsymbol{t}_T^{(n)}` per contact point is the minimal state that makes the
+incremental problem well-posed. A stateless incremental law (:math:`\boldsymbol{t}_T = \varepsilon_T
+\Delta \boldsymbol{u}_T`, reset each increment) would make a stuck block creep by :math:`\tau /
+\varepsilon_T` *per increment* under constant sub-limit shear -- a response proportional to the
+number of increments, never converging under time-step refinement.
 
-Storing the *force* (rather than accumulated slip) is deliberate: total relative slip is not even
-well-defined across increments here -- the frozen frame rotates and the assigned facet changes as
-a node slides across the master surface -- whereas the force transfers cleanly (it is projected
-onto the new tangent plane at each connectivity update, and zeroed when contact is lost).
+The history is stored as a **traction** (force per area, in global components), not as a nodal force
+and not as accumulated slip. Total relative slip is not well-defined across increments -- the frozen
+frame rotates and the contact partner changes as a point slides -- whereas the traction transfers
+cleanly; and unlike a nodal force it does not depend on the interface measure a formulation assigns to
+a point, so it survives a mesh refinement that changes tributary areas.
+
+One point, four ingredients
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Every formulation maps each of its contact points onto the same four quantities: the coefficients
+:math:`\boldsymbol{c}` of the point's relative position over its local nodes
+(:math:`\boldsymbol{u}_{rel} = \sum_a c_a \boldsymbol{u}_a`, slave nodes positive, master nodes
+negative), the interface measure :math:`A` the point stands for, its frozen normal
+:math:`\bar{\boldsymbol{n}}`, and its normal pressure :math:`p \geq 0` with the gradient
+:math:`\boldsymbol{q} = \partial p / \partial \boldsymbol{U}`:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 22 28 28
+
+   * - formulation
+     - point
+     - :math:`\boldsymbol{c}`
+     - :math:`A`, :math:`p`
+   * - node-to-surface
+     - slave node
+     - :math:`[1, -\bar{N}_1, \dots, -\bar{N}_k]`
+     - tributary area, :math:`p = -f_n / A`
+   * - integrated
+     - slave quadrature point
+     - :math:`[N^s, -N^m]`
+     - :math:`J_q`, :math:`p = -f_n / J_q`
+   * - mortar
+     - non-mortar node :math:`I`
+     - :math:`[D_{IK}, -C_{IJ}] / \lvert D_{II} \rvert`
+     - :math:`\lvert D_{II} \rvert`, nodal pressure
+
+With these, for any formulation, the pointwise slip increment, the nodal forces and the tangent are
+
+.. math::
+
+   \Delta \boldsymbol{u}_T = \bar{\boldsymbol{P}} (\boldsymbol{c}^T \otimes \boldsymbol{I})\,
+   d\boldsymbol{U}, \qquad
+   \boldsymbol{P}^{ext} \mathrel{+}= A\, \boldsymbol{c} \otimes \boldsymbol{t}_T, \qquad
+   \boldsymbol{K} \mathrel{+}= -A\, (\boldsymbol{c} \otimes \boldsymbol{c}^T) \otimes
+   \frac{\partial \boldsymbol{t}_T}{\partial \Delta \boldsymbol{u}_T}
+   - A\, \Big(\boldsymbol{c} \otimes \frac{\partial \boldsymbol{t}_T}{\partial p}\Big)
+   \otimes \boldsymbol{q},
+
+with :math:`\bar{\boldsymbol{P}} = \boldsymbol{I} - \bar{\boldsymbol{n}} \otimes \bar{\boldsymbol{n}}`
+and :math:`d\boldsymbol{U}` the increment since the last converged state, computed fresh in every
+iteration (nothing accumulates across Newton iterations, which also makes cutbacks state-safe).
 
 Predictor--corrector (radial return)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-All frictional kinematics live in the frozen small-sliding frame (``mu > 0`` requires
-``sliding=small``). With the tangent-plane projector :math:`\bar{\boldsymbol{P}} = \boldsymbol{I}
-- \bar{\boldsymbol{n}} \otimes \bar{\boldsymbol{n}}` and the incremental relative displacement
-:math:`\Delta \boldsymbol{u}_{rel} = \boldsymbol{G}\, \Delta \boldsymbol{q}` (:math:`\Delta`
-relative to the last converged state, i.e. computed from the solver's :math:`d\boldsymbol{U}`
-fresh in every iteration -- nothing accumulates across Newton iterations, which also makes
-cutbacks automatically state-safe):
-
 .. math::
 
-   \boldsymbol{t}^{trial} &= \boldsymbol{t}_T^{(n)} - k_T\, \bar{\boldsymbol{P}}\, \Delta
-   \boldsymbol{u}_{rel}, \qquad k_T = t\, A_s \quad (\texttt{tangentPenalty}\ t), \\[4pt]
+   \boldsymbol{t}^{trial} &= \bar{\boldsymbol{P}}\, \boldsymbol{t}_T^{(n)} - \varepsilon_T\,
+   \Delta \boldsymbol{u}_T, \\[4pt]
    \boldsymbol{t}_T &= \begin{cases} \boldsymbol{t}^{trial}, & \lVert \boldsymbol{t}^{trial}
-   \rVert \leq \mu N \quad \text{(stick)} \\[2pt] \mu N \, \dfrac{\boldsymbol{t}^{trial}}{\lVert
+   \rVert \leq \mu p \quad \text{(stick)} \\[2pt] \mu p \, \dfrac{\boldsymbol{t}^{trial}}{\lVert
    \boldsymbol{t}^{trial} \rVert}, & \text{otherwise (slip: radial return onto the cone)}
    \end{cases}
 
-with :math:`N = -f_n \geq 0` the current normal force (multiplier-augmented if AL is active).
-The force on the slave node is :math:`\boldsymbol{t}_T` and the facet nodes receive the reaction
-:math:`-\bar{N}_a \boldsymbol{t}_T`, i.e. the assembly is :math:`\boldsymbol{P}^{ext}
-\mathrel{+}= \boldsymbol{G}^T \boldsymbol{t}_T = \boldsymbol{c} \otimes \boldsymbol{t}_T`.
+This is the penalty-regularised Coulomb law with the converged traction as history (Simo & Laursen
+1992, Eqs. 3.9 and 3.12--3.14) and the radial return onto the cone (Wriggers 2006, Section 10.5.2,
+Eqs. 10.121--10.126 and Box 14). The tangential modulus :math:`\varepsilon_T` is a traction per unit
+slip: constant (``tangentPenalty``, by default the formulation's normal penalty modulus, one
+parameter for normal contact and stick as in Wriggers 2006, p. 236) or, with ``slipTolerance``,
+proportional to the pressure, :math:`\varepsilon_T = \mu p / (\texttt{slipTolerance}\, h)` with
+:math:`h` the mean facet size of the slave surface -- the SLIP TOLERANCE of Abaqus/Standard, the
+ratio of the allowable elastic slip to a characteristic contact surface face dimension, whose
+default 0.005 it shares (Abaqus Keywords Reference, ``*FRICTION``). A sticking point then
+slips elastically by up to :math:`\texttt{slipTolerance}\, h` however lightly it is loaded, which
+keeps the stick/slip state from being decided by noise on lightly loaded interfaces.
+``slipTolerance`` is refused under explicit dynamics, where a pressure-dependent modulus is not
+bounded by the stability limit.
 
-Note the continuity at liftoff: as :math:`N \to 0` the slip branch caps the force at :math:`\mu N
-\to 0`, so the frictional force is continuous through gap activation. The *tangent*, however, is
-only continuous there if the normal stiffness vanishes at activation -- the quadratic-law
-argument above.
+A point without pressure carries no friction (Simo & Laursen 1992, p. 104) and contributes nothing
+to the tangent; it is reported as slipping. As :math:`p \to 0` the slip branch caps the traction at :math:`\mu p \to 0`, so the
+frictional force is continuous through gap activation. The *tangent* is only continuous there if the
+normal stiffness vanishes at activation -- the quadratic-law argument above.
 
 On increment acceptance (the constraint's ``acceptLastState`` lifecycle hook, called by
 :meth:`~edelweissfe.models.femodel.FEModel.advanceToTime` alongside the element state commit),
-the tangential force of the converged iterate is promoted to the history:
-:math:`\boldsymbol{t}_T^{(n+1)} \leftarrow \boldsymbol{t}_T`.
+the traction of the converged iterate is promoted to the history. At every connectivity update the
+history is projected onto the new frozen tangent plane and returned onto the cone of the accepted
+pressure; it is discarded where a point loses its contact partner or where its normal turns by more
+than 30 degrees (a crease of the master surface: projecting would drop the part that now points
+along the new normal). Across a mesh refinement a point that the refinement keeps -- the same slave
+node for node-to-surface, the same slave facet and quadrature point for the integrated formulation
+-- keeps its history, and a new point takes it interpolated from the old surface at its location:
+from the nodes of the old slave facet's parent face with its shape functions (Wriggers 2006, Section
+14.7.2, Eq. 14.86), respectively from a linear field fitted by least squares to the quadrature points
+of the old slave facet (Wriggers 2006, Eqs. 14.32-14.33). A transferred traction need not lie in the
+cone of its pressure (by analogy with the yield condition of a transferred plastic state, Perić et
+al. 1996, Remark 4.3); the next connectivity update projects and
+returns it like any other.
+
+**Anti-chattering.** A Newton iteration on the non-smooth Coulomb law can flip points near the cone
+boundary back and forth between stick and slip. The first three iterations of an increment are left
+alone; after that, a stick/slip state that recurs after a change (a proven cycle), and from the sixth
+iteration any change at all, freezes the state for the rest of the increment: a slipping point keeps
+slipping *in the direction it had*, a sticking point may still go to slip. Holding the direction, not
+only the state, keeps the frozen law smooth. What the freeze may cost (a point held in slip whose
+predictor has returned inside the cone) is measured on acceptance and reported.
 
 .. _friction-tangent:
 
 Consistent tangent
 ^^^^^^^^^^^^^^^^^^
 
-With :math:`\boldsymbol{K} = -\partial \boldsymbol{P}^{ext} / \partial \boldsymbol{U}` and the
-Kronecker identities above:
-
-**Stick** (symmetric, positive semi-definite):
-
-.. math::
-
-   \boldsymbol{K}^{stick} = \boldsymbol{G}^T \big( k_T \bar{\boldsymbol{P}} \big) \boldsymbol{G}
-   = (\boldsymbol{c} \otimes \boldsymbol{c}^T) \otimes \big( k_T \bar{\boldsymbol{P}} \big).
-
-**Slip** (nonsymmetric): differentiating :math:`\boldsymbol{t}_T = \mu N \hat{\boldsymbol{s}}`
-with :math:`\hat{\boldsymbol{s}} = \boldsymbol{t}^{trial} / \lVert \boldsymbol{t}^{trial}
-\rVert`, :math:`\partial N / \partial \boldsymbol{q} = -(\partial f_n / \partial g)\,
-\boldsymbol{w}^T` and :math:`\partial \hat{\boldsymbol{s}} / \partial \boldsymbol{q} =
--\tfrac{k_T}{\lVert \boldsymbol{t}^{trial} \rVert} (\boldsymbol{I} - \hat{\boldsymbol{s}} \otimes
-\hat{\boldsymbol{s}}) \bar{\boldsymbol{P}} \boldsymbol{G}`:
+With :math:`\hat{\boldsymbol{s}} = \boldsymbol{t}^{trial} / \lVert \boldsymbol{t}^{trial} \rVert`,
+:math:`\boldsymbol{Q} = \boldsymbol{I} - \hat{\boldsymbol{s}} \otimes \hat{\boldsymbol{s}}` and
+:math:`\varepsilon_T' = \partial \varepsilon_T / \partial p` (zero for a constant modulus):
 
 .. math::
 
-   \boldsymbol{K}^{slip} = \underbrace{\mu \, \frac{\partial f_n}{\partial g} \, (\boldsymbol{c}
-   \otimes \hat{\boldsymbol{s}}) \otimes \boldsymbol{w}}_{\text{normal--tangential coupling,
-   nonsymmetric}} \; + \; (\boldsymbol{c} \otimes \boldsymbol{c}^T) \otimes \left[ \frac{\mu N
-   k_T}{\lVert \boldsymbol{t}^{trial} \rVert} \big( \boldsymbol{I} - \hat{\boldsymbol{s}}
-   \otimes \hat{\boldsymbol{s}} \big) \bar{\boldsymbol{P}} \right].
+   \text{stick:}\quad & \frac{\partial \boldsymbol{t}_T}{\partial \Delta \boldsymbol{u}_T}
+   = -\varepsilon_T \bar{\boldsymbol{P}}, \qquad
+   \frac{\partial \boldsymbol{t}_T}{\partial p} = -\varepsilon_T' \Delta \boldsymbol{u}_T, \\[4pt]
+   \text{slip:}\quad & \frac{\partial \boldsymbol{t}_T}{\partial \Delta \boldsymbol{u}_T}
+   = -\frac{\mu p\, \varepsilon_T}{\lVert \boldsymbol{t}^{trial} \rVert} \boldsymbol{Q}
+   \bar{\boldsymbol{P}}, \qquad
+   \frac{\partial \boldsymbol{t}_T}{\partial p} = \mu \hat{\boldsymbol{s}}
+   - \frac{\mu p\, \varepsilon_T'}{\lVert \boldsymbol{t}^{trial} \rVert} \boldsymbol{Q}
+   \Delta \boldsymbol{u}_T, \\[4pt]
+   \text{frozen:}\quad & \frac{\partial \boldsymbol{t}_T}{\partial \Delta \boldsymbol{u}_T} = 0,
+   \qquad \frac{\partial \boldsymbol{t}_T}{\partial p} = \mu \boldsymbol{d}.
 
-The bracketed second term is symmetric (:math:`\hat{\boldsymbol{s}} \perp \bar{\boldsymbol{n}}`
-implies the two projectors commute); the rank-one coupling term is not. The linear solvers used
+In stick with a constant modulus the tangent is symmetric positive semi-definite,
+:math:`A \varepsilon_T (\boldsymbol{c} \otimes \boldsymbol{c}^T) \otimes \bar{\boldsymbol{P}}`. The
+:math:`\partial \boldsymbol{t}_T / \partial p` term couples the tangential force to the normal
+pressure and makes the slip tangent nonsymmetric (Simo & Laursen 1992, p. 106; Wriggers 2006,
+p. 359 with Eq. 9.47). The linear solvers used
 by the implicit solver operate on general unsymmetric matrices (e.g. the PARDISO interface runs
-``mtype = 11``), so no symmetrization is applied. Both regimes of the tangent are verified
-against independent finite differences of the assembled residual to relative errors of
-:math:`\sim 10^{-11}`.
+``mtype = 11``), so no symmetrization is applied. The tangent is verified against finite differences
+of the assembled residual for the shared law alone and for each formulation, and one drag computed
+with all three formulations ends with :math:`\lVert \boldsymbol{t}_T \rVert = \mu p` at every loaded
+point and a friction resultant of :math:`\mu` times the normal resultant
+(``tests/test_contactfriction_consistency.py``).
+
 
 Surface discretization and load transfer
 ----------------------------------------
@@ -458,8 +556,8 @@ matching meshes:
   pointwise pressure oscillation (measured: relative spread :math:`\sim 0.5` for a 3x3-on-2x2
   interface, with exact total force and mean pressure; manual variant
   ``NodeToDeformableSurfaceContactPatch/test_mismatched.inp``). Eliminating this pointwise error
-  on non-matching meshes is precisely what mortar/segment-to-segment methods buy -- and the
-  measured spread is this project's quantified tripwire for ever adopting one.
+  on non-matching meshes is precisely what mortar/segment-to-segment methods buy, see
+  :doc:`mortartheory`.
 
 
 .. _serendipity-weighting:
@@ -521,9 +619,12 @@ resultant-exact (:math:`4 w_c + 4 w_m = A`) and non-negative, the mismatch per n
 Exact consistency would require :math:`w_c = -A/12`, i.e. a penalty spring that attracts. The
 weighting is the modified serendipity shape function set
 :math:`\tilde N_{\text{mid}} = N_{\text{mid}} + \tfrac{1}{2}(N_{c_1} + N_{c_2})`,
-:math:`\tilde N_{\text{corner}} = 0` of Puso, Laursen & Solberg (CMAME 197, 2008), which the same
-authors and Popp, Wohlmuth & Wall (SISC 2012) introduce for exactly this reason in quadratic mortar
-contact. Reducing the residual :math:`A/12` any further requires integrating a pressure *field*
+:math:`\tilde N_{\text{corner}} = 0`. The defect it addresses is the one Puso, Laursen & Solberg
+(CMAME 197, 2008, Eq. 29) show for quadratic mortar contact: the serendipity corner function is not
+positive, so a corner node of two flat, separated surfaces reports a gap of the wrong sign; they
+resort to piecewise linear multipliers. Popp, Wohlmuth, Gee & Wall (SISC 2012, Eq. 4.5) restore the
+positivity in mortar contact by a basis transformation that moves part of the edge functions onto
+the corners -- the opposite direction to this weighting, which is not theirs. Reducing the residual :math:`A/12` any further requires integrating a pressure *field*
 against the parent face's own quadratic shape functions (segment-to-segment/mortar), which this
 formulation does not do.
 
@@ -676,13 +777,59 @@ the gap gradient -- a non-symmetric, variationally inconsistent operator, the sa
 confines the ``serendipityOptimal`` weight transform to small sliding. For straight-edged faces the
 two points coincide identically.
 
-The flat facets are otherwise the search and parametrization scaffold only -- with one exception
-that matters: the frozen normal :math:`\bar{\boldsymbol{n}}` is the *facet's* normal, not the
-parent face's. The contact geometry is the curved parent surface, which also removes the slave-side
-faceting error, but the direction the gap is measured along is piecewise constant over the
-triangulation. That is what makes :math:`\bar{\boldsymbol{n}}` discontinuous across an element
-boundary once the master deforms, and the consequences are quantified in
-:ref:`contact-explicit-dynamics`.
+**The surface as given, the integration as chosen.** The contact surfaces may be given as flat
+facets cut from the element faces by the surface element generator (``facets=triangulated``) or as
+the element faces themselves -- curved ``CON*`` contact elements, from ``facets=wholeFace`` or
+directly from a mesh generator, the same element sets the mortar constraint takes. How the slave
+surface is integrated is chosen in the constraint by ``integration``, independently of how it was
+given; nothing else in the contact algorithm changes.
+
+*integration=triangles* (the default). Every element face is tiled by flat facets -- those given, or,
+for a whole face, exactly those the surface element generator would cut from it
+(:func:`~edelweissfe.generators.surfaceelementgenerator.facetsOfWholeFace`) -- and each slave facet
+is a **sub-cell** of its parent face's parametric domain carrying an
+``nQuadraturePoints``-point rule (default 3). A point sits at :math:`\xi = b \cdot \Xi` (with
+:math:`\Xi` the facet vertices' parametric coordinates, stamped by the generator) and carries the
+weight :math:`J_q = A_\Xi \, w_q \, |\boldsymbol{X}_{,\xi} \times \boldsymbol{X}_{,\eta}|(\xi_q)`,
+with :math:`A_\Xi` the facet's area in the parametric space and the parent face's own surface
+Jacobian. This is a composite rule over the parent face: on an affine face the weights are the flat
+facets' areas, on a curved or distorted face they follow the true geometry, to the order of the facet
+rule (measured, nodal loads of a uniform pressure against an independent 40x40 integration: a
+trapezoidal quad8 face with off-centre midside nodes 1.3e-3 with 3 points per facet and 1.3e-11 with
+6, against 7.2e-2 for weights from the flat facet areas; a quad8 face on the parabolic cylinder
+:math:`y = 0.3 (x-1)^2`: 4.0e-3 and 3.7e-5, against 1.2e-2).
+
+*integration=wholeFace*. Each slave element face -- given whole, or as the facets that cover it --
+carries its native Gauss-Legendre
+rule of ``gaussPointsPerDirection`` points per direction (default 3) with the weight :math:`J_q = w_q
+|\boldsymbol{X}_{,\xi} \times \boldsymbol{X}_{,\eta}|(\xi_q)` -- Gauss points defined on the slave
+segments, as in Wriggers 2006, Section 9.5.3, p. 257 and Fig. 9.14 (measured as above: exact on the
+trapezoidal face, 4.7e-4 on the parabolic cylinder).
+
+The two differ where the integrand is not smooth inside a slave face: on a non-matching interface
+the master shape functions :math:`N^m` have a kink at every master element boundary crossing a slave
+face, which no Gauss rule integrates exactly. Many small sub-cells meet such a kink more gracefully
+than one smooth rule of high order (measured, master nodal loads of a uniform pressure on flat
+non-matching quad8 interfaces of 4/3, 7/5, 10/7 and 15/11 faces: 0.2 to 1.2 % with 3 points per
+facet, 2.3 to 4.4 % with 3x3 Gauss points; the Gauss rule catches up only from about 6x6). On the
+non-matching hexa20 contact patch test this is 5 % against 55 % pressure spread. On the other hand,
+on curved interfaces of quadratic elements the whole-face points have been observed to need fewer
+Newton iterations.
+
+**The master side is always the curved face.** Whatever the discretization, the closest point is the
+solution of the minimum distance problem on the curved master face (Wriggers 2006, Eqs. 4.2-4.3),
+found by Newton's method with the linearization of Eqs. 9.81-9.82 (p. 243) from a starting point of
+the broadphase, clamped to the face's parametric domain, and repeated on the candidate faces and the
+faces sharing a corner with the nearest one, so that a point whose projection leaves a face is passed
+to the neighbour it lies over. On a triangulated master the broadphase is the flat facets' exact
+search and the starting point the closest flat-facet point, mapped into its face ("using as a
+starting value the solution for a flat surface"); on a whole-face master the faces are searched by
+their centroids and the starting point is the closest of a regular sampling of the face. The frozen
+normal is the surface normal :math:`\bar{\boldsymbol{a}}_1 \times \bar{\boldsymbol{a}}_2 / |\cdot|` at
+the closest point (Eq. 4.4), and the gap is the signed distance from the curved master surface at the
+start of the increment (measured on a parabolic-cylinder master: 1e-12, against 61 % of the
+penetration for the closest point on the flat facets). Under ``sliding=small`` the projection stays
+frozen per increment, so the gap stays linear in the DOFs and none of the algebra below changes.
 
 **Measured** (``testfiles/edelweiss-only/SurfaceToDeformableSurfaceContactPatchHexa20``, the same
 matched 2x2 hexa20 interface as the table above):
@@ -788,10 +935,8 @@ non-matching interface, and the integrand is discontinuous inside a slave facet 
 assigned master facet changes, so that quadrature error does not shrink under refinement of the
 rule. Exactness on non-matching meshes requires integrating over *clipped* slave-master segments
 and enforcing the constraint weakly through a multiplier field -- mortar (Puso & Laursen 2004;
-for the quadratic dual basis, whose construction uses the very same modified shape functions as
-``nodalWeights=serendipityOptimal``, Popp, Wohlmuth & Wall, SISC 2012). The measured spread of
-:math:`\sim 0.5` on a 3x3-on-2x2 interface remains this project's tripwire for that step, and
-:mod:`~edelweissfe.constraints.tie` would share the same clipping layer.
+for the quadratic dual basis, built on a transformed set of serendipity shape functions, Popp,
+Wohlmuth, Gee & Wall, SISC 2012), as in :doc:`mortartheory`.
 
 **Cost.** Each contact point couples both parent faces, so in 3D a block is
 :math:`(8+8) \times 3 = 48` DOF rather than the node-based :math:`(1+3) \times 3 = 12`, and there
@@ -813,34 +958,44 @@ is shared with the rigid-body variant (:ref:`integrated-contact-rigid-body`).
 
 **Once, at construction** (and again after an AMR retiling, through ``refresh``):
 
-#. Each slave facet is given a quadrature rule in its own barycentric coordinates,
-   ``nQuadraturePoints`` points with weights summing to one
-   (:func:`~edelweissfe.utils.parentfacegeometry.facetQuadratureRule`). The **contact points** are
-   the flattened ``(slave facet, quadrature point)`` pairs, so there are
-   :math:`n_\text{slave facets} \times` ``nQuadraturePoints`` of them -- not one per node.
-#. Each point's barycentric location is mapped into its facet's *parent face* parametric space
-   through the facet's stamped ``vertexParametricCoords``, and the parent-face shape functions
-   :math:`N^s` are evaluated there. This is frozen for the whole analysis: a contact point does not
-   move on its own slave parent face, whatever the body does.
-#. The point's integration weight is :math:`w_q J_q` with :math:`J_q` the slave facet's measure in
-   the **reference** configuration, computed once and never updated. That is the same
-   small-deformation choice the node-based constraint's tributary areas make, and it is why the
-   weights need no per-increment refresh.
+#. The slave surface is divided into **integration cells**: its facets on a triangulated surface,
+   its element faces on a whole-face surface (a surface mixing both is rejected).
+#. Each cell is given its quadrature rule: ``nQuadraturePoints`` points in the facet's own
+   barycentric coordinates (:func:`~edelweissfe.utils.parentfacegeometry.facetQuadratureRule`),
+   mapped into its *parent face* parametric space through the facet's stamped
+   ``vertexParametricCoords``; or the native Gauss rule of the face
+   (:func:`~edelweissfe.utils.parentfacegeometry.parentFaceGaussRule`). The **contact points** are
+   the flattened ``(cell, quadrature point)`` pairs -- not one per node. The parent-face shape
+   functions :math:`N^s` are evaluated at each point. This is frozen for the whole analysis: a
+   contact point does not move on its own slave parent face, whatever the body does.
+#. The point's integration weight is :math:`J_q`: the facet's parametric measure times the rule's
+   weight times the parent face's surface Jacobian at the point, or the face's surface Jacobian at
+   the point times the Gauss weight -- in the **reference**
+   configuration either way, computed once and never updated. That is the same small-deformation
+   choice the node-based constraint's tributary areas make, and it is why the weights need no
+   per-increment refresh.
 
 **Once per increment**, in ``updateConnectivity`` -- throttled to every
 ``contact-update-frequency`` increments on the explicit path (:ref:`contact-explicit-dynamics`):
 
 #. Every contact point's current position is evaluated from its slave parent face's *current*
    nodal coordinates through the frozen :math:`N^s`, so the points ride the curved slave surface.
-#. Candidate master facets come from the shared broadphase (a centroid k-d tree with a
-   triangle-inequality radius bound, a superset of the exhaustive sweep iterated in ascending facet
-   index, so it reproduces the exhaustive tie-break). The clamped closest point is computed on each
-   candidate **flat** facet and the nearest wins, subject to ``searchDistance`` where one is given.
-#. What is frozen from the winner is *not* the flat-facet interpolation: the clamped barycentric
-   weights are mapped through that facet's ``vertexParametricCoords`` into its parent face's
-   parametric space, and the parent-face shape functions :math:`N^m` are evaluated there. The
-   facet's unit normal :math:`\bar{\boldsymbol{n}}` is frozen alongside them, per facet rather than
-   per point.
+#. Candidate master faces come from the broadphase: on a triangulated master the shared facet search
+   (a centroid k-d tree with a triangle-inequality radius bound, a superset of the exhaustive sweep),
+   whose candidate facets give their faces and whose closest flat-facet point gives the starting point
+   on each; on a whole-face master a centroid k-d tree over the faces, with the closest of a regular
+   sampling of each face as the starting point. The faces sharing a corner with the nearest one are
+   added either way.
+#. The closest point on each candidate curved face is found by Newton's method
+   (:func:`~edelweissfe.utils.parentfacegeometry.parentFaceClosestPoints`); the closest face wins,
+   and of faces within :math:`10^{-10} h` of the smallest distance the lowest index, so the choice
+   does not depend on the rounding of the coordinates. Where the iteration does not converge, the
+   starting point is kept for that face. What is frozen is the parametric location of the closest
+   point, from which the face's shape functions :math:`N^m` are evaluated, and the surface normal
+   :math:`\bar{\boldsymbol{n}}` there -- or, on an edge or vertex shared by equally close faces
+   inside the master surface, the normal along the distance vector, as for the node-to-surface
+   constraint (:ref:`small-sliding-kinematics`). A point farther than ``searchDistance`` is left
+   unassigned.
 #. Only *assigned* points contribute DOFs, and each contributes one dense block over its slave
    parent face's nodes plus its assigned master parent face's nodes. Gap activation is deliberately
    **not** part of this: an assigned point that happens to be open still owns its block, which is
@@ -924,8 +1079,10 @@ increments. The stiffness consists of one block per slave facet plus the RP bloc
 whose RP carries Dirichlet conditions.
 
 **Penalty units.** In both integrated constraints ``penalty`` is a modulus per unit area (force per
-length cubed), multiplied by each point's integration weight. The node-based constraints use a
-force per length per node instead, so a node-based value converts approximately as
+length cubed), multiplied by each point's integration weight; ``nodeToDeformableSurfacePenalty`` is
+the same quantity, multiplied by the tributary area of each slave node, and so is the
+``penaltyStiffness`` of the mortar contact. Only ``nodeToDiscreteRigidBodyPenalty`` uses a force per
+length per node, so a value of it converts approximately as
 :math:`p_\text{integrated} \approx p_\text{node} / A_\text{tributary}`:
 
 .. list-table::
@@ -934,7 +1091,8 @@ force per length per node instead, so a node-based value converts approximately 
     * - Constraint
       - ``type=linear``
       - ``type=quadratic``
-    * - ``surfaceToDeformableSurfacePenalty``, ``surfaceToDiscreteRigidBodyPenalty``
+    * - ``surfaceToDeformableSurfacePenalty``, ``surfaceToDiscreteRigidBodyPenalty``,
+        ``nodeToDeformableSurfacePenalty``, ``mortarContact``
       - force / length\ :sup:`3`
       - force / length\ :sup:`4`
     * - ``nodeToDiscreteRigidBodyPenalty``
@@ -954,21 +1112,27 @@ What the constraints require of a solver, how the options should be chosen, and 
 Parameter guidance
 ~~~~~~~~~~~~~~~~~~
 
-* ``tangentPenalty`` :math:`t` regularizes stick; the stick window (elastic reversal length) is
-  :math:`\delta_{stick} \approx \mu N / k_T` per node. Choose it such that
-  :math:`\delta_{stick}` is *well below* the expected slip per increment but not so stiff that
-  the collective stick-to-slip transition at sliding onset makes Newton oscillate -- in practice
-  one to two orders of magnitude softer than the normal penalty. (The physics is insensitive to
-  this choice: the sliding plateau :math:`T/N = \mu` is exact for any regularization.)
+* ``tangentPenalty`` :math:`\varepsilon_T` regularizes stick: a traction per unit tangential
+  slip, by default equal to the normal ``penalty``. A sticking point slips elastically by up to
+  :math:`\mu p / \varepsilon_T` (the stick window). It should be well below the expected slip per
+  increment; a softer value can make the collective stick-to-slip transition at sliding onset
+  easier for Newton. On lightly loaded interfaces, where :math:`\mu p / \varepsilon_T` falls below one
+  Newton correction, ``slipTolerance`` (a pressure-proportional :math:`\varepsilon_T`) keeps the
+  stick/slip state from chattering. (The sliding plateau :math:`T/N = \mu` is exact for any
+  regularization.)
 * ``penalty`` :math:`p` sets the penetration :math:`g \approx -N_s / (p A_s)` (linear) or
   :math:`g \approx -\sqrt{2 N_s / (p A_s)}` (quadratic). With ``augmentedLagrange=True`` the
   multiplier absorbs the load over the increments and :math:`p` can be chosen an order of
   magnitude lower for the same (or better) penetration control.
 * Use ``type=quadratic`` whenever friction is active (see above); ``type=linear`` is appropriate
   for frictionless cases and yields the cleanest analytic correspondence (e.g. in patch tests).
-* ``nQuadraturePoints`` (integrated contact only) defaults to 3, which integrates a quad8 parent
-  face's shape functions exactly over a Tria3 facet -- that exactness is what makes the consistent
-  nodal loads, negative corners included, come out right. Beware of a misleading self-check here:
+* ``nQuadraturePoints`` (integrated contact on a triangulated surface) defaults to 3, exact to
+  degree 2 on a Tria3 facet. That does not integrate a quad8 parent face's shape functions exactly
+  over a single facet (their cubic terms are missed), but over a whole flat, undistorted face the
+  errors cancel, so the consistent nodal loads, negative corners included, come out exactly there;
+  on distorted or curved faces the remaining error is that of the facet rule's degree
+  (:ref:`integrated-contact`). On a whole-face surface ``gaussPointsPerDirection`` takes its place.
+  Beware of a misleading self-check here:
   the facet weights sum to one, so the transmitted **resultant** is exact at any point count, and a
   test that only compares resultants passes at one point per facet. Under-integration degrades the
   *distribution* of that resultant over the parent-face nodes, which is the whole quantity of
@@ -1000,24 +1164,36 @@ The constraint participates in the implicit solution through three hooks:
     across iterations, so failed increments and cutbacks need no state rollback.
 
 ``acceptLastState()`` (on increment acceptance)
-    Promotes the tangential forces of the converged iterate to the frictional history and
+    Promotes the tangential tractions of the converged iterate to the frictional history and
     performs the incremental Uzawa update of the normal multipliers.
 
 Per-slave results -- normal pressures :math:`p_s = -f_n/A_s`, tangential traction magnitudes,
-gaps -- are exposed via ``getNormalPressures()`` / ``getTangentialTractions()`` / ``getGaps()``,
-ordered like the generator's ``<prefix>_nodes`` node set, and are typically requested as
-``fromExpression`` field outputs.
+stick/slip states, gaps -- are exposed via ``getNormalPressures()`` / ``getTangentialTractions()`` /
+``getSlipStates()`` / ``getGaps()``,
+ordered like the generator's ``<prefix>_nodes`` node set (for a slave surface given as whole element
+faces without such a set: the first-encounter order of the nodes over the facets cut from the faces,
+element by element), and are typically requested as ``fromExpression`` field outputs.
 
 The integrated constraint (:ref:`integrated-contact-algorithm`) presents the same
 ``updateConnectivity`` / ``applyConstraint`` pair, with three differences worth knowing at the
-solver boundary. It carries no history, so it has no ``acceptLastState`` to promote -- every
-quantity derives from the converged state and :math:`d\boldsymbol{U}`. Its DOF footprint is the set
+solver boundary. Its only history is the frictional one (with ``mu > 0``), promoted by
+``acceptLastState`` and carried across a retiling by slave facet and quadrature point; the normal
+part derives from the converged state and :math:`d\boldsymbol{U}` alone. Its DOF footprint is the set
 of *assigned* contact points and does not respond to gap activation, so the sparsity pattern
 changes only on a genuine reassignment, not when a point opens or closes mid-Newton. And its
 results are ordered **by contact point**, not by node: ``getGaps()`` and ``getNormalPressures()``
-run over slave facets and, within a facet, over quadrature points, so a ``fromExpression`` output
+(and likewise ``getTangentialTractions()`` and ``getSlipStates()``) run over slave facets and,
+within a facet, over quadrature points, so a ``fromExpression`` output
 reading them cannot be tied to a node set -- use a reduction, or ``getSlaveNodalNormalForces()``,
 which is node-ordered like the accessors above.
+
+Both constraints, like the mortar constraint, are mesh dependents: after an h-adaptive refinement of
+either surface they rebind to the regenerated facets, keep the history of the points the refinement
+keeps and interpolate it for the points it creates (see the friction section above). The checkpoint
+holds the frictional history and the frozen normals of the last connectivity update, which the next
+update compares against for the crease test. On a restart of a refined run the topology replay re-creates the refined surfaces before
+the contact state is restored, and ``setRestartData`` first catches up with them and then matches the
+checkpoint by node labels, respectively point keys (``tests/test_contact_amr_restart.py``).
 
 .. _contact-explicit-dynamics:
 
@@ -1058,34 +1234,25 @@ A candidate-facet pre-filter (a centroid k-d tree with a triangle-inequality rad
 the search cost without changing which facet is selected; it is a superset of the exhaustive sweep
 and iterated in ascending facet index, so it reproduces the exhaustive tie-break exactly.
 
-**What throttling costs in reproducibility, as opposed to accuracy.** The argument above is about
-accuracy, and it holds. Reproducibility is a separate question, and the answer is different: a
-periodic re-search makes an explicit trajectory a *step function of rounding*. Re-projection itself
-does not -- on a flat master it is provably a change of representation and nothing else, since
-:math:`\bar{\boldsymbol{n}}` is constant and :math:`\bar{\boldsymbol{n}} \cdot \boldsymbol{x}`
-is unchanged by a tangential slide, so the gap is bit-identical whichever facet, parent face or
-parametric location the search now returns (asserted in
-``test_surfacetodeformablesurfacepenalty.py``, both within one parent face and across two). What
-is discontinuous is the *frozen facet normal* where the master is deformed: two adjacent element
-faces are then no longer coplanar, and a point crossing their seam picks up the kink. Measured on
-``NEDSurfaceContact`` at ``contact-update-frequency=10``: 166 crossings over the run, with
-:math:`\|\Delta \bar{\boldsymbol{n}}\|` up to :math:`5.2 \times 10^{-2}` and a gap jump up to
-:math:`4.8 \times 10^{-4}`, some 1.3 % of the gap. Which side of a seam a borderline point lands on
-is decided at the :math:`10^{-16}` level, so a perturbation of that size grows to
-:math:`5.3 \times 10^{-4}` in the final displacements; with the connectivity pinned
-(``contact-update-frequency=0``) the same perturbation ends at :math:`3.8 \times 10^{-16}`.
-
-The practical consequences are worth separating. For a *simulation*, nothing here is a defect: the
-jump is the genuine facet-normal discontinuity of any facet-based scheme, it is self-limiting, and
-throttling remains the right trade. For a *regression reference*, it is fatal, so the explicit
-regression case pins its connectivity and the reassignment path is covered by unit tests instead.
-Note also that the node-based constraint's decks are not a control for any of this unless they set
+**Reproducibility of a periodic re-search.** The argument above is about accuracy. A re-search can
+also move a point onto another facet, and on a flat master that is a change of representation and
+nothing else: :math:`\bar{\boldsymbol{n}}` is constant and :math:`\bar{\boldsymbol{n}} \cdot
+\boldsymbol{x}` is unchanged by a tangential slide, so the gap is bit-identical whichever facet,
+parent face or parametric location the search returns (asserted in
+``test_surfacetodeformablesurfacepenalty.py``, both within one parent face and across two). Where
+the master is deformed, adjacent element faces are no longer coplanar, and a point whose closest
+point lies on the edge between two of them is exactly equally close to both. With the facet normal
+each would give its own gap, and the choice between them is decided at the :math:`10^{-16}` level;
+measured on ``NEDSurfaceContact`` at ``contact-update-frequency=10``, it moves the final
+displacements by :math:`4 \times 10^{-4}`. With the normal along the distance vector
+(:ref:`small-sliding-kinematics`) the gap is the same whichever facet is chosen -- taking the
+highest instead of the lowest index moves the final displacements by :math:`2.7 \times
+10^{-10}` -- and a perturbation of the penalty by :math:`2 \times 10^{-16}` relative ends at
+:math:`4.2 \times 10^{-16}`. The regression case nevertheless pins its connectivity
+(``contact-update-frequency=0``), so that its reference does not depend on the update frequency.
+Note also that the node-based constraint's decks exercise the frozen projection only where they set
 ``sliding=small`` explicitly: the node-based default is ``sliding=finite``, which has no frozen
-projection to re-freeze. Under ``sliding=small`` it injects re-projection jumps too (up to
-:math:`4.8 \times 10^{-6}` on the equivalent model) and still reproduces to
-:math:`6.9 \times 10^{-16}`, because its slave *nodes* happen never to cross a master element
-boundary where 54 quadrature points do -- a property of that model's sampling, not of the
-formulation.
+projection to re-freeze.
 
 **Throttling and restart.** Between two searches, a small-sliding contact constraint keeps the
 projection of the last search (master facet or rigid triangle, shape functions, normal). It belongs to
@@ -1118,7 +1285,10 @@ key physical invariants:
   and hexa20); the full hysteresis loop :math:`+\mu N \to` elastic unloading :math:`\to -\mu N`
   under drag reversal (``...FrictionHysteresis``); a two-interface shaft pull-out where the pull
   force approaches :math:`\mu` times the total confinement force, with the residual deviation
-  explained by Poisson contraction of the shaft (``...PullOut``).
+  explained by Poisson contraction of the shaft (``...PullOut``). The same drag with the integrated
+  formulation (``SurfaceToDeformableSurfaceContactFrictionHexa20``) gives the same plateau, and one
+  drag computed with all three formulations (node-to-surface, integrated, mortar) checks that the
+  shared friction law holds identically in each (``tests/test_contactfriction_consistency.py``).
 * **Curved interfaces** (``...CurvedHexa20``): midside vs corner triangulation on an identical
   curved hexa20 mesh; the corner reduction's chord sagitta acts as artificial gap and
   underestimates the total contact force by ~42 % in the committed configuration.

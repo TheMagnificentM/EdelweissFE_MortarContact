@@ -81,10 +81,18 @@ def _writeRidgeStl(path: Path):
 
 
 def _deck(directory: Path, constraintType: str, maxNumInc: int, extra: str = "", amr: bool = False) -> str:
+    # "<type>:wholeFace" generates the contact surfaces as whole element faces instead of facets,
+    # "<type>:wholeFaceGauss" integrates them over the whole faces as well.
+    constraintType, _, variant = constraintType.partition(":")
+    facetsOption = "facets=wholeFace\n" if variant.startswith("wholeFace") else ""
+    integration = ", integration=wholeFace" if variant == "wholeFaceGauss" else ""
     # Live refinement needs Marmot's C3D20R, whose refined surface also needs a smaller time increment.
     elProvider = "" if amr else "elProvider=edelweiss"
     upper = _box("upper", (0.3, 1.1, 1.05), (0.6, 0.6, 1), elProvider, "C3D20R" if amr else "C3D8")
-    upper += "*modelGenerator, generator=surfaceElementGenerator, name=gen1\nsurface=upper_back\nname=slaveSurf\n"
+    upper += (
+        "*modelGenerator, generator=surfaceElementGenerator, name=gen1\nsurface=upper_back\nname=slaveSurf\n"
+        + facetsOption
+    )
     fixLower = ">>dirichlet, name=fixLower, nSet=lower_back, field=displacement, 1=0, 2=0, 3=0"
 
     if constraintType == "surfaceToDiscreteRigidBodyPenalty":
@@ -109,7 +117,10 @@ upper_all
         )
     else:
         model = upper + _box("lower", (0, 0, 0), (2, 2, 1), elProvider, "C3D8")
-        model += "*modelGenerator, generator=surfaceElementGenerator, name=gen2\nsurface=lower_front\nname=masterSurf\n"
+        model += (
+            "*modelGenerator, generator=surfaceElementGenerator, name=gen2\nsurface=lower_front\nname=masterSurf\n"
+            + facetsOption
+        )
         model += "*section, name=section1, material=linearelastic, type=solid\nlower_all\nupper_all\n"
         master = "masterSurface=masterSurf_facets"
         master += ", sliding=small" if constraintType == "nodeToDeformableSurfacePenalty" else ""
@@ -126,7 +137,7 @@ contact-update-frequency=7
 {"topology-check-frequency=100" if amr else ""}
 {model}
 *constraint, name=contact, type={constraintType}
-slaveSurface=slaveSurf_facets, {master}, penalty=5e4, type=linear, searchDistance=2.0
+slaveSurface=slaveSurf_facets, {master}, penalty=5e4, type=linear, searchDistance=2.0{integration}
 {extra}
 *step, type=adaptiveForExplicitSimulations, solver=theSolver
 maxInc=1, minInc=1e-12, maxNumInc={maxNumInc}, maxIter=25, stepLength=0.5
@@ -165,13 +176,21 @@ def _truncateAndResume(directory: Path, constraintType: str, nFull: int, nTrunca
 
 @pytest.fixture(
     scope="module",
-    params=["nodeToDeformableSurfacePenalty", "surfaceToDeformableSurfacePenalty", "surfaceToDiscreteRigidBodyPenalty"],
+    params=[
+        "nodeToDeformableSurfacePenalty",
+        "surfaceToDeformableSurfacePenalty",
+        "surfaceToDiscreteRigidBodyPenalty",
+        "nodeToDeformableSurfacePenalty:wholeFace",
+        "surfaceToDeformableSurfacePenalty:wholeFace",
+        "surfaceToDeformableSurfacePenalty:wholeFaceGauss",
+        "surfaceToDiscreteRigidBodyPenalty:wholeFaceGauss",
+    ],
 )
 def resumedContact(request, tmp_path_factory):
     """(uninterrupted fields, resumed fields, resumed model, checkpoint) of a 300-increment run
     resumed from increment 250."""
 
-    directory = tmp_path_factory.mktemp(request.param)
+    directory = tmp_path_factory.mktemp(request.param.replace(":", "_"))
     reference = _fields(_run(directory, "full", request.param, 300))
     resumed, checkpoint = _truncateAndResume(directory, request.param, 300, 250)
     return reference, _fields(resumed), resumed, checkpoint

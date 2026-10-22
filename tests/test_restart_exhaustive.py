@@ -350,7 +350,7 @@ def _penaltyNodeSetRefined(model, run) -> str:
 
 def _frictionalContact(model, run) -> str:
     data = model.constraints["contact"].getRestartData()
-    if not np.any(np.asarray(data["tangentialForceConverged"]) != 0.0):
+    if not np.any(np.asarray(data["frictionTractionConverged"]) != 0.0):
         return "no frictional contact history was built up"
     return ""
 

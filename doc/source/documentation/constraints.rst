@@ -238,7 +238,9 @@ comments of the ``applyConstraint`` method in the module source.
 The complete theory of this constraint -- surface discretization and triangulation, tributary
 areas, finite- and small-sliding gap kinematics, penalty and augmented-Lagrange normal laws,
 Coulomb friction with consistent tangents, solver integration, and the verification methodology
--- is documented in :doc:`contacttheory`.
+-- is documented in :doc:`contacttheory`. The surfaces may be given as flat facets from the surface element
+generator or as whole element faces (``CON*`` elements, e.g. from a mesh generator, as for the mortar
+constraint), which the constraint cuts into exactly the facets the generator would cut from them.
 
 Module ``edelweissfe.constraints.nodetodeformablesurfacepenalty``
 
@@ -261,8 +263,13 @@ Module ``edelweissfe.constraints.nodetodeformablesurfacepenalty``
 -----------------------------------------------------------------------------
 
 The integrated (Gauss-point-to-segment) counterpart of the constraint above: contact is evaluated
-at *quadrature points* over the slave surface's facets, and the resulting pressure is distributed
-with each side's **parent element face** shape functions rather than with the flat facets' own.
+at *quadrature points* over the slave surface and the resulting pressure is distributed with each
+side's **parent element face** shape functions rather than with the flat facets' own; the points are
+projected onto the curved master faces. The surfaces may be given as flat facets from the surface
+element generator or as whole element faces (``CON*`` elements, e.g. from a mesh generator, as for the
+mortar constraint); ``integration`` chooses how the slave surface is integrated, whatever it was given
+as: ``triangles`` (the default; each face cut into facets, each facet a sub-cell of its element face)
+or ``wholeFace`` (native Gauss rule on each face).
 
 Use this instead of ``nodetodeformablesurfacepenalty`` on quadratic (hexa20/quad8) contact
 surfaces. There, a node-based penalty scheme cannot transmit a correct pressure at all -- the
@@ -276,8 +283,9 @@ basis, so the two constraints agree to 13 digits and there is nothing to gain --
 order, linear included, as the figure in :ref:`integrated-contact` shows.
 
 Scope: normal penalty contact under ``sliding=small``, on both the implicit and the explicit solver
-path. Coulomb friction and augmented Lagrange are **not** implemented here (the node-based
-constraint has both), and ``sliding=finite`` is rejected rather than approximated.
+path, with optional Coulomb friction (``mu``), the law shared by all contact formulations and
+evaluated at every quadrature point. Augmented Lagrange is **not** implemented here (the node-based
+constraint has it), and ``sliding=finite`` is rejected rather than approximated.
 
 Module ``edelweissfe.constraints.surfacetodeformablesurfacepenalty``
 
@@ -297,13 +305,19 @@ Module ``edelweissfe.constraints.surfacetodeformablesurfacepenalty``
     :caption: Example (explicit dynamics):
               ``testfiles/edelweiss-only/NEDSurfaceContact/test.inp``
 
+.. literalinclude:: ../../../testfiles/edelweiss-only/SurfaceToDeformableSurfaceContactPatchHexa20WholeFace/test.inp
+    :language: edelweiss
+    :caption: Example (the hexa20 acceptance test on whole-face contact surfaces):
+              ``testfiles/edelweiss-only/SurfaceToDeformableSurfaceContactPatchHexa20WholeFace/test.inp``
+
 ``surfacetodiscreterigidbodypenalty`` - Integrated contact against a discrete rigid body
 -----------------------------------------------------------------------------------------------
 
 The integrated counterpart of ``nodetodiscreterigidbodypenalty``, and the rigid-body counterpart
 of ``surfacetodeformablesurfacepenalty``: contact is evaluated at quadrature points over a slave
-facet surface and distributed with the slave parent-face shape functions, against the triangulated,
-closed surface of a :doc:`discrete rigid body <rigidbodies>`. The theory is documented in
+surface (flat facets or whole element faces, integrated as chosen by ``integration``) and distributed
+with the slave parent-face shape functions, against the triangulated, closed surface of a
+:doc:`discrete rigid body <rigidbodies>`. The theory is documented in
 :ref:`integrated-contact-rigid-body`. Use it for any contact against rigid supports or indenters,
 in particular with quadratic slave faces.
 

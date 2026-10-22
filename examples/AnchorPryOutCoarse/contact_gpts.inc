@@ -12,9 +12,10 @@
 ** the interface force and lifts every corner off; the integrated one reproduces the exact resultant
 ** to 13 digits.
 **
-** nQuadraturePoints=3 is the default and is stated here because it is load-bearing: three points
-** integrate the parent face's shape functions exactly over a Tria3 facet, which is what makes those
-** consistent nodal loads -- including the negative corner loads -- come out exactly.
+** nQuadraturePoints=3 is the default and is stated here because it is load-bearing: summed over a
+** flat, undistorted parent face, three points per Tria3 facet integrate the face's shape functions
+** exactly (a single facet they do not, the 3-point rule being exact to degree 2), which is what makes
+** those consistent nodal loads -- including the negative corner loads -- come out exactly.
 **
 ** Cost: the element block goes from 12 to 48 DOF with two to three times more points, so contact
 ** assembly is substantially heavier than NTS. On this model that is a small share of the total.

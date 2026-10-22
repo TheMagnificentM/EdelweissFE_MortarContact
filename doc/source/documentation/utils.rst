@@ -120,3 +120,16 @@ Module ``edelweissfe.utils.parentfacegeometry``
 
 .. automodule:: edelweissfe.utils.parentfacegeometry
    :members:
+
+Contact friction
+----------------
+
+The penalty-regularised Coulomb friction law shared by all contact formulations
+(:doc:`contacttheory`, :doc:`mortartheory`): stick predictor, radial return, consistent tangent, and
+the frictional state of the contact points (history, its transport into a new tangent plane, the
+anti-chattering freeze, restart and remapping across a mesh refinement).
+
+Module ``edelweissfe.utils.contactfriction``
+
+.. automodule:: edelweissfe.utils.contactfriction
+   :members:

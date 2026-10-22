@@ -29,6 +29,13 @@
 
 import numpy as np
 
+from edelweissfe.elements.displacementelement.element import DisplacementElement
+from edelweissfe.generators.surfaceelementgenerator import buildContactFacets
+from edelweissfe.journal.journal import Journal
+from edelweissfe.models.femodel import FEModel
+from edelweissfe.points.node import Node
+from edelweissfe.sets.elementset import ElementSet
+
 _HEXA20_EDGES = (
     (0, 1),
     (1, 2),
@@ -71,3 +78,55 @@ def _hexa20Coordinates(yOffset: float) -> list:
         np.array([_SIDE, yOffset + _SIDE, 0.0]),
     ]
     return corners + [0.5 * (corners[a] + corners[b]) for a, b in _HEXA20_EDGES]
+
+
+def twoBlockModel(
+    journal: Journal,
+    penetration: float,
+    nodalWeights: str = "facetConsistent",
+    mapping=None,
+    facets: str = "triangulated",
+) -> tuple:
+    """Two hexa20 cubes meeting at y = 0, the lower one overlapping the upper by ``penetration``,
+    with the lower block's Ymax face as slave and the upper block's Ymin face as master, both as
+    contact facet sets. Shared by the tests of the facet-based contact formulations. ``mapping``, if
+    given, maps every node coordinate after the blocks are placed -- to curve or distort the
+    interface. ``facets`` is the surface element generator's discretization of both surfaces:
+    'triangulated' (midside triangulation) or 'wholeFace'.
+
+    Returns
+    -------
+    tuple
+        ``(model, slaveSurface, masterSurface)``.
+    """
+
+    model = FEModel(3)
+    label = 1
+    elements = {}
+    with model.topology.changes():
+        for key, yOffset in (("upper", 0.0), ("lower", -_SIDE + penetration)):
+            nodes = []
+            for x in _hexa20Coordinates(yOffset):
+                node = Node(label, x if mapping is None else mapping(x))
+                model.nodes[label] = node
+                nodes.append(node)
+                label += 1
+            (elNumber,) = model.topology.reserveElementNumbers(1)
+            element = DisplacementElement("C3D20", elNumber)
+            element.setNodes(nodes)
+            model.createElement(element)
+            elements[key] = element
+
+        model.surfaces["masterFace"] = {_YMIN: ElementSet("m", [elements["upper"]])}
+        model.surfaces["slaveFace"] = {_YMAX: ElementSet("s", [elements["lower"]])}
+
+        # A face kept whole is not triangulated, so the triangulation is only given for facets.
+        triangulation = "midside" if facets == "triangulated" else "corner"
+        masterSetName, _ = buildContactFacets(
+            model, "masterFace", "mst", triangulation, nodalWeights, journal, facets=facets
+        )
+        slaveSetName, _ = buildContactFacets(
+            model, "slaveFace", "slv", triangulation, nodalWeights, journal, facets=facets
+        )
+
+    return model, model.elementSets[slaveSetName], model.elementSets[masterSetName]

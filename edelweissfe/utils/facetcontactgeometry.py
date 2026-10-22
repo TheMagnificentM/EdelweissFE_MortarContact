@@ -50,7 +50,20 @@ import itertools
 import numpy as np
 from scipy.spatial import cKDTree
 
+from edelweissfe.utils.parentfacegeometry import facetQuadratureRule, parentFaceClosestPoints, parentFaceShapeFunctions
 from edelweissfe.utils.rotations import skewMatrix
+
+#: Two facets whose distances from a point differ by less than this fraction of the characteristic
+#: facet size count as equally close (see :func:`closestFacetsWithTies`). A relative tolerance far
+#: above round-off, chosen here.
+TIE_TOLERANCE_FACTOR = 1e-10
+
+
+def firstOfEachGroup(groups: np.ndarray, members: np.ndarray) -> np.ndarray:
+    """Of ``members`` (indices into ``groups``, ordered so that equal groups are contiguous), the first
+    member of each group."""
+
+    return members[np.r_[True, groups[members[1:]] != groups[members[:-1]]]]
 
 
 def tria3GapGradientHessian(
@@ -618,3 +631,243 @@ def closestFacets(
     closestFacet[pointIndices[pairs]] = facetIndices[pairs]
     closestWeights[pointIndices[pairs]] = weights[pairs]
     return closestFacet, closestWeights, closestDistance
+
+
+def closestFacetsWithTies(
+    queryPoints: np.ndarray,
+    facetCoords: list,
+    candidatesPerPoint: list,
+    tieTolerance: float,
+    lowestIndexOnTie: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """For each query point, the closest of its candidate facets as in :func:`closestFacets`, and
+    whether that choice is a tie.
+
+    Facets whose distance lies within ``tieTolerance`` of the smallest one count as equally close,
+    and of those the one with the lowest index is taken, so the choice does not depend on the
+    rounding of the current coordinates; with ``lowestIndexOnTie=False`` the first facet of exactly
+    the smallest distance is taken instead, which is the choice of :func:`closestFacets`. A tie is
+    the ordinary case, not an accident: when the closest point lies on an edge or a vertex shared by
+    several facets, every one of them returns that same point at the same distance. It is where the
+    projection onto a faceted surface is not unique (Wriggers 2006, Remark 4.1 and Fig. 4.4, p. 60;
+    Section 10.1 and Fig. 10.8, pp. 318-319).
+
+    Parameters
+    ----------
+    queryPoints
+        The points, shape ``(nPoints, nDim)``.
+    facetCoords
+        Current coordinates of each facet's nodes, all of the same shape.
+    candidatesPerPoint
+        One ascending list of candidate facet indices per point, see :func:`closestFacetCandidates`.
+    tieTolerance
+        Distances within this of the smallest one count as equal.
+    lowestIndexOnTie
+        Whether a tie goes to the lowest index, or to the first facet of exactly the smallest distance.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray]
+        Per point the chosen facet's index, -1 if none; its weights, shape
+        ``(nPoints, nNodesPerFacet)``, zero if none; the distance, infinite if none; and whether
+        another facet was equally close.
+    """
+
+    queryPoints = np.asarray(queryPoints, dtype=float)
+    nPoints = len(queryPoints)
+    closestFacet = np.full(nPoints, -1, dtype=np.intp)
+    closestDistance = np.full(nPoints, np.inf)
+    tied = np.zeros(nPoints, dtype=bool)
+    if not facetCoords:
+        return closestFacet, np.zeros((nPoints, 0)), closestDistance, tied
+
+    stacked = np.asarray(facetCoords, dtype=float)  # (nFacets, nNodesPerFacet, nDim)
+    closestWeights = np.zeros((nPoints, stacked.shape[1]))
+
+    pointIndices, facetIndices = candidatePairs(candidatesPerPoint)
+    weights, distances = facetClosestPoints(queryPoints[pointIndices], stacked[facetIndices])
+
+    acceptable = np.flatnonzero(distances < np.inf)
+    if len(acceptable) == 0:
+        return closestFacet, closestWeights, closestDistance, tied
+    smallest = np.full(nPoints, np.inf)
+    np.minimum.at(smallest, pointIndices[acceptable], distances[acceptable])
+
+    equallyClose = acceptable[distances[acceptable] <= smallest[pointIndices[acceptable]] + tieTolerance]
+    tied = np.bincount(pointIndices[equallyClose], minlength=nPoints) > 1
+
+    if lowestIndexOnTie:
+        pairs = equallyClose
+    else:
+        pairs = acceptable[distances[acceptable] == smallest[pointIndices[acceptable]]]
+    # Pairs are ordered by point, and per point in ascending candidate order: keep each point's first.
+    pairs = firstOfEachGroup(pointIndices, pairs)
+
+    closestFacet[pointIndices[pairs]] = facetIndices[pairs]
+    closestWeights[pointIndices[pairs]] = weights[pairs]
+    closestDistance[pointIndices[pairs]] = distances[pairs]
+    return closestFacet, closestWeights, closestDistance, tied
+
+
+def edgeOrVertexNormal(point: np.ndarray, closestPoint: np.ndarray, facetNormal: np.ndarray, tolerance: float):
+    """The contact normal of a point whose closest point lies on an edge or vertex shared by several
+    master facets.
+
+    No facet normal is the normal there, since the edge lies between facets of different
+    orientation; a projection onto a C0 surface has to include its edges and corner points
+    (Konyukhov & Schweizerhof 2008, CMAME 197, 3045-3056). The normal is taken along the distance
+    vector instead, as for the node-to-edge and
+    node-to-vertex contact elements (Wriggers 2006, Eq. 9.123, p. 250, and Eq. 9.131, p. 251),
+    oriented like the facet normal, so that the gap ``n . (point - closestPoint)`` is the signed
+    distance ``+-|point - closestPoint|`` whichever of the equally close facets was chosen.
+
+    Where the distance vector has no tangential part beyond ``tolerance`` -- the point lies on the
+    edge, or above a flat stretch of the surface, where the facet normal already is the direction of
+    the distance vector -- the facet normal is kept as it is. The switch is continuous: at the
+    boundary of an edge's region the distance vector is parallel to the facet normal.
+    """
+
+    distanceVector = point - closestPoint
+    tangential = distanceVector - (facetNormal @ distanceVector) * facetNormal
+    if float(np.linalg.norm(tangential)) <= tolerance:
+        return facetNormal
+    sign = 1.0 if float(facetNormal @ distanceVector) >= 0.0 else -1.0
+    return sign * distanceVector / float(np.linalg.norm(distanceVector))
+
+
+def facetSurfaceBoundary(facetNodes: list) -> tuple[set, set]:
+    """The boundary of a surface made of flat facets: the edges that belong to one facet only, and
+    the nodes on them. In 2D, where a facet is a segment, the boundary edges are empty and the
+    boundary nodes are the ends of the chain (nodes of one segment only).
+
+    Parameters
+    ----------
+    facetNodes
+        The nodes of each facet, in the facet's order.
+
+    Returns
+    -------
+    tuple
+        The boundary edges as frozensets of two nodes, and the set of boundary nodes.
+    """
+
+    if facetNodes and len(facetNodes[0]) == 2:
+        count = {}
+        for nodes in facetNodes:
+            for node in nodes:
+                count[node] = count.get(node, 0) + 1
+        return set(), {node for node, n in count.items() if n == 1}
+
+    count = {}
+    for nodes in facetNodes:
+        for a in range(len(nodes)):
+            edge = frozenset((nodes[a], nodes[(a + 1) % len(nodes)]))
+            count[edge] = count.get(edge, 0) + 1
+    boundaryEdges = {edge for edge, n in count.items() if n == 1}
+    return boundaryEdges, {node for edge in boundaryEdges for node in edge}
+
+
+def liesOnSurfaceBoundary(nodes: list, weights: np.ndarray, boundary: tuple[set, set]) -> bool:
+    """Whether the closest point given by its clamped ``weights`` on the facet with ``nodes`` lies on
+    the boundary of the surface (see :func:`facetSurfaceBoundary`): on a boundary vertex, or on a
+    boundary edge."""
+
+    boundaryEdges, boundaryNodes = boundary
+    support = [node for node, weight in zip(nodes, weights) if weight != 0.0]
+    if len(support) == 1:
+        return support[0] in boundaryNodes
+    if len(support) == 2 and len(nodes) == 3:
+        return frozenset(support) in boundaryEdges
+    return False
+
+
+def facetHistoryPatches(facets: list) -> list:
+    """The old slave facets of a node-based contact as patches for
+    :func:`~edelweissfe.utils.contactfriction.historyInterpolation`: a point is located on its
+    closest facet, and the history is interpolated from the nodes of the facet's parent face with
+    the parent face's shape functions at that location (Wriggers 2006, Eq. 14.86) -- from the facet's
+    own nodes with its barycentric weights where the facet carries no parent face."""
+
+    patches = []
+    for facet in facets:
+        coordinates = np.array([node.coordinates for node in facet.nodes])
+        closestPoint = tria3ClosestPoint if len(coordinates) == 3 else line2ClosestPoint
+
+        def locate(point, facet=facet, coordinates=coordinates, closestPoint=closestPoint):
+            weights, distance = closestPoint(point, *coordinates)
+            if facet.parentFaceType is None:
+                return distance, list(facet.nodes), weights
+            parametric = weights @ facet.vertexParametricCoords
+            return distance, list(facet.parentFaceNodes), parentFaceShapeFunctions(facet.parentFaceType, parametric)
+
+        patches.append((coordinates.mean(axis=0), locate))
+    return patches
+
+
+def facetQuadraturePointPatches(facets: list, nQuadraturePoints: int, pointKey) -> list:
+    """The old slave facets of the integrated contact as patches for
+    :func:`~edelweissfe.utils.contactfriction.historyInterpolation`, whose history sits at the
+    quadrature points rather than at nodes. Over each old facet, a linear field in its barycentric
+    coordinates is fitted to the values at its quadrature points by least squares (Wriggers 2006,
+    Eqs. 14.32-14.33, with the facet as the patch; a constant one for a single point), and evaluated
+    where the new point lies on the facet. ``pointKey(facet, q)`` gives the key of quadrature point
+    ``q`` of an old facet."""
+
+    patches = []
+    for facet in facets:
+        coordinates = np.array([node.coordinates for node in facet.nodes])
+        closestPoint = tria3ClosestPoint if len(coordinates) == 3 else line2ClosestPoint
+        barycentric, _ = facetQuadratureRule(len(coordinates), nQuadraturePoints)
+        nTerms = len(coordinates) if nQuadraturePoints >= len(coordinates) else 1
+        fit = np.linalg.pinv(np.hstack([np.ones((len(barycentric), 1)), barycentric[:, 1:nTerms]]))
+        keys = [pointKey(facet, q) for q in range(nQuadraturePoints)]
+
+        def locate(point, coordinates=coordinates, closestPoint=closestPoint, fit=fit, keys=keys, nTerms=nTerms):
+            weights, distance = closestPoint(point, *coordinates)
+            return distance, keys, np.concatenate([[1.0], weights[1:nTerms]]) @ fit
+
+        patches.append((coordinates.mean(axis=0), locate))
+    return patches
+
+
+def parentFaceQuadraturePointPatches(slavePoints, pointKey) -> list:
+    """The old slave element faces of the integrated contact on a whole-face surface
+    (``facets=wholeFace``), as patches for
+    :func:`~edelweissfe.utils.contactfriction.historyInterpolation`. The counterpart of
+    :func:`facetQuadraturePointPatches` with the parent face as the patch: a linear field in the
+    face's parametric coordinates is fitted to the values at its Gauss points by least squares
+    (Wriggers 2006, Eqs. 14.32-14.33; a constant one for a single point), and evaluated where the new
+    point lies on the face, found by the closest-point projection onto the curved reference face.
+
+    Parameters
+    ----------
+    slavePoints
+        The old :class:`~edelweissfe.constraints.base.contactpointsonslavesurface.ContactPointsOnSlaveSurface`.
+    pointKey
+        ``pointKey(c, q)`` gives the key of quadrature point ``q`` of old cell ``c``.
+    """
+
+    patches = []
+    for c in range(slavePoints.nCells):
+        faceType = slavePoints.cellFaceTypes[c]
+        coordinates = slavePoints.parentReferenceCoordinates[c]
+        parametric = slavePoints.parametricCoordinates[c]
+        localDimension = parametric.shape[1]
+        nTerms = 1 + localDimension if len(parametric) > localDimension else 1
+        fit = np.linalg.pinv(np.hstack([np.ones((len(parametric), 1)), parametric[:, : nTerms - 1]]))
+        keys = [pointKey(c, q) for q in range(len(parametric))]
+
+        def locate(
+            point, faceType=faceType, coordinates=coordinates, fit=fit, keys=keys, nTerms=nTerms, d=localDimension
+        ):
+            # Started from the face centre; the reference faces of a slave surface are mildly curved
+            # at most, and the projection is clamped to the face, so the distance tells a point beside
+            # the face from one on it.
+            xi, closest, _ = parentFaceClosestPoints(
+                faceType, coordinates[None], np.asarray(point, dtype=float)[None], np.zeros((1, d)), 1e-12
+            )
+            distance = float(np.linalg.norm(np.asarray(point) - closest[0]))
+            return distance, keys, np.concatenate([[1.0], xi[0, : nTerms - 1]]) @ fit
+
+        patches.append((coordinates.mean(axis=0), locate))
+    return patches
