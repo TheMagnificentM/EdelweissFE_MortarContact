@@ -30,6 +30,8 @@ Created on Mon Apr 10 20:26:22 2017
 
 @author: Matthias Neuner
 """
+from copy import deepcopy
+
 from edelweissfe.config.phenomena import (
     fieldCorrectionTolerance,
     fluxResidualTolerance,
@@ -39,10 +41,19 @@ from edelweissfe.utils.misc import convertLinesToStringDictionary
 
 
 def loadConfiguration(jobInfo):
-    """load the default (field) tolerance settings from phenomena.py"""
-    jobInfo["fieldCorrectionTolerance"] = fieldCorrectionTolerance
-    jobInfo["fluxResidualTolerance"] = fluxResidualTolerance
-    jobInfo["fluxResidualToleranceAlternative"] = fluxResidualToleranceAlternative
+    """load the default (field) tolerance settings from phenomena.py
+
+    The dictionaries are COPIED, not referenced. updateConfiguration writes into
+    jobInfo[configurationType][key]; handing out the module-level dictionaries of
+    phenomena.py would make every `*updateConfiguration` in an input file mutate the
+    defaults for the rest of the Python process. A job that deliberately loosens a
+    tolerance would then silently loosen it for every job run after it in the same
+    process - e.g. a verification run following a production model, judged by the
+    production model's tolerances without anything saying so.
+    """
+    jobInfo["fieldCorrectionTolerance"] = deepcopy(fieldCorrectionTolerance)
+    jobInfo["fluxResidualTolerance"] = deepcopy(fluxResidualTolerance)
+    jobInfo["fluxResidualToleranceAlternative"] = deepcopy(fluxResidualToleranceAlternative)
     return jobInfo
 
 
