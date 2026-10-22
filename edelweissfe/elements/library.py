@@ -519,3 +519,35 @@ elLibrary.update(
         "C3D20NTL": elLibrary["C3D20TL"],
     }
 )
+
+# Geometry-only contact elements (elements.contactelement), whole faces of a contact surface: no
+# integration points, no material; only the node count, the spatial dimension and the Ensight type differ.
+elLibrary.update(
+    {
+        elementType: dict(
+            elClass="ContactElement",
+            nNodes=nNodes,
+            nDof=nNodes * nSpatialDimensions,
+            dofIndices=np.arange(0, nNodes * nSpatialDimensions),
+            ensightType=ensightType,
+            nSpatialDimensions=nSpatialDimensions,
+            nInt=0,
+            xi=None,
+            eta=None,
+            zeta=None,
+            w=None,
+            matSize=0,
+            index=np.array([]),
+            plStrain=None,
+        )
+        for elementType, nNodes, ensightType, nSpatialDimensions in (
+            ("CONLINE2", 2, "bar2", 2),
+            ("CONLINE3", 3, "bar3", 2),
+            ("CONQUAD4", 4, "quad4", 3),
+            ("CONQUAD8", 8, "quad8", 3),
+            ("CONQUAD9", 9, "quad9", 3),
+            ("CONTRI3", 3, "tria3", 3),
+            ("CONTRI6", 6, "tria6", 3),
+        )
+    }
+)

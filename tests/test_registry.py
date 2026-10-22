@@ -218,7 +218,11 @@ def test_element_category_covers_every_element_type_exactly():
 
     assert registeredTypes - libraryTypes == set(), "registered element types absent from elLibrary"
     assert libraryTypes - registeredTypes == set(), "elLibrary element types absent from the registry"
-    assert len(registeredTypes) == 42
+    # 42 formulation elements plus the seven geometry-only contact elements (CONLINE2/3,
+    # CONQUAD4/8/9, CONTRI3/6). These carry neither degrees of freedom nor quadrature (nInt = 0)
+    # and describe the topology of contact surfaces only; they are in both tables because they are
+    # created through the same *element keyword.
+    assert len(registeredTypes) == 42 + 7
 
 
 def test_case_insensitive_lookup():

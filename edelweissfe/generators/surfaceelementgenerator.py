@@ -39,6 +39,14 @@ face-consistent per-node tributary area shares for the pressure-weighted contact
 weighting that best approximates a *serendipity* face's consistent nodal loads. See the
 :doc:`contact theory documentation </documentation/contacttheory>` for the full background.
 
+``facets=wholeFace`` emits instead each source face itself as a single curved, geometry-only
+contact element (:class:`~edelweissfe.elements.contactelement.element.ContactElement`, ``CONQUAD4`` /
+``CONQUAD8`` / ``CONLINE2`` / ``CONLINE3``). The mortar contact requires such surfaces, since it
+integrates over the overlap of two curved faces with their own shape functions; the node- and
+segment-based contacts accept them as well and cut them into the facets this generator would cut
+(:func:`asFacets`). Faces are emitted in the canonical parent-face node ordering, whose winding is the
+source element's own outward one, so the element normals need no orientation correction.
+
 The underlying :func:`buildContactFacets` is idempotent and re-runnable, so a
 :class:`~edelweissfe.models.meshdependent.MeshDependent` consumer of these facets (e.g.
 :mod:`~edelweissfe.constraints.nodetodeformablesurfacepenalty`) can regenerate them from the
@@ -57,16 +65,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from edelweissfe.elements.contactsurfaceelement import (
-    Line2ContactFacet,
-    Tria3ContactFacet,
-)
+from edelweissfe.config.elementlibrary import getElementClass
+from edelweissfe.elements.contactsurfaceelement import Line2ContactFacet, Tria3ContactFacet
 from edelweissfe.generators.base.generatorbase import GeneratorBase
 from edelweissfe.journal.journal import Journal
 from edelweissfe.models.femodel import FEModel
 from edelweissfe.sets.elementset import ElementSet
 from edelweissfe.sets.nodeset import NodeSet
-from edelweissfe.utils.parentfacegeometry import PARENT_FACE_PARAMETRIC_COORDS
+from edelweissfe.utils.parentfacegeometry import PARENT_FACE_OF_CONTACT_ELEMENT, PARENT_FACE_PARAMETRIC_COORDS
 from edelweissfe.utils.schema import schemaField
 
 # Face-node-ordering tables, 0-indexed, reduced to each element type's linear corner nodes. Each
@@ -163,6 +169,20 @@ _MIDSIDE_FACE_TABLES = {
 }
 
 
+# Contact element type emitted per canonical parent face under facets='wholeFace'. The ordering
+# canonicalParentFace returns -- corner cycle first, then the midside node of each corner-to-corner
+# edge in the same cycle order -- is the node ordering of these element types, so the indices apply
+# without permutation. Only the faces of EdelweissFE's solid elements appear here: CONQUAD9, CONTRI3
+# and CONTRI6, which the mortar contact supports, would need 27-node hexahedra and tetrahedra and are
+# reachable only from a hand-written element set.
+_WHOLE_FACE_ELEMENT_TYPES = {
+    "line2": "CONLINE2",
+    "line3": "CONLINE3",
+    "quad4": "CONQUAD4",
+    "quad8": "CONQUAD8",
+}
+
+
 def canonicalParentFace(ensightType: str, faceNumber: int) -> tuple[str, tuple]:
     """The parent face of ``faceNumber``, as its canonical type and its element-local node indices
     in the canonical ordering of :mod:`~edelweissfe.utils.parentfacegeometry`.
@@ -217,6 +237,94 @@ def canonicalParentFace(ensightType: str, faceNumber: int) -> tuple[str, tuple]:
     if len(groups[0]) == 3:
         return "quad4", (groups[0][0], groups[0][1], groups[0][2], groups[1][2])
     return "line2", tuple(groups[0])
+
+
+def _canonicalFacetPattern(table: dict, ensightType: str) -> tuple:
+    """The facets of a face table in the canonical node positions of the face, the same for every
+    face of the element type (checked by a test)."""
+
+    faceNumber = min(table[ensightType])
+    _, canonicalIndices = canonicalParentFace(ensightType, faceNumber)
+    position = {localIndex: k for k, localIndex in enumerate(canonicalIndices)}
+    return tuple(tuple(position[i] for i in group) for group in table[ensightType][faceNumber])
+
+
+#: How a whole face is cut into facets, in its canonical node positions: the midside triangulation of
+#: a quadratic face and the corner triangulation of a linear one, exactly as this generator cuts the
+#: same face from a solid element.
+_WHOLE_FACE_FACETS = {
+    "quad4": _canonicalFacetPattern(_FACE_TABLES, "hexa8"),
+    "quad8": _canonicalFacetPattern(_MIDSIDE_FACE_TABLES, "hexa20"),
+    "line2": _canonicalFacetPattern(_FACE_TABLES, "quad4"),
+    "line3": _canonicalFacetPattern(_MIDSIDE_FACE_TABLES, "quad8"),
+}
+
+
+def facetsOfWholeFace(contactElement) -> list:
+    """The flat facets of a whole-face contact element (``CONQUAD4``/``CONQUAD8``/``CONLINE2``/
+    ``CONLINE3``, e.g. from a mesh generator or from ``facets=wholeFace``), cut and weighted exactly as
+    this generator cuts the same face from a solid element (midside triangulation for a quadratic
+    face, ``facetConsistent`` shares) and stamped with the face as their parent face.
+
+    The facets are not added to any model: they are the contact constraints' own view of a whole-face
+    surface, and carry the element number of the contact element they were cut from.
+
+    Parameters
+    ----------
+    contactElement
+        The whole-face contact element; its node order is the canonical one of its face.
+
+    Returns
+    -------
+    list
+        The facets, in face-table order.
+    """
+
+    faceType = PARENT_FACE_OF_CONTACT_ELEMENT[contactElement.elType]
+    faceNodes = list(contactElement.nodes)
+    parametricCoords = PARENT_FACE_PARAMETRIC_COORDS[faceType]
+    facets = []
+    for group in _WHOLE_FACE_FACETS[faceType]:
+        facetType, facetClass = (
+            ("Tria3ContactFacet", Tria3ContactFacet) if len(group) == 3 else ("Line2ContactFacet", Line2ContactFacet)
+        )
+        facet = facetClass(facetType, contactElement.elNumber)
+        facet.setNodes([faceNodes[k] for k in group])
+        facet.initializeElement()
+        facet.setParentFace(faceType, faceNodes, parametricCoords[list(group)])
+        facets.append(facet)
+    _assignFaceShares(facets, "facetConsistent")
+    return facets
+
+
+def isWholeFaceElement(element) -> bool:
+    """Whether a surface element is a whole element face (a curved ``CON*`` contact element of
+    ``facets=wholeFace``) rather than a flat facet cut from one (``facets=triangulated``)."""
+
+    return not hasattr(element, "parentFaceType") and getattr(element, "elType", None) in PARENT_FACE_OF_CONTACT_ELEMENT
+
+
+def asFacets(elements: list, setName: str) -> list:
+    """The elements of a contact surface as flat facets: facets as they are, whole-face contact
+    elements cut by :func:`facetsOfWholeFace`. A surface mixing both is rejected.
+
+    Parameters
+    ----------
+    elements
+        The surface elements.
+    setName
+        The name of their element set, for the error message.
+    """
+
+    wholeFace = [isWholeFaceElement(el) for el in elements]
+    if not any(wholeFace):
+        return elements
+    if not all(wholeFace):
+        raise ValueError(
+            f"contact surface '{setName}' mixes whole element faces and facets; generate it with either "
+            "facets=triangulated or facets=wholeFace."
+        )
+    return [facet for element in elements for facet in facetsOfWholeFace(element)]
 
 
 def _stampParentFace(facet, sourceElement, faceType: str, canonicalIndices: tuple):
@@ -279,7 +387,9 @@ def _assignQuadConsistentShares(quadFacets: list):
 def _applyModifiedSerendipityShares(cornerTriangles: list):
     """Reassign each corner node's tributary share to its two adjacent midside nodes, yielding the
     modified serendipity shape functions ``Ntilde_mid = N_mid + 1/2 (N_c1 + N_c2)``,
-    ``Ntilde_corner = 0`` of Puso, Laursen & Solberg (CMAME 197, 2008).
+    ``Ntilde_corner = 0``. This weighting is this implementation's; the defect it addresses, the
+    negative serendipity corner function, is the one Puso, Laursen & Solberg (CMAME 197, 2008, Eq. 29)
+    show for quadratic mortar contact.
 
     Why this particular weighting: for a quad8 face of area :math:`A` the consistent nodal loads of
     a uniform pressure are :math:`-pA/12` per corner and :math:`+pA/3` per midside node. A
@@ -331,10 +441,55 @@ def _applyModifiedSerendipityShares(cornerTriangles: list):
         facet.setWeightTransform(_MODIFIED_CORNER_TRIANGLE_TRANSFORM)
 
 
+def _assignFaceShares(faceFacets: list, nodalWeights: str):
+    """Assign the nodal area shares of the facets cut from one face.
+
+    Parameters
+    ----------
+    faceFacets
+        The facets of one face, in face-table order.
+    nodalWeights
+        'facetConsistent' or 'serendipityOptimal', see :func:`buildContactFacets`.
+    """
+
+    if len(faceFacets) == 2 and all(len(f.nodes) == 3 for f in faceFacets):
+        # Two Tria3 from a linear quad face (fixed diagonal split): the per-triangle
+        # equal split (measure/3 each) would give diagonal-position-dependent nodal
+        # tributary areas, inconsistent with the unique lumping of a uniform pressure on
+        # a bilinear quad face (face area / 4 per corner) -- the resulting force-vs-area
+        # mismatch shows up as spurious contact pressure oscillation in an otherwise
+        # exact patch test. Override: distribute each corner's area/4 evenly over the
+        # triangles of THIS face containing it.
+        _assignQuadConsistentShares(faceFacets)
+
+    elif len(faceFacets) == 6 and all(len(f.nodes) == 3 for f in faceFacets):
+        # Midside triangulation of a quadratic face: 4 corner triangles followed by the
+        # 2 triangles of the central midside quad (table order). The central quad's fixed
+        # diagonal would give its two diagonal midside nodes more incident triangles than
+        # the other two -- asymmetric tributary areas on a symmetric face. Apply the same
+        # quad-consistent lumping (area/4 per node) to the central quad; the corner
+        # triangles keep their equal per-triangle split. NOTE: exact pointwise pressure
+        # consistency is fundamentally unattainable for serendipity faces regardless of
+        # the weights -- the consistent nodal forces of a uniform pressure on a quad8
+        # face are NEGATIVE at the corners, which no unilateral per-node spring scheme
+        # can reproduce (see the constraint documentation). nodalWeights=
+        # 'serendipityOptimal' minimises, but cannot remove, that mismatch.
+        _assignQuadConsistentShares(faceFacets[4:])
+        if nodalWeights == "serendipityOptimal":
+            _applyModifiedSerendipityShares(faceFacets[:4])
+
+
 def buildContactFacets(
-    model: FEModel, surfaceName: str, prefix: str, triangulation: str, nodalWeights: str, journal
+    model: FEModel,
+    surfaceName: str,
+    prefix: str,
+    triangulation: str,
+    nodalWeights: str,
+    journal,
+    *,
+    facets: str = "triangulated",
 ) -> tuple[str, str]:
-    """(Re)generate the flat contact facet elements tiling ``surfaceName`` under ``prefix``.
+    """(Re)generate the contact facet elements tiling ``surfaceName`` under ``prefix``.
 
     Idempotent: any facets a previous call under the same ``prefix`` created are removed first, so
     this can be re-run after ``surfaceName`` changes underneath it (e.g. an AMR refinement of the
@@ -357,15 +512,42 @@ def buildContactFacets(
     triangulation
         The facet triangulation of higher-order element faces: 'corner' or 'midside'.
     nodalWeights
-        The per-node contact weighting: 'facetConsistent' or 'serendipityOptimal'.
+        The per-node contact weighting: 'facetConsistent' or 'serendipityOptimal'. Only meaningful
+        for 'triangulated' facets.
     journal
         The journal instance.
+    facets
+        What to emit per source face: 'triangulated' (flat Tria3/Line2 facets tiling the face) or
+        'wholeFace' (the face itself as one curved CON* contact element).
 
     Returns
     -------
     tuple[str, str]
         The generated ``(facetsSetName, nodesSetName)``.
     """
+
+    if facets not in ("triangulated", "wholeFace"):
+        raise ValueError(
+            f"surfaceElementGenerator: facets '{facets}' is not supported. Use 'triangulated' or 'wholeFace'."
+        )
+
+    if facets == "wholeFace":
+        # triangulation and nodalWeights describe how a face is cut up and how the pieces share its
+        # area; a face kept whole is neither, so a non-default value is refused rather than ignored.
+        inapplicable = [
+            name
+            for name, value, default in (
+                ("triangulation", triangulation, "corner"),
+                ("nodalWeights", nodalWeights, "facetConsistent"),
+            )
+            if value != default
+        ]
+        if inapplicable:
+            raise ValueError(
+                f"surfaceElementGenerator: {' and '.join(inapplicable)} cannot be combined with "
+                "facets='wholeFace' -- a face that is kept whole is neither triangulated nor given "
+                "tiling-derived nodal weights."
+            )
 
     triangulation = triangulation.lower()
     if triangulation not in ("corner", "midside"):
@@ -447,6 +629,25 @@ def buildContactFacets(
 
     for faceNumber, elementSet in surfaceDef.items():
         for sourceElement in elementSet:
+            if facets == "wholeFace":
+                # canonicalParentFace raises for an unknown element type or face number and returns the
+                # face in the node ordering of the contact element.
+                parentFaceType, parentFaceIndices = canonicalParentFace(sourceElement.ensightType, faceNumber)
+                contactElementType = _WHOLE_FACE_ELEMENT_TYPES.get(parentFaceType)
+                if contactElementType is None:
+                    raise ValueError(
+                        f"surfaceElementGenerator: no whole-face contact element available for a "
+                        f"'{parentFaceType}' face (element type '{sourceElement.ensightType}', "
+                        f"element {sourceElement.elNumber})."
+                    )
+
+                (elNumber,) = model.topology.reserveElementNumbers(1)
+                contactElement = getElementClass(contactElementType, "edelweiss")(contactElementType, elNumber)
+                contactElement.setNodes([sourceElement.nodes[i] for i in parentFaceIndices])
+                contactElement.initializeElement()
+                newElements[elNumber] = contactElement
+                continue
+
             faceTable = None
             if triangulation == "midside":
                 faceTable = _MIDSIDE_FACE_TABLES.get(sourceElement.ensightType)
@@ -490,31 +691,7 @@ def buildContactFacets(
                 faceFacets.append(facetElement)
                 newElements[elNumber] = facetElement
 
-            if len(faceFacets) == 2 and all(len(f.nodes) == 3 for f in faceFacets):
-                # Two Tria3 from a linear quad face (fixed diagonal split): the per-triangle
-                # equal split (measure/3 each) would give diagonal-position-dependent nodal
-                # tributary areas, inconsistent with the unique lumping of a uniform pressure on
-                # a bilinear quad face (face area / 4 per corner) -- the resulting force-vs-area
-                # mismatch shows up as spurious contact pressure oscillation in an otherwise
-                # exact patch test. Override: distribute each corner's area/4 evenly over the
-                # triangles of THIS face containing it.
-                _assignQuadConsistentShares(faceFacets)
-
-            elif len(faceFacets) == 6 and all(len(f.nodes) == 3 for f in faceFacets):
-                # Midside triangulation of a quadratic face: 4 corner triangles followed by the
-                # 2 triangles of the central midside quad (table order). The central quad's fixed
-                # diagonal would give its two diagonal midside nodes more incident triangles than
-                # the other two -- asymmetric tributary areas on a symmetric face. Apply the same
-                # quad-consistent lumping (area/4 per node) to the central quad; the corner
-                # triangles keep their equal per-triangle split. NOTE: exact pointwise pressure
-                # consistency is fundamentally unattainable for serendipity faces regardless of
-                # the weights -- the consistent nodal forces of a uniform pressure on a quad8
-                # face are NEGATIVE at the corners, which no unilateral per-node spring scheme
-                # can reproduce (see the constraint documentation). nodalWeights=
-                # 'serendipityOptimal' minimises, but cannot remove, that mismatch.
-                _assignQuadConsistentShares(faceFacets[4:])
-                if nodalWeights == "serendipityOptimal":
-                    _applyModifiedSerendipityShares(faceFacets[:4])
+            _assignFaceShares(faceFacets, nodalWeights)
 
     for facetElement in newElements.values():
         model.createElement(facetElement)
@@ -548,7 +725,7 @@ def buildContactFacets(
         model.nodeSets[nodesSetName].replaceMembers(facetNodesInOrder)
     else:
         model.nodeSets[nodesSetName] = NodeSet(nodesSetName, facetNodesInOrder)
-    model.contactFacetRecipes[facetsSetName] = (surfaceName, prefix, triangulation, nodalWeights)
+    model.contactFacetRecipes[facetsSetName] = (surfaceName, prefix, triangulation, nodalWeights, facets)
 
     journal.message(
         f"generated {len(newElements)} contact facet element(s) from surface '{surfaceName}' "
@@ -589,8 +766,7 @@ class SurfaceElementGeneratorSchema:
         "(the consistent nodal loads of the flat facet tiling itself) or 'serendipityOptimal' "
         "(the resultant-exact, non-negative weighting that minimises the mismatch against a "
         "quadratic face's own consistent nodal loads, by reassigning each corner node's share to "
-        "its two adjacent midside nodes -- the modified shape functions of Puso, Laursen & "
-        "Solberg, CMAME 2008). Reduces the spurious corner/midside load pattern on hexa20 "
+        "its two adjacent midside nodes). Reduces the spurious corner/midside load pattern on hexa20 "
         "contact surfaces by a third, at the price of corner nodes ceasing to be contact points -- "
         "but NO measured benefit has been demonstrated, because a quadratic face under near-uniform "
         "pressure lifts its corner nodes off anyway, which makes their weight moot; see the contact "
@@ -598,6 +774,15 @@ class SurfaceElementGeneratorSchema:
         "unaffected by this option.",
         dtype=str,
         default="facetConsistent",
+    )
+    facets: str = schemaField(
+        description="What to emit per source face: 'triangulated' (flat Tria3/Line2 facets tiling "
+        "the face) or 'wholeFace' (the face itself as one curved CONQUAD4/CONQUAD8/CONLINE2/CONLINE3 "
+        "contact element). The mortar contact needs 'wholeFace'; the node- and segment-based contacts "
+        "accept both. 'wholeFace' accepts neither triangulation nor nodalWeights: a face kept whole is "
+        "not tiled.",
+        dtype=str,
+        default="triangulated",
     )
 
 
@@ -643,4 +828,5 @@ class Generator(GeneratorBase):
             configuration.triangulation,
             configuration.nodalWeights,
             journal,
+            facets=configuration.facets,
         )

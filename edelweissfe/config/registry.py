@@ -354,6 +354,19 @@ for _elementTypeName in [
         "edelweissfe.elements.displacementtlelement.element:DisplacementTLElement"
     )
 
+# Geometry-only contact elements, whole faces of a contact surface (facets=wholeFace of the surface
+# element generator). They carry neither degrees of freedom nor stiffness of their own.
+for _elementTypeName in [
+    "CONLINE2",
+    "CONLINE3",
+    "CONQUAD4",
+    "CONQUAD8",
+    "CONQUAD9",
+    "CONTRI3",
+    "CONTRI6",
+]:
+    _BUILTINS[("element", _elementTypeName.casefold())] = "edelweissfe.elements.contactelement.element:ContactElement"
+
 # The material category covers the `provider=edelweiss` materials, one module and one class name per
 # material -- so neither `_addBuiltins` variant fits and each entry names its own target. Originally
 # transcribed from `config/materiallibrary.py`'s if/elif chain, which is now gone, so these are the

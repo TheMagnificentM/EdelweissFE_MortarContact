@@ -79,7 +79,7 @@ class FEModel:
         self.constraintSets = {}  #: ConstraintsSets in the model.
         self.multiPointConstraints = {}  #: Multi-point (DOF-elimination) constraints in the model.
         self.modelModifiers = {}  #: Model modifiers (dynamic topology / mesh mutation entities) in the model.
-        self.contactFacetRecipes = {}  #: facet elSet name -> (surfaceName, prefix, triangulation, nodalWeights).
+        self.contactFacetRecipes = {}  #: facet elSet -> (surface, prefix, triangulation, weights, facets).
         self.materials = {}  #: Materials in the model.
         self.analyticalFields = {}  #: AnalyticalFields in the model.
         self.scalarVariables = {}  #: ScalarVariables in the model.

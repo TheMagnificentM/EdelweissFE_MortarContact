@@ -113,7 +113,9 @@ class ModelModifier(ModelModifierBase):
             if recipe is None:
                 continue
             before = {el.elNumber for el in model.elementSets.get(facetSetName, [])}
-            buildContactFacets(model, *recipe, self._journal)
+            # `facets` is keyword-only on buildContactFacets.
+            surfaceName, prefix, triangulation, nodalWeights, facets = recipe
+            buildContactFacets(model, surfaceName, prefix, triangulation, nodalWeights, self._journal, facets=facets)
             after = {el.elNumber for el in model.elementSets[facetSetName]}
             change.removedElements |= before - after
             change.addedElements |= after - before
