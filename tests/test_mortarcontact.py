@@ -400,6 +400,46 @@ class TestCouplingMatrices(unittest.TestCase):
             np.testing.assert_allclose(np.asarray(constraint.currentC.todense()) / s**2, C0, rtol=1e-10, atol=1e-14)
             np.testing.assert_allclose(np.asarray(constraint.currentWeakGap) / s**3, g0, rtol=1e-10, atol=1e-14)
 
+    @staticmethod
+    def _mortarMovedBy(constraint: MortarContact, dy: float) -> np.ndarray:
+        """The constraint-local solution with the mortar block moved by ``dy`` across the gap."""
+
+        U = np.zeros(constraint.nDof)
+        for k in range(constraint.nNonMortarNodes, len(constraint._nodes)):
+            U[k * constraint.sizeField + 1] = dy
+        return U
+
+    def test_the_search_is_widened_by_the_motion_between_two_builds(self):
+        """The broadphase boxes of two unit faces are widened by 0.15 each, so faces 0.4 apart are
+        not segmented. Built once with the mortar block 0.5 away and again after it moved 0.1 closer,
+        the boxes are widened by that motion as well, and the faces 0.4 apart are coupled."""
+
+        model = _TwoBlockModel.build(gap=0.5)
+        constraint = _TwoBlockModel.constraint(model)
+        constraint._buildGeometry(np.zeros(constraint.nDof), _frozenTimeStep())
+        self.assertEqual(constraint.searchMotion, 0.0)
+        self.assertEqual(np.count_nonzero(constraint.currentNodalWeights), 0)
+
+        constraint._buildGeometry(self._mortarMovedBy(constraint, -0.1), _frozenTimeStep(2))
+        self.assertAlmostEqual(constraint.searchMotion, 0.1, places=12)
+        self.assertGreater(float(np.sum(constraint.currentNodalWeights)), 0.0)
+
+        # Built at the same state again (a cutback re-attempt), the motion is kept.
+        constraint._buildGeometry(self._mortarMovedBy(constraint, -0.1), _frozenTimeStep(2))
+        self.assertAlmostEqual(constraint.searchMotion, 0.1, places=12)
+
+    def test_a_motion_beyond_the_search_reserve_is_detected(self):
+        """After a build, a node that moves by more than the boxes were widened for (0.15 of the
+        smallest face, plus the motion) could close a gap the search left out; within the reserve
+        it cannot."""
+
+        model = _TwoBlockModel.build(gap=0.5)
+        constraint = _TwoBlockModel.constraint(model)
+        constraint._buildGeometry(np.zeros(constraint.nDof), _frozenTimeStep())
+        self.assertAlmostEqual(constraint._searchReserve, 0.15, places=12)
+        self.assertFalse(constraint._outrunsSearch(self._mortarMovedBy(constraint, -0.1)))
+        self.assertTrue(constraint._outrunsSearch(self._mortarMovedBy(constraint, -0.2)))
+
     def test_the_coverage_is_the_nodal_scaling_factor(self):
         """The coverage reported is the scaling factor of Popp et al. (2013), Eq. (36): per node, the
         parametric integral of its shape function over the integrated part of its facets, normalised

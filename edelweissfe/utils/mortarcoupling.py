@@ -104,14 +104,18 @@ from edelweissfe.utils.mortargeometry import (
     triangulatePolygon,
 )
 
+#: Factor of the facet size by which a broadphase box is widened (see :func:`_searchBox`). Chosen here.
+SEARCH_MARGIN_FACTOR = 0.15
 
-def _searchBox(coords: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """The broadphase box of a facet: its bounding box, widened by 15 % of its largest extent. A search
+
+def _searchBox(coords: np.ndarray, motion: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+    """The broadphase box of a facet: its bounding box, widened by 15 % of its largest extent and by
+    ``motion``, the distance a node may still travel before the geometry is built again. A search
     radius, not a tolerance of the formulation; a facet stays a candidate a little before it touches.
-    The factor is chosen here; relative to the facet, so that the search does not depend on the length
-    unit."""
+    Both are chosen here, relative to the facet and to the motion, so that the search does not depend
+    on the length unit."""
     lo, hi = coords.min(axis=0), coords.max(axis=0)
-    margin = 0.15 * np.max(hi - lo)
+    margin = SEARCH_MARGIN_FACTOR * np.max(hi - lo) + motion
     return lo - margin, hi + margin
 
 
@@ -207,6 +211,7 @@ def computeMortarCoupling(
     normals: np.ndarray,
     dim: int,
     elementClass,
+    searchMargin: float = 0.0,
 ) -> MortarCoupling:
     """Segment the two surfaces against each other and integrate the coupling.
 
@@ -224,6 +229,9 @@ def computeMortarCoupling(
         2 or 3.
     elementClass
         The contact element class, to evaluate linear sub-segments with.
+    searchMargin
+        A length by which every broadphase box is widened in addition to its own size, for the motion
+        until the next segmentation.
     """
     nSlave, nMaster = len(slaveIndex), len(masterIndex)
     result = MortarCoupling(None, None, [], [], np.zeros(nSlave))
@@ -232,7 +240,7 @@ def computeMortarCoupling(
     facetsWithBounds = []
     for mEl in mortarFacets:
         mCoords = np.array([coordinates[n] for n in mEl.nodes])
-        facetsWithBounds.append((mEl, mCoords.mean(axis=0), *_searchBox(mCoords)))
+        facetsWithBounds.append((mEl, mCoords.mean(axis=0), *_searchBox(mCoords, searchMargin)))
     bvh = buildBoundingVolumeHierarchy(facetsWithBounds)
 
     # Adjacent slave elements per slave node, the n_j^e of Popp et al. (2013), Eq. (36).
@@ -248,7 +256,9 @@ def computeMortarCoupling(
     owners = _Owners(nonMortarFacets, coordinates, slaveIndex, normals, dim)
     for sEl in nonMortarFacets:
         candidates = []
-        queryBoundingVolumeHierarchy(bvh, *_searchBox(np.array([coordinates[nd] for nd in sEl.nodes])), candidates)
+        queryBoundingVolumeHierarchy(
+            bvh, *_searchBox(np.array([coordinates[nd] for nd in sEl.nodes]), searchMargin), candidates
+        )
         if not candidates:
             continue
         if dim == 3:

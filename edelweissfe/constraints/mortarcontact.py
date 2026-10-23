@@ -105,7 +105,7 @@ from edelweissfe.utils.contactfriction import (
     slipToleranceField,
     tangentPenaltyField,
 )
-from edelweissfe.utils.mortarcoupling import computeMortarCoupling
+from edelweissfe.utils.mortarcoupling import SEARCH_MARGIN_FACTOR, computeMortarCoupling
 from edelweissfe.utils.mortargeometry import curvedFacetHistoryPatches, extent
 from edelweissfe.utils.schema import buildSchemaFromOptions, schemaField
 
@@ -426,6 +426,12 @@ class Constraint(ConstraintBase, MeshDependent):
         # Set by updateConnectivity, which the solver calls once per increment (implicit) or every
         # 'contact-update-frequency' increments (explicit); True so that the first assembly builds it.
         self._geometryStale = True
+        # The broadphase boxes are widened by the motion of the contact nodes between the last two
+        # geometry builds at converged states, from the node coordinates of the last such build (see
+        # _updateSearchMotion).
+        self.searchMotion = 0.0
+        self._searchReferenceCoordinates = None
+        self._searchReserve = np.inf
 
         # Explicit dynamics: known from the first call of applyConstraintExplicit. The lumped mass
         # arrives through computeCriticalTimeStepForExplicitDynamics, before the increment loop.
@@ -651,6 +657,8 @@ class Constraint(ConstraintBase, MeshDependent):
         self._identifySurfaces(model)
         self._updateFootprint()
         self._invalidateGeometry()
+        # The node set changed; the motion measured so far is kept for the next build.
+        self._searchReferenceCoordinates = None
         self._deriveNodalGeometry()
         self._remapNodalState(oldNonMortarNodes, oldNonMortarFacets)
         self._publishNonMortarNodeSet(model)
@@ -1180,6 +1188,7 @@ class Constraint(ConstraintBase, MeshDependent):
             normals,
             self.model.domainSize,
             ContactElement,
+            searchMargin=self.searchMotion,
         )
         if coupling.projectionFailures:
             side, number, elType = coupling.firstProjectionFailure
@@ -1704,7 +1713,8 @@ class Constraint(ConstraintBase, MeshDependent):
     def getRestartData(self) -> dict[str, np.ndarray] | None:
         """The converged frictional history, the friction gap reference and normals, the augmented
         pressure estimate and, under formulation=lagrange, the multipliers, each per non-mortar node,
-        with the node labels they belong to. The geometry, the active set and the derived stiffnesses
+        with the node labels they belong to; and the search motion with the coordinates of the last
+        converged geometry build, per contact node. The geometry, the active set and the derived stiffnesses
         are rebuilt from the restored solution. The multipliers are also scalar variables of the model,
         but after a refinement only the labels identify the node they belong to."""
 
@@ -1718,6 +1728,13 @@ class Constraint(ConstraintBase, MeshDependent):
             ),
             "augmentedMultipliersConverged": self.augmentedMultipliersConverged,
             "nonMortarNodeLabels": np.array([node.label for node in self.nonMortarNodes], dtype=int),
+            "searchMotion": np.array([self.searchMotion]),
+            "contactNodeLabels": np.array([node.label for node in self._nodes], dtype=int),
+            "searchReferenceCoordinates": (
+                self._searchReferenceCoordinates
+                if self._searchReferenceCoordinates is not None
+                else np.full((len(self._nodes), self.model.domainSize), np.nan)
+            ),
         }
         if self.formulation == "lagrange":
             data["lagrangeMultipliers"] = np.array([variable.value for variable in self.scalarVariables])
@@ -1746,6 +1763,13 @@ class Constraint(ConstraintBase, MeshDependent):
             multipliers = np.asarray(data["lagrangeMultipliers"])
             for i, j in zip(current, stored):
                 self.scalarVariables[i].value = multipliers[j]
+        if "searchMotion" in data:
+            self.searchMotion = float(np.asarray(data["searchMotion"]).ravel()[0])
+            row = {int(label): k for k, label in enumerate(data["contactNodeLabels"])}
+            stored = np.asarray(data["searchReferenceCoordinates"], dtype=float)
+            if all(node.label in row for node in self._nodes):
+                reference = stored[[row[node.label] for node in self._nodes]]
+                self._searchReferenceCoordinates = None if np.isnan(reference).any() else reference
 
     # ------------------------------------------------------------------ explicit dynamics
 
@@ -1930,11 +1954,53 @@ class Constraint(ConstraintBase, MeshDependent):
             self._buildGeometry(U_np, timeStep, carryHistory=False)
             return
 
+        if not rebuildGeometry and self._outrunsSearch(U_np):
+            if self._explicit:
+                # Before the next connectivity tick: a pair beyond the margin could otherwise come into
+                # contact unseen.
+                rebuildGeometry = True
+            else:
+                # The frozen geometry cannot be rebuilt within the increment.
+                self._warnOnce(
+                    "search_outrun",
+                    f"WARNING: contact nodes moved by more than the search reserve ({self._searchReserve:.3g}) "
+                    f"within increment {timeStep.number}; a contact may be missed, reduce the increment size",
+                )
+
         if not rebuildGeometry:
             return
 
         self._geometryStale = False
         self._buildGeometry(U_np - dU, timeStep)
+
+    def _updateSearchMotion(self, U_ref: np.ndarray):
+        """Measure the largest displacement of a contact node since the last geometry build at a
+        converged state, by which :func:`~edelweissfe.utils.mortarcoupling.computeMortarCoupling` widens
+        the broadphase boxes. The geometry is held until the next build (an increment, or
+        ``contact-update-frequency`` explicit increments), and a pair that approaches by as much again
+        until then is still segmented now. The same state built again (a cutback re-attempt) keeps the
+        motion measured before it; the first build has none to go by. The margin is this
+        implementation's choice."""
+
+        coordinates = self._currentCoordinates(U_ref)
+        reference = self._searchReferenceCoordinates
+        if reference is not None and reference.shape == coordinates.shape:
+            if np.array_equal(coordinates, reference):
+                return
+            self.searchMotion = float(np.max(np.linalg.norm(coordinates - reference, axis=1)))
+        self._searchReferenceCoordinates = coordinates.copy()
+
+    def _outrunsSearch(self, U_np: np.ndarray) -> bool:
+        """Whether a contact node has moved, since the last geometry build at a converged state, by more
+        than the broadphase boxes were widened for (see :meth:`_updateSearchMotion`): two surfaces
+        approaching each other at most twice as fast cannot have closed a gap the search left out
+        before that."""
+
+        reference = self._searchReferenceCoordinates
+        if reference is None:
+            return False
+        motion = np.linalg.norm(self._currentCoordinates(U_np) - reference, axis=1)
+        return bool(np.max(motion) > self._searchReserve)
 
     def _buildGeometry(self, U_ref: np.ndarray, timeStep: TimeStep, carryHistory: bool = True):
         """Build the geometry -- nodal normals, segmentation, coupling matrices -- at the configuration
@@ -1960,6 +2026,14 @@ class Constraint(ConstraintBase, MeshDependent):
         if previousNormals is None:
             # The normals of the last rebuild before a restart, if the checkpoint held them.
             previousNormals = self.__dict__.pop("_restoredFrictionNormals", None)
+        if carryHistory:
+            self._updateSearchMotion(U_ref)
+            coordinates = self._currentCoordinates(U_ref)
+            smallestFacet = min(
+                extent(coordinates[[self.nodeToGlobalIndex[node] for node in el.nodes]])
+                for el in (*self.nonMortarFacets, *self.mortarFacets)
+            )
+            self._searchReserve = SEARCH_MARGIN_FACTOR * smallestFacet + self.searchMotion
         self.currentNormals = self.computeNormals(U_ref)
         coupling = self._couple(U_ref, self.currentNormals)
         self.currentD = coupling.D
