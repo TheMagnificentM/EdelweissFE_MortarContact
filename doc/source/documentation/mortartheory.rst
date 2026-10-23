@@ -210,7 +210,10 @@ Segmentation of the overlap
 In three dimensions the overlap is constructed per non-mortar face as in Popp et al. (2010),
 Section 4.1:
 
-#. candidate mortar faces are found through a bounding-volume hierarchy (Ericson 2005);
+#. candidate mortar faces are found through a bounding-volume hierarchy (Ericson 2005); the box of
+   every face is widened by 0.15 of its size and by the largest displacement of a contact node since
+   the previous geometry build, so that a pair that approaches by as much again until the next build
+   is already segmented;
 #. an auxiliary plane is set up through the centre of the non-mortar face, with the nodal normals
    interpolated there as its normal;
 #. both faces are projected into that plane, and the projections are clipped against each other
@@ -320,7 +323,9 @@ never run.
 
 The geometry is rebuilt every ``contact-update-frequency`` increments of the explicit solver rather
 than in every time step, since the segmentation dominates the cost of the constraint and a node moves
-far less than a face size in between.
+far less than a face size in between. Where a contact node has moved, since the last build, by more
+than the search boxes were widened for, the geometry is rebuilt at once, so that a fast approach
+cannot close a gap the search left out.
 
 A penalty stiffness adds its own frequency, which the element-based critical time step does not
 contain. The contact stiffness of one node is rank one, :math:`(\varepsilon_N / |D_{II}|)
@@ -435,7 +440,8 @@ Lagrange multiplier formulation::
 
 Nothing else has to be set: ``cn`` (and, for the penalty forms, ``penaltyStiffness``) are derived from
 the adjacent materials and the mesh, and the values used are written to the journal once, when the
-geometry is first built.
+geometry is first built. Where the surfaces start apart, ``penaltyStiffness`` is derived at the first
+build at which they overlap and reported then.
 
 
 Options
@@ -554,7 +560,8 @@ Choosing the parameters
 
 ``penaltyStiffness``
     Left at 0 it is derived as :math:`\varepsilon_N = 100\,E/h`, with :math:`E` the smallest adjacent
-    Young's modulus and :math:`h` the characteristic face size. The literature gives the scale, not a
+    Young's modulus and :math:`h` the characteristic face size of the non-mortar surface, at the first
+    overlap of the surfaces. The literature gives the scale, not a
     value: Wriggers (2006), Remark 6.4, finds a penalty of at least 100 times the axial stiffness
     necessary and recommends choosing it with the mesh size; Ghesquière-Diérickx et al. (2026) quote
     :math:`\alpha E/h` with :math:`\alpha` between :math:`10^1` and :math:`10^4`. A larger value
@@ -598,7 +605,10 @@ The constraint needs no solver option of its own. What happens inside the solver
   as it is, and this is reported -- the increment then converged on a set that was not confirmed; a
   smaller increment is the remedy.
 * Under ``frozen`` the geometry is rebuilt once per increment; a cutback re-attempt starts from the
-  same converged state and the same geometry.
+  same converged state and the same geometry. A gap that closes within one increment by more than the
+  search margin (0.15 of the smallest face plus the motion of the previous increment) is not seen
+  until the next increment; such a motion is reported, and smaller increments are the remedy. The
+  first increment has no previous motion to go by.
 * Under ``formulation=penalty`` an increment is never accepted on its first, extrapolated state, since
   the contact forces of that state have not been equilibrated.
 * The augmented loop runs after each converged equilibrium of an increment; the solver then iterates
@@ -613,8 +623,9 @@ With the explicit solver
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 With the explicit solver ``NED`` use ``formulation=penalty`` (with or without ``mu``). The solver
-option ``contact-update-frequency`` sets after how many increments the geometry is rebuilt; a smaller
-value follows fast motion more closely and costs more. ``penaltyStiffness`` is best left at 0: it is
+option ``contact-update-frequency`` sets after how many increments the geometry is rebuilt at the
+latest; it is rebuilt earlier where the nodes move beyond the search margin. A smaller value follows
+the changing geometry more closely and costs more. ``penaltyStiffness`` is best left at 0: it is
 then derived from the stability bound of the current time increment and re-derived when the
 geometry is rebuilt. A given value above that bound is reported together with the factor by which it
 or the ``courant-number`` would have to be lowered::
@@ -689,6 +700,9 @@ Each warning is written once per constraint.
       - strongly distorted faces or slivers of overlap; the result is less accurate there
     * - penalty stiffness needs a smaller time increment
       - explicit dynamics: lower ``penaltyStiffness`` or ``courant-number`` by the factor given
+    * - contact nodes moved by more than the search reserve within an increment
+      - implicit, ``frozen``: a contact closing within the increment may be missed; reduce the increment
+        size
 
 
 Verification
