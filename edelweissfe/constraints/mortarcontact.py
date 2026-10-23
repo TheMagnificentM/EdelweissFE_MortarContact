@@ -380,6 +380,7 @@ class Constraint(ConstraintBase, MeshDependent):
         self._epsNSource = "given"
         self._frictionSetup = None
         self._setupReported = False
+        self._reportEpsNWhenDerived = False
 
         self.useAugmentedLagrange = bool(kwargs["augmentedLagrange"])
         self.augmentationTolerance = float(kwargs["augmentationTolerance"])
@@ -937,15 +938,26 @@ class Constraint(ConstraintBase, MeshDependent):
         """Derive the penalty stiffness eps_N of ``p_I = eps_N * penetration_I``.
 
         Implicitly, ``eps_N = C E / h`` with C = :data:`PENALTY_STIFFNESS_FACTOR`, E the smallest
-        initial Young's modulus adjacent to the interface and h the characteristic facet size, taken
-        from the mortar weights (``sum_I D_II`` is the non-mortar surface measure). Under explicit
-        dynamics, the largest stiffness the time increment can carry (:meth:`_resolveEpsNExplicit`).
-        The nodal weight is not part of eps_N; it enters node by node in
-        :meth:`_nodalPenaltyStiffness`.
+        initial Young's modulus adjacent to the interface and h the characteristic facet size of the
+        non-mortar surface (:meth:`_characteristicFacetSize`). Under explicit dynamics, the largest
+        stiffness the time increment can carry (:meth:`_resolveEpsNExplicit`). The nodal weight is not
+        part of eps_N; it enters node by node in :meth:`_nodalPenaltyStiffness`.
+
+        While the two surfaces do not overlap, no node is coupled and none needs a stiffness; eps_N is
+        then derived at the first geometry build at which they do.
         """
+
+        if not np.any(self.currentNodalWeights):
+            self.epsN = 0.0
+            self._epsNSource = "not yet derived, the surfaces do not overlap"
+            return
+        if self._setupReported and self._epsNSource.startswith("not yet derived"):
+            # The setup line reported the pending state; the derived value is reported once below.
+            self._reportEpsNWhenDerived = True
 
         if self._explicit and self._explicitLumpedMass is not None:
             if self._resolveEpsNExplicit():
+                self._reportDerivedEpsN()
                 return
             # No covered interface, or no lumped mass on the contact nodes.
             self._warnOnce(
@@ -955,11 +967,8 @@ class Constraint(ConstraintBase, MeshDependent):
 
         self._deriveEpsN = False
 
-        weights = self.currentNodalWeights
-        total = float(np.sum(weights))
-        nFacets = len(self.nonMortarFacets)
-
-        if total <= 0.0 or nFacets == 0 or self.nNonMortarNodes == 0:
+        h = self._characteristicFacetSize()
+        if h <= 0.0:
             self.epsN = FALLBACK_MODULUS
             self._warnOnce(
                 "epsN_not_derivable",
@@ -968,7 +977,6 @@ class Constraint(ConstraintBase, MeshDependent):
             self._epsNSource = "fallback"
             return
 
-        h = characteristicFacetSize(total, nFacets, self.model.domainSize)
         E = self._smallestAdjacentYoungsModulus()
         if E is None:
             self.epsN = FALLBACK_MODULUS
@@ -982,6 +990,30 @@ class Constraint(ConstraintBase, MeshDependent):
 
         self.epsN = PENALTY_STIFFNESS_FACTOR * E / h
         self._epsNSource = f"E={E:.4g}, h={h:.4g}"
+        self._reportDerivedEpsN()
+
+    def _reportDerivedEpsN(self):
+        """Report eps_N once where it was derived only after the setup line (first overlap)."""
+
+        if self._reportEpsNWhenDerived:
+            self._reportEpsNWhenDerived = False
+            self._warnOnce(
+                "epsN_derived_at_overlap", f"eps_N = {self.epsN:.4g} at the first overlap ({self._epsNSource})"
+            )
+
+    def _characteristicFacetSize(self) -> float:
+        """The characteristic facet size h of the non-mortar surface, from its measure in the
+        undeformed configuration (:func:`~edelweissfe.utils.contactfriction.characteristicFacetSize`).
+        Taken from the whole surface rather than from the part the other surface covers, so that a
+        first contact over a small part of it does not shrink h."""
+
+        if not self.nonMortarFacets:
+            return 0.0
+        measure = sum(
+            float(np.trace(el.computeLocalMassMatrices(np.array([node.coordinates for node in el.nodes]))[1]))
+            for el in self.nonMortarFacets
+        )
+        return characteristicFacetSize(measure, len(self.nonMortarFacets), self.model.domainSize)
 
     def _resolveEpsNExplicit(self) -> bool:
         """Under explicit dynamics, set eps_N to half the largest stiffness the current time increment
@@ -2056,11 +2088,7 @@ class Constraint(ConstraintBase, MeshDependent):
             self._checkExplicitStability()
 
         if self._friction.enabled and self._friction.elasticSlip is None:
-            # h as in _resolveEpsN: the nodal weights sum to the non-mortar surface measure.
-            h = characteristicFacetSize(
-                float(np.sum(np.abs(self.currentNodalWeights))), len(self.nonMortarFacets), self.model.domainSize
-            )
-            self._frictionSetup = self._friction.setCharacteristicLength(h)
+            self._frictionSetup = self._friction.setCharacteristicLength(self._characteristicFacetSize())
 
         if self._friction.enabled and carryHistory:
             self._carryFrictionHistory(U_ref, previousNormals)

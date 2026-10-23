@@ -440,6 +440,24 @@ class TestCouplingMatrices(unittest.TestCase):
         self.assertFalse(constraint._outrunsSearch(self._mortarMovedBy(constraint, -0.1)))
         self.assertTrue(constraint._outrunsSearch(self._mortarMovedBy(constraint, -0.2)))
 
+    def test_the_penalty_stiffness_is_derived_at_the_first_overlap(self):
+        """With the surfaces apart, no node is coupled and eps_N stays underived instead of falling
+        back to a fixed value; at the first build where they overlap it is derived from the whole
+        non-mortar facet, as for surfaces in contact from the start."""
+
+        touching = _TwoBlockModel.constraint(_TwoBlockModel.build(), formulation="penalty")
+        touching._buildGeometry(np.zeros(touching.nDof), _frozenTimeStep())
+
+        apart = _TwoBlockModel.constraint(_TwoBlockModel.build(gap=0.5), formulation="penalty")
+        apart._buildGeometry(np.zeros(apart.nDof), _frozenTimeStep())
+        self.assertEqual(apart.epsN, 0.0)
+        self.assertTrue(apart._deriveEpsN)
+
+        apart._buildGeometry(self._mortarMovedBy(apart, -0.5), _frozenTimeStep(2))
+        self.assertFalse(apart._deriveEpsN)
+        self.assertAlmostEqual(apart.epsN, touching.epsN, delta=1e-9 * touching.epsN)
+        self.assertNotIn("epsN_not_derivable", apart._warned)
+
     def test_the_coverage_is_the_nodal_scaling_factor(self):
         """The coverage reported is the scaling factor of Popp et al. (2013), Eq. (36): per node, the
         parametric integral of its shape function over the integrated part of its facets, normalised
