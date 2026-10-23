@@ -1176,7 +1176,8 @@ class Constraint(ConstraintBase, MeshDependent):
                     nNode = np.array([t[0][1], -t[0][0]])
                 length = np.linalg.norm(nNode)
                 # The tangents carry the facet size: the cross product an area, the 2D normal a length.
-                if length <= 1e-14 * extent(coords) ** (dim - 1):
+                size = extent(coords)
+                if length <= 1e-14 * (size * size if dim == 3 else size):
                     # A degenerate facet at this node contributes nothing.
                     continue
                 normals[nodeToIndex[node]] += nNode / length
@@ -2032,6 +2033,8 @@ class Constraint(ConstraintBase, MeshDependent):
         if reference is None:
             return False
         motion = np.linalg.norm(self._currentCoordinates(U_np) - reference, axis=1)
+        if not np.all(np.isfinite(motion)):
+            return False  # a diverged state, which the solver stops on; no geometry to build there
         return bool(np.max(motion) > self._searchReserve)
 
     def _buildGeometry(self, U_ref: np.ndarray, timeStep: TimeStep, carryHistory: bool = True):

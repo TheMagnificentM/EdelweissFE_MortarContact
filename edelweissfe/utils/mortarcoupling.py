@@ -398,7 +398,8 @@ def _segment3D(context, candidates, owners, coordinates, elementClass, result):
         qSFull = plane.of(sEl)
         qS = qSFull[sSub]
         # Integration cells below this (twice the) area, relative to the sub-cell, carry no weight.
-        minimumArea = 1e-14 * extent(qS) ** 2
+        size = extent(qS)
+        minimumArea = 1e-14 * (size * size)
         if not isConvexPolygon(qS):
             result.nonConvex.append(("non-mortar", sEl.elNumber))
 
@@ -563,7 +564,7 @@ def _assembleSlaveElement(context, records, masterIndex, blocks, kappaSum, resul
     # Biorthogonality on the integrated part of the element, Popp et al. (2013), Eqs. (21)-(25).
     M_t = _contract("ra,rb,r->ab", N_t, N_t, dG)
     D_t = N_t.T @ dG
-    regular = np.linalg.cond(M_t) < CONDITION_LIMIT
+    regular = bool(np.all(np.isfinite(M_t))) and np.linalg.cond(M_t) < CONDITION_LIMIT
     if regular:
         A_e = D_t[:, None] * (np.linalg.inv(M_t) @ T)
     else:

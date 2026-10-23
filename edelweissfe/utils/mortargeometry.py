@@ -209,7 +209,9 @@ def toPlaneCoordinates(points, origin, t1, t2):
 def extent(points) -> float:
     """The largest extent of the bounding box of a set of points: the length scale against which the
     geometric tolerances of this module are taken. Written in Python scalars, since it is evaluated
-    for every point mapped back and numpy's dispatch would cost more than the arithmetic."""
+    for every point mapped back and numpy's dispatch would cost more than the arithmetic; the callers
+    square it by multiplication, which gives ``inf`` for a diverged configuration where the power of a
+    Python float would raise."""
     rows = points.tolist() if hasattr(points, "tolist") else points
     return float(max(max(column) - min(column) for column in zip(*rows))) if len(rows) else 0.0
 
@@ -235,7 +237,8 @@ def sutherlandHodgmanClip(subjectPolygon, clipPolygon):
 
     # The inclusion test compares a length squared; its tolerance is relative to the size of the
     # clip window, so that the clipping does not depend on the length unit.
-    insideTolerance = -1e-12 * extent(clipPolygon) ** 2
+    size = extent(clipPolygon)
+    insideTolerance = -1e-12 * (size * size)
 
     def inside(p, cp1, cp2):
         # Left of the directed edge cp1 -> cp2. Inclusive, so that a vertex lying exactly on the
@@ -436,7 +439,8 @@ def isConvexPolygon(polygon, tol: float = 1e-14) -> bool:
     n = len(polygon)
     if n < 4:
         return True
-    tol = tol * extent(polygon) ** 2
+    size = extent(polygon)
+    tol = tol * (size * size)
     sign = 0.0
     for i in range(n):
         a = polygon[(i + 1) % n] - polygon[i]
